@@ -29,7 +29,7 @@ class Settings:
     output_root: Path | None = None
     max_file_size_bytes: int = 200 * 1024 * 1024
     max_audio_file_size_bytes: int = 100 * 1024 * 1024
-    max_clips: int = 10
+    max_clips: int = 20
     min_clips: int = 2
     queue_size: int = 4
     retention_seconds: int = 60 * 60
@@ -111,7 +111,7 @@ class Settings:
             max_audio_file_size_bytes=_env_int("REELWEAVE_MAX_AUDIO_FILE_SIZE_MB", 100)
             * 1024
             * 1024,
-            max_clips=_env_int("REELWEAVE_MAX_CLIPS", 10),
+            max_clips=_env_int("REELWEAVE_MAX_CLIPS", 20),
             queue_size=_env_int("REELWEAVE_QUEUE_SIZE", 4),
             retention_seconds=_env_int("REELWEAVE_RETENTION_SECONDS", 3600),
             cleanup_interval_seconds=_env_int("REELWEAVE_CLEANUP_INTERVAL_SECONDS", 300),

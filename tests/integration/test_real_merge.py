@@ -107,6 +107,8 @@ def test_real_mixed_merge_playback_download_and_delete(tmp_path: Path, media_too
                             }
                             for index, end in enumerate((16, 9, 17, 20))
                         ],
+                        "order": [f"fixture-{index}" for index in range(4)],
+                        "output_fps": 25,
                         "audio": {
                             "original_volume": 1,
                             "original_muted": False,
@@ -146,7 +148,7 @@ def test_real_mixed_merge_playback_download_and_delete(tmp_path: Path, media_too
         video = next(s for s in probe["streams"] if s["codec_type"] == "video")
         audio = next(s for s in probe["streams"] if s["codec_type"] == "audio")
         assert (video["codec_name"], video["width"], video["height"]) == ("h264", 1280, 720)
-        assert video["r_frame_rate"] == "30/1"
+        assert video["r_frame_rate"] == "25/1"
         assert video["pix_fmt"] == "yuv420p"
         assert (audio["codec_name"], audio["sample_rate"], audio["channels"]) == ("aac", "48000", 2)
         assert 2.7 <= float(probe["format"]["duration"]) <= 3.2
@@ -264,6 +266,8 @@ def test_real_corrupted_video_is_rejected_before_queueing(tmp_path: Path, media_
                             {"client_id": "broken-1", "start_frame": 0, "end_frame": 0, "speed": 1},
                             {"client_id": "broken-2", "start_frame": 0, "end_frame": 0, "speed": 1},
                         ],
+                        "order": ["broken-1", "broken-2"],
+                        "output_fps": 30,
                         "audio": {
                             "original_volume": 1,
                             "original_muted": False,
@@ -341,6 +345,8 @@ def test_real_frame_trim_speed_and_music_length(
             {"client_id": "red", "start_frame": 0, "end_frame": 0, "speed": 1},
             {"client_id": "blue", "start_frame": 10, "end_frame": 19, "speed": speed},
         ],
+        "order": ["red", "blue"],
+        "output_fps": 30,
         "audio": {
             "original_volume": 0.8,
             "original_muted": False,

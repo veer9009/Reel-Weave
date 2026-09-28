@@ -13,7 +13,7 @@ with FFmpeg. It uses no paid APIs or external video-processing services.
 ## What it does
 
 - Select or drop MP4, MOV, WebM, and MKV clips; files stay in your browser until you press Merge.
-- Arrange 2–10 clips with drag-and-drop or keyboard-accessible move buttons.
+- Arrange 2–20 clips with drag-and-drop or keyboard-accessible move buttons.
 - See file names, sizes, order, and duration when your browser can read the metadata.
 - Trim every clip with inclusive frame handles, exact frame/timestamp readouts,
   a playhead, and one-frame previous/next controls.
@@ -288,20 +288,31 @@ shows `Uploading` while the POST is in flight; it does not invent percentages.
 }
 ```
 
-The multipart `manifest` keeps its clip array in the same order as the repeated
-`files` parts. Frame ranges are zero-based and inclusive. `trim_saved` is
-`false` for the browser-generated full-clip default and becomes `true` after
-the user saves a trim.
+The multipart `manifest` keeps its clip catalog in the same order as the
+repeated `files` parts. `order` must contain every catalog `client_id` exactly
+once and controls the sequential Video 1 render order. `output_fps` must be
+`24`, `25`, `30`, `50`, or `60`. Frame ranges are zero-based and inclusive.
+`trim_saved` is `false` for the browser-generated full-clip default and becomes
+`true` after the user saves a trim.
 
 ```json
 {
+  "output_fps": 25,
+  "order": ["browser-id-b", "browser-id-a"],
   "clips": [
     {
-      "client_id": "browser-id",
+      "client_id": "browser-id-a",
       "start_frame": 0,
       "end_frame": 89,
       "speed": 0.75,
       "trim_saved": false
+    },
+    {
+      "client_id": "browser-id-b",
+      "start_frame": 12,
+      "end_frame": 47,
+      "speed": 1,
+      "trim_saved": true
     }
   ],
   "audio": {
@@ -312,6 +323,10 @@ the user saves a trim.
   }
 }
 ```
+
+The timeline action renders only real uploaded Video 1 clips through the same
+merge job, preview, and download endpoints. Sample storyboard cards, Video 2
+overlays, visual-only multi-track controls, and MOV output are not rendered.
 
 FFprobe's decoded frame count is authoritative. The backend replaces an
 unsaved default with the full decoded range and clamps a stale end frame to the

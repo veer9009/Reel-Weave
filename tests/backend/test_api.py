@@ -31,6 +31,8 @@ def manifest(count: int, **audio_overrides) -> str:
                 {"client_id": f"clip-{index}", "start_frame": 0, "end_frame": 0, "speed": 1}
                 for index in range(count)
             ],
+            "order": [f"clip-{index}" for index in range(count)],
+            "output_fps": 30,
             "audio": audio,
         }
     )
@@ -90,6 +92,34 @@ def test_merge_preserves_manual_trim_signal(client_factory):
     assert captured[0].clip_edits[0].trim_saved is True
 
 
+def test_merge_reorders_stored_paths_and_edits_from_manifest(client_factory):
+    captured = []
+
+    def merge(job):
+        captured.append(job)
+        job.result_path.write_bytes(b"done")
+
+    value = json.loads(manifest(2))
+    value["clips"][0].update(start_frame=1, end_frame=3, speed=0.75)
+    value["clips"][1].update(start_frame=4, end_frame=8, speed=0.5)
+    value["order"] = ["clip-1", "clip-0"]
+    value["output_fps"] = 25
+    client = client_factory(merge)
+
+    response = client.post(
+        "/api/merge", files=clips(2), data={"manifest": json.dumps(value)}
+    )
+
+    assert response.status_code == 202
+    wait_for_status(client, response.json()["job_id"], "completed")
+    job = captured[0]
+    assert [path.name for path in job.input_paths] == ["001.mp4", "000.mp4"]
+    assert [
+        (edit.start_frame, edit.end_frame, edit.speed) for edit in job.clip_edits
+    ] == [(4, 8, 0.5), (1, 3, 0.75)]
+    assert job.output_fps == 25
+
+
 def test_merge_rejects_non_boolean_manual_trim_signal(client_factory):
     value = json.loads(manifest(2))
     value["clips"][0]["trim_saved"] = "yes"
@@ -123,6 +153,54 @@ def test_merge_rejects_invalid_trim_speed_and_audio_settings(client_factory):
         "invalid_manifest",
         "invalid_manifest",
     ]
+
+
+def test_merge_rejects_unsafe_fps_ids_and_order_before_storing(client_factory, settings):
+    captured = []
+    client = client_factory(lambda job: captured.append(job))
+
+    cases = []
+
+    missing_fps = json.loads(manifest(2))
+    missing_fps.pop("output_fps")
+    cases.append((missing_fps, "invalid_fps"))
+    unsupported_fps = json.loads(manifest(2))
+    unsupported_fps["output_fps"] = 29.97
+    cases.append((unsupported_fps, "invalid_fps"))
+    boolean_fps = json.loads(manifest(2))
+    boolean_fps["output_fps"] = True
+    cases.append((boolean_fps, "invalid_fps"))
+    non_list_order = json.loads(manifest(2))
+    non_list_order["order"] = "clip-0,clip-1"
+    cases.append((non_list_order, "invalid_order"))
+    blank_id = json.loads(manifest(2))
+    blank_id["clips"][0]["client_id"] = " "
+    cases.append((blank_id, "invalid_manifest"))
+    non_string_id = json.loads(manifest(2))
+    non_string_id["clips"][0]["client_id"] = 7
+    cases.append((non_string_id, "invalid_manifest"))
+    duplicate_id = json.loads(manifest(2))
+    duplicate_id["clips"][1]["client_id"] = "clip-0"
+    cases.append((duplicate_id, "invalid_manifest"))
+    unknown_order = json.loads(manifest(2))
+    unknown_order["order"] = ["clip-0", "unknown"]
+    cases.append((unknown_order, "invalid_order"))
+    duplicate_order = json.loads(manifest(2))
+    duplicate_order["order"] = ["clip-0", "clip-0"]
+    cases.append((duplicate_order, "invalid_order"))
+    missing_order_id = json.loads(manifest(2))
+    missing_order_id["order"] = ["clip-0"]
+    cases.append((missing_order_id, "invalid_order"))
+
+    for value, expected_code in cases:
+        response = client.post(
+            "/api/merge", files=clips(2), data={"manifest": json.dumps(value)}
+        )
+        assert response.status_code == 422
+        assert response.json()["error"]["code"] == expected_code
+
+    assert captured == []
+    assert list(settings.upload_root.iterdir()) == []
 
 
 def test_merge_accepts_one_supported_background_audio_and_stores_generated_path(

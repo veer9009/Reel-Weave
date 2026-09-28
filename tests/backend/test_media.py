@@ -61,6 +61,69 @@ def test_pipeline_uses_argument_lists_generated_paths_and_preserves_clip_order(
     assert first_normalize[first_normalize.index("-t") + 1] == "0.700000"
 
 
+def test_pipeline_uses_selected_fps_for_normalization_and_concat(settings, monkeypatch):
+    from backend.app.jobs import ClipEdit, Job
+    from backend.app.media import MediaPipeline
+    from backend.app.storage import Storage
+
+    job = Job.create(Storage(settings), "12121212-1212-4121-8121-121212121212")
+    job.input_paths = [job.upload_dir / "000.mp4", job.upload_dir / "001.mp4"]
+    for path in job.input_paths:
+        path.write_bytes(b"video")
+    job.clip_edits = [ClipEdit(0, 23, 1), ClipEdit(0, 59, 1)]
+    job.output_fps = 25
+    pipeline = MediaPipeline(settings)
+    metadata = iter(
+        [
+            {
+                "streams": [
+                    {
+                        "codec_type": "video",
+                        "avg_frame_rate": "24/1",
+                        "nb_read_frames": "24",
+                    }
+                ]
+            },
+            {
+                "streams": [
+                    {
+                        "codec_type": "video",
+                        "avg_frame_rate": "60/1",
+                        "nb_read_frames": "60",
+                    }
+                ]
+            },
+        ]
+    )
+    monkeypatch.setattr(pipeline, "_probe", lambda _path: next(metadata))
+    calls = []
+
+    def run(args, **_kwargs):
+        calls.append(args)
+        Path(args[-1]).write_bytes(b"media")
+        return completed(args)
+
+    monkeypatch.setattr(pipeline, "_run", run)
+
+    pipeline.merge(job)
+
+    for normalize in calls[:2]:
+        assert "fps=25" in normalize[normalize.index("-vf") + 1]
+    concat = calls[2]
+    assert "fps=25" in concat[concat.index("-vf") + 1]
+    for flag, expected in (
+        ("-r", "25"),
+        ("-fps_mode", "cfr"),
+        ("-c:v", "libx264"),
+        ("-preset", "medium"),
+        ("-crf", "23"),
+        ("-c:a", "aac"),
+        ("-b:a", "192k"),
+        ("-movflags", "+faststart"),
+    ):
+        assert concat[concat.index(flag) + 1] == expected
+
+
 def test_pipeline_rejects_clip_without_video(settings, monkeypatch):
     from backend.app.jobs import Job
     from backend.app.media import InvalidMediaError, MediaPipeline

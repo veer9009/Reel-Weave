@@ -62,6 +62,9 @@ test('desktop and mobile: select, arrange, merge, play, download and reset', asy
   await page.goto('/');
   await expect(
     page.getByRole('heading', { name: 'Turn your clips into one story.' }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('region', { name: 'Merge workspace' }),
   ).toBeVisible();
   await expect(
     page.getByRole('button', { name: 'Merge clips' }),
@@ -157,12 +160,23 @@ test('desktop and mobile: select, arrange, merge, play, download and reset', asy
     path: '../docs/screenshots/mobile-arranged.png',
     fullPage: true,
   });
+  await page.getByRole('button', { name: 'Timeline Demo' }).click();
+  await expect(
+    page.getByText(
+      'Prototype preview — multi-track processing is in development.',
+    ),
+  ).toBeVisible();
+  await page.getByLabel('Timeline FPS', { exact: true }).selectOption('25');
+  await expect(page.getByLabel('Effective timeline FPS')).toContainText(
+    '25 FPS',
+  );
+  await expect(page.getByLabel('Export format')).toHaveValue('MP4');
   const submitted = page.waitForResponse(
     (response) =>
       response.url().endsWith('/api/merge') &&
       response.request().method() === 'POST',
   );
-  await page.getByRole('button', { name: 'Merge clips' }).click();
+  await page.getByRole('button', { name: 'Merge current timeline' }).click();
   const response = await submitted;
   expect(response.status()).toBe(202);
   const { job_id: jobId } = await response.json();

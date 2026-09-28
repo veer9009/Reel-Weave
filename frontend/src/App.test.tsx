@@ -89,6 +89,100 @@ async function selectTwo() {
 }
 describe('ReelWeave', () => {
   beforeEach(() => serve());
+  it('removes the marketing headline while keeping the merge workspace available', async () => {
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByLabelText('Choose video clips')).toBeEnabled(),
+    );
+    expect(
+      screen.queryByRole('heading', {
+        name: /Turn your clips into one story/i,
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('region', { name: 'Merge workspace' }),
+    ).toBeVisible();
+    expect(screen.getByRole('button', { name: /merge clips/i })).toBeVisible();
+  });
+  it('opens the timeline with uploaded clips and preserves merge edits when returning', async () => {
+    render(<App />);
+    const user = await selectTwo();
+    await user.selectOptions(
+      screen.getByLabelText('Speed for first.mp4'),
+      '0.5',
+    );
+    await user.click(screen.getByRole('button', { name: 'Timeline Demo' }));
+    expect(screen.getByRole('region', { name: 'VIDEO 1' })).toBeVisible();
+    expect(
+      screen.getByRole('button', { name: 'Preview clip 1: first.mp4' }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole('button', { name: 'Preview clip 2: second.mov' }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole('button', { name: /merge clips/i }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Back to Merge' }));
+    expect(screen.getByLabelText('Speed for first.mp4')).toHaveValue('0.5');
+    expect(screen.getByRole('button', { name: /merge clips/i })).toBeEnabled();
+  }, 15_000);
+  it('submits the real Video 1 timeline plan through the existing merge flow', async () => {
+    render(<App />);
+    const user = await selectTwo();
+    await user.click(screen.getByRole('button', { name: 'Trim first.mp4' }));
+    fireEvent.change(screen.getByLabelText(/trim end frame/i), {
+      target: { value: '39' },
+    });
+    await user.click(screen.getByRole('button', { name: /save trim/i }));
+    await user.selectOptions(
+      screen.getByLabelText('Speed for first.mp4'),
+      '0.5',
+    );
+    await user.click(
+      screen.getByRole('button', { name: 'Move second.mov up' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Timeline Demo' }));
+    await user.selectOptions(screen.getByLabelText('Timeline FPS'), '25');
+    await user.click(
+      screen.getByRole('button', { name: 'Merge current timeline' }),
+    );
+
+    const mergeCall = vi
+      .mocked(fetch)
+      .mock.calls.find((call) => String(call[0]).endsWith('/api/merge'));
+    const body = mergeCall?.[1]?.body as FormData;
+    expect(body.getAll('files').map((entry) => (entry as File).name)).toEqual([
+      'second.mov',
+      'first.mp4',
+    ]);
+    const manifest = JSON.parse(String(body.get('manifest')));
+    expect(manifest.output_fps).toBe(25);
+    expect(manifest.order).toEqual(
+      manifest.clips.map((clip: { client_id: string }) => clip.client_id),
+    );
+    expect(manifest.clips).toHaveLength(2);
+    expect(manifest.clips[1]).toMatchObject({
+      start_frame: 0,
+      end_frame: 39,
+      speed: 0.5,
+      trim_saved: true,
+    });
+    expect(manifest.audio).toEqual({
+      original_volume: 1,
+      original_muted: false,
+      music_volume: 0.3,
+      music_muted: false,
+    });
+    expect(JSON.stringify(manifest)).not.toMatch(
+      /Opening shot|SAMPLE AD|VIDEO 2|overlay|MOV/,
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('region', { name: 'VIDEO 1' }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(await screen.findByText('Your story, together.')).toBeVisible();
+  }, 15_000);
   it('keeps missing-tool guidance visible while arranging and can reconnect', async () => {
     let checks = 0;
     vi.stubGlobal(

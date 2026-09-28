@@ -12,6 +12,7 @@ import {
   formatDuration,
   estimateFrameRate,
   frameCountFromDuration,
+  resolveProjectFps,
 } from './clips';
 import type { ClipEdit } from './clips';
 const file = (name: string, size = 1) =>
@@ -120,6 +121,14 @@ describe('clip edits', () => {
     expect(frameCountFromDuration(0.7, 24)).toBe(17);
   });
 
+  it('resolves Auto to the nearest supported project frame rate', () => {
+    expect(resolveProjectFps('auto', 24)).toBe(24);
+    expect(resolveProjectFps('auto', 29.97)).toBe(30);
+    expect(resolveProjectFps('auto', 59.94)).toBe(60);
+    expect(resolveProjectFps('auto', undefined)).toBeNull();
+    expect(resolveProjectFps('25', 60)).toBe(25);
+  });
+
   it('builds the merge manifest in current clip order', () => {
     const manifest = buildMergeManifest(
       [edit('second', 15, 44, 0.75, true), edit('first', 0, 89, 0.5)],
@@ -129,7 +138,15 @@ describe('clip edits', () => {
         musicVolume: 0.3,
         musicMuted: true,
       },
+      25,
+      ['first', 'second'],
     );
+    expect(manifest.output_fps).toBe(25);
+    expect(manifest.order).toEqual(['first', 'second']);
+    expect(manifest.clips.map(({ client_id }) => client_id)).toEqual([
+      'second',
+      'first',
+    ]);
     expect(manifest.clips).toEqual([
       {
         client_id: 'second',

@@ -38,6 +38,14 @@ def test_settings_load_project_env_file_without_overriding_process_env(tmp_path:
     assert loaded.max_file_size_bytes == 12 * 1024 * 1024
 
 
+def test_settings_default_to_twenty_clip_ad_assemblies(monkeypatch):
+    from backend.app.config import Settings
+
+    monkeypatch.delenv("REELWEAVE_MAX_CLIPS", raising=False)
+
+    assert Settings.from_env(None).max_clips == 20
+
+
 def test_storage_uses_generated_names_and_preserves_order(settings):
     from backend.app.storage import Storage
 

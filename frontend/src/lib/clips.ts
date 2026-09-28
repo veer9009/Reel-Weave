@@ -4,6 +4,9 @@ export type Limits = {
   max_audio_file_size_mb?: number;
 };
 export type ClipSpeed = 1 | 0.75 | 0.5;
+export const SUPPORTED_PROJECT_FPS = [24, 25, 30, 50, 60] as const;
+export type ProjectFps = (typeof SUPPORTED_PROJECT_FPS)[number];
+export type ProjectFpsSelection = 'auto' | `${ProjectFps}`;
 export type ClipMetadata = {
   duration: number;
   fps: number;
@@ -38,6 +41,8 @@ export type AudioSettings = {
   musicMuted: boolean;
 };
 export type MergeManifest = {
+  output_fps: ProjectFps;
+  order: string[];
   clips: Array<{
     client_id: string;
     start_frame: number;
@@ -52,6 +57,24 @@ export type MergeManifest = {
     music_muted: boolean;
   };
 };
+
+export function resolveProjectFps(
+  selection: ProjectFpsSelection,
+  firstSourceFps?: number,
+): ProjectFps | null {
+  if (selection !== 'auto') return Number(selection) as ProjectFps;
+  if (
+    firstSourceFps === undefined ||
+    !Number.isFinite(firstSourceFps) ||
+    firstSourceFps <= 0
+  )
+    return null;
+  return SUPPORTED_PROJECT_FPS.reduce((nearest, candidate) =>
+    Math.abs(candidate - firstSourceFps) < Math.abs(nearest - firstSourceFps)
+      ? candidate
+      : nearest,
+  );
+}
 export function validateSelection(
   files: File[],
   count: number,
@@ -176,8 +199,12 @@ export function isEditableClip(clip: Clip): clip is ClipEdit {
 export function buildMergeManifest(
   clips: ClipEdit[],
   audio: AudioSettings,
+  outputFps: ProjectFps,
+  order = clips.map((clip) => clip.id),
 ): MergeManifest {
   return {
+    output_fps: outputFps,
+    order,
     clips: clips.map((clip) => ({
       client_id: clip.id,
       start_frame: clip.trim.startFrame,

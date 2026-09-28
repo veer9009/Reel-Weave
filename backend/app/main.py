@@ -27,7 +27,16 @@ from .errors import (
     unexpected_error_handler,
     validation_error_handler,
 )
-from .jobs import AudioMixSettings, ClipEdit, Job, JobManager, JobRegistry, QueueIsFullError
+from .jobs import (
+    AudioMixSettings,
+    ClipEdit,
+    Job,
+    JobManager,
+    JobRegistry,
+    ManifestClip,
+    MergePlan,
+    QueueIsFullError,
+)
 from .media import InvalidMediaError, MediaPipeline
 from .storage import Storage, UnsafePathError
 
@@ -35,7 +44,7 @@ ALLOWED_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv"}
 ALLOWED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".aac", ".m4a"}
 
 
-def _parse_manifest(raw: object, file_count: int) -> tuple[list[ClipEdit], AudioMixSettings]:
+def _parse_manifest(raw: object, file_count: int) -> MergePlan:
     if not isinstance(raw, str):
         raise ApiError(422, "invalid_manifest", "A JSON edit manifest is required.")
     try:
@@ -46,13 +55,17 @@ def _parse_manifest(raw: object, file_count: int) -> tuple[list[ClipEdit], Audio
         raise ApiError(422, "invalid_manifest", "The edit manifest must include a clips array.")
     if len(value["clips"]) != file_count:
         raise ApiError(422, "invalid_manifest", "Manifest clips must match uploaded file order.")
-    edits: list[ClipEdit] = []
+    clips: list[ManifestClip] = []
+    client_ids: set[str] = set()
     for index, item in enumerate(value["clips"]):
         if not isinstance(item, dict):
             raise ApiError(422, "invalid_manifest", f"Clip {index + 1} edit is invalid.")
         client_id = item.get("client_id")
         if not isinstance(client_id, str) or not client_id.strip():
             raise ApiError(422, "invalid_manifest", "Each clip needs a valid client ID.")
+        if client_id in client_ids:
+            raise ApiError(422, "invalid_manifest", "Clip client IDs must be unique.")
+        client_ids.add(client_id)
         start, end, speed = item.get("start_frame"), item.get("end_frame"), item.get("speed")
         trim_saved = item.get("trim_saved", True)
         if (
@@ -74,7 +87,29 @@ def _parse_manifest(raw: object, file_count: int) -> tuple[list[ClipEdit], Audio
             raise ApiError(422, "invalid_speed", "Speed must be 1, 0.75, or 0.5.")
         if not isinstance(trim_saved, bool):
             raise ApiError(422, "invalid_manifest", "Trim saved flags must be booleans.")
-        edits.append(ClipEdit(start, end, float(speed), trim_saved))
+        clips.append(ManifestClip(client_id, ClipEdit(start, end, float(speed), trim_saved)))
+    output_fps = value.get("output_fps")
+    if isinstance(output_fps, bool) or not isinstance(output_fps, int) or output_fps not in {
+        24,
+        25,
+        30,
+        50,
+        60,
+    }:
+        raise ApiError(422, "invalid_fps", "Output FPS must be 24, 25, 30, 50, or 60.")
+    order = value.get("order")
+    if (
+        not isinstance(order, list)
+        or not all(isinstance(client_id, str) and client_id.strip() for client_id in order)
+        or len(order) != file_count
+        or len(set(order)) != len(order)
+        or set(order) != client_ids
+    ):
+        raise ApiError(
+            422,
+            "invalid_order",
+            "Clip order must contain every known client ID exactly once.",
+        )
     audio = value.get("audio")
     if not isinstance(audio, dict):
         raise ApiError(422, "invalid_manifest", "The manifest must include audio settings.")
@@ -90,7 +125,12 @@ def _parse_manifest(raw: object, file_count: int) -> tuple[list[ClipEdit], Audio
     mutes = (audio.get("original_muted"), audio.get("music_muted"))
     if not all(isinstance(v, bool) for v in mutes):
         raise ApiError(422, "invalid_manifest", "Audio mute settings must be booleans.")
-    return edits, AudioMixSettings(float(volumes[0]), mutes[0], float(volumes[1]), mutes[1])
+    return MergePlan(
+        tuple(clips),
+        tuple(order),
+        output_fps,
+        AudioMixSettings(float(volumes[0]), mutes[0], float(volumes[1]), mutes[1]),
+    )
 
 
 def _tool_available(command: str) -> bool:
@@ -240,7 +280,7 @@ def create_app(
                     "unsupported_media_type",
                     "Supported formats are MP4, MOV, WebM and MKV.",
                 )
-            clip_edits, audio_mix = _parse_manifest(form.get("manifest"), len(files))
+            merge_plan = _parse_manifest(form.get("manifest"), len(files))
             background_audio_parts = form.getlist("background_audio")
             if len(background_audio_parts) > 1:
                 raise ApiError(
@@ -270,8 +310,9 @@ def create_app(
                 cleanup_partial_job()
                 raise ApiError(500, "upload_failed", "The clips could not be stored.") from exc
             registry.add(job)
-            job.clip_edits = clip_edits
-            job.audio_mix = audio_mix
+            job.audio_mix = merge_plan.audio_mix
+            job.output_fps = merge_plan.output_fps
+            catalog_paths: list[Path] = []
             for index, (upload, extension) in enumerate(zip(files, extensions, strict=True)):
                 destination = job.upload_dir / f"{index:03d}{extension}"
                 size = 0
@@ -287,7 +328,13 @@ def create_app(
                         target.write(chunk)
                 if size == 0:
                     raise ApiError(422, "empty_file", "Clips cannot be empty.")
-                job.input_paths.append(destination)
+                catalog_paths.append(destination)
+            catalog = {
+                clip.client_id: (path, clip.edit)
+                for clip, path in zip(merge_plan.clips, catalog_paths, strict=True)
+            }
+            job.input_paths = [catalog[client_id][0] for client_id in merge_plan.order]
+            job.clip_edits = [catalog[client_id][1] for client_id in merge_plan.order]
             if isinstance(background_audio, UploadFile) and audio_extension is not None:
                 destination = job.upload_dir / f"background{audio_extension}"
                 size = 0

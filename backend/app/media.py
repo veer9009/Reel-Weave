@@ -207,7 +207,8 @@ class MediaPipeline:
         base_video_filter = (
             "scale=w='trunc(ih*dar/2)*2':h='trunc(ih/2)*2',setsar=1,"
             "scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2,"
-            "pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,fps=30,format=yuv420p,setsar=1"
+            "pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,"
+            f"fps={job.output_fps},format=yuv420p,setsar=1"
         )
         output_durations: list[float] = []
         for index, source in enumerate(job.input_paths):
@@ -331,9 +332,9 @@ class MediaPipeline:
                 "-i",
                 concat_file.name,
                 "-vf",
-                "fps=30,format=yuv420p,setsar=1",
+                f"fps={job.output_fps},format=yuv420p,setsar=1",
                 "-r",
-                "30",
+                str(job.output_fps),
                 "-fps_mode",
                 "cfr",
                 "-c:v",

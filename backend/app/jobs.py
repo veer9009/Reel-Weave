@@ -31,6 +31,20 @@ class AudioMixSettings:
     music_muted: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class ManifestClip:
+    client_id: str
+    edit: ClipEdit
+
+
+@dataclass(frozen=True, slots=True)
+class MergePlan:
+    clips: tuple[ManifestClip, ...]
+    order: tuple[str, ...]
+    output_fps: int
+    audio_mix: AudioMixSettings
+
+
 @dataclass(slots=True)
 class Job:
     id: str
@@ -42,6 +56,7 @@ class Job:
     clip_edits: list[ClipEdit] = field(default_factory=list)
     background_audio_path: Path | None = None
     audio_mix: AudioMixSettings = field(default_factory=AudioMixSettings)
+    output_fps: int = 30
     status: JobStatus = "queued"
     error: str | None = None
     created_at: float = field(default_factory=time.time)

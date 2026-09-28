@@ -16,6 +16,7 @@ import { MergeSummary } from './components/MergeSummary';
 import { JobResult } from './components/JobResult';
 import { TrimEditor } from './components/TrimEditor';
 import { BackgroundAudioTrack } from './components/BackgroundAudioTrack';
+import { TimelineDemo } from './components/TimelineDemo';
 import type { BackgroundAudio } from './components/BackgroundAudioTrack';
 import { ApiError, getHealth, getJob, submitMerge } from './lib/api';
 import type { Health, Job } from './lib/api';
@@ -23,6 +24,7 @@ import {
   buildMergeManifest,
   isEditableClip,
   moveClip,
+  resolveProjectFps,
   validateSelection,
 } from './lib/clips';
 import type {
@@ -31,9 +33,12 @@ import type {
   ClipMetadata,
   ClipSpeed,
   ClipTrim,
+  ProjectFpsSelection,
 } from './lib/clips';
 
 export default function App() {
+  const [timelineDemo, setTimelineDemo] = useState(false);
+  const [fpsSelection, setFpsSelection] = useState<ProjectFpsSelection>('auto');
   const [clips, setClips] = useState<Clip[]>([]);
   const [health, setHealth] = useState<Health | null>(null);
   const [healthAttempt, setHealthAttempt] = useState(0);
@@ -58,7 +63,7 @@ export default function App() {
     uploading || job?.status === 'queued' || job?.status === 'processing';
   const completed = job?.status === 'completed';
   const limits = health?.limits ?? {
-    max_clips: 10,
+    max_clips: 20,
     max_file_size_mb: 200,
     max_audio_file_size_mb: 100,
   };
@@ -66,6 +71,19 @@ export default function App() {
   const editsValid =
     editableClips.length === clips.length &&
     (!backgroundAudio || backgroundAudio.status === 'ready');
+  const outputFps = resolveProjectFps(
+    fpsSelection,
+    editableClips[0]?.metadata.fps,
+  );
+  const canMerge = Boolean(
+    !active &&
+    !completed &&
+    clips.length >= 2 &&
+    health?.ffmpeg_available &&
+    health.ffprobe_available &&
+    editsValid &&
+    outputFps !== null,
+  );
   const displayedError =
     error ??
     (health && (!health.ffmpeg_available || !health.ffprobe_available)
@@ -275,14 +293,7 @@ export default function App() {
     );
   }
   async function merge() {
-    if (
-      active ||
-      clips.length < 2 ||
-      !health?.ffmpeg_available ||
-      !health.ffprobe_available ||
-      !editsValid
-    )
-      return;
+    if (!canMerge || outputFps === null) return;
     const validation = validateSelection(
       clips.map((c) => c.file),
       0,
@@ -302,7 +313,7 @@ export default function App() {
       setJob(
         await submitMerge(
           editableClips,
-          buildMergeManifest(editableClips, audioSettings),
+          buildMergeManifest(editableClips, audioSettings, outputFps),
           backgroundAudio?.file,
           controller.signal,
         ),
@@ -325,6 +336,7 @@ export default function App() {
     setClips([]);
     setBackgroundAudio(null);
     setEditingClipId(null);
+    setFpsSelection('auto');
     setAudioSettings({
       originalVolume: 1,
       originalMuted: false,
@@ -356,6 +368,13 @@ export default function App() {
             Reel<span>Weave</span>
           </span>
         </a>
+        <button
+          className="timeline-entry"
+          aria-pressed={timelineDemo}
+          onClick={() => setTimelineDemo((open) => !open)}
+        >
+          {timelineDemo ? 'Back to Merge' : 'Timeline Demo'}
+        </button>
         <div className="header-note">
           <LockKeyhole aria-hidden="true" />
           <span>Your clips. Your story.</span>
@@ -363,16 +382,26 @@ export default function App() {
           <span className="local-label">Local workspace</span>
         </div>
       </header>
-      <main className="workspace">
-        <section className="intro" aria-labelledby="page-title">
+      {timelineDemo && (
+        <TimelineDemo
+          clips={clips}
+          musicName={backgroundAudio?.file.name}
+          fpsSelection={fpsSelection}
+          onFpsSelectionChange={setFpsSelection}
+          canMerge={canMerge}
+          busy={active}
+          onMerge={() => {
+            setTimelineDemo(false);
+            void merge();
+          }}
+        />
+      )}
+      <main className="workspace" hidden={timelineDemo}>
+        <section className="intro" aria-label="Merge workspace">
           <span className="eyebrow">
             <Sparkles aria-hidden="true" />
             SMALL CLIPS. BIGGER STORIES.
           </span>
-          <h1 id="page-title">
-            Turn your clips into{' '}
-            <span className="gradient-text">one story.</span>
-          </h1>
           <p>
             Bring your favorite moments together in one seamless video.
             <br /> Upload, arrange, and let your story unfold.
@@ -509,14 +538,7 @@ export default function App() {
           <MergeSummary
             clips={clips}
             busy={active}
-            disabled={
-              active ||
-              completed ||
-              clips.length < 2 ||
-              !health?.ffmpeg_available ||
-              !health?.ffprobe_available ||
-              !editsValid
-            }
+            disabled={!canMerge}
             onMerge={() => void merge()}
           />
         </div>
