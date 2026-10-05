@@ -4,6 +4,7 @@ import json
 import threading
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from starlette.datastructures import UploadFile
 
@@ -38,6 +39,28 @@ def manifest(count: int, **audio_overrides) -> str:
     )
 
 
+def manifest_with_overlays(count: int, *, image=True, video=True) -> str:
+    value = json.loads(manifest(count))
+    value["overlays"] = {
+        "image": (
+            {"start_frame": 0, "end_frame": 0, "position": "top-right", "size": "small"}
+            if image
+            else None
+        ),
+        "video": (
+            {
+                "start_frame": 0,
+                "end_frame": 0,
+                "position": "bottom-left",
+                "size": "medium",
+            }
+            if video
+            else None
+        ),
+    }
+    return json.dumps(value)
+
+
 def test_health_exposes_tool_availability_and_client_limits(client_factory):
     response = client_factory().get("/api/health")
 
@@ -50,6 +73,8 @@ def test_health_exposes_tool_availability_and_client_limits(client_factory):
             "max_file_size_mb": 100 / (1024 * 1024),
             "max_clips": 10,
             "max_audio_file_size_mb": 100 / (1024 * 1024),
+            "max_overlay_image_file_size_mb": 100 / (1024 * 1024),
+            "max_overlay_video_file_size_mb": 100 / (1024 * 1024),
         },
     }
 
@@ -106,17 +131,16 @@ def test_merge_reorders_stored_paths_and_edits_from_manifest(client_factory):
     value["output_fps"] = 25
     client = client_factory(merge)
 
-    response = client.post(
-        "/api/merge", files=clips(2), data={"manifest": json.dumps(value)}
-    )
+    response = client.post("/api/merge", files=clips(2), data={"manifest": json.dumps(value)})
 
     assert response.status_code == 202
     wait_for_status(client, response.json()["job_id"], "completed")
     job = captured[0]
     assert [path.name for path in job.input_paths] == ["001.mp4", "000.mp4"]
-    assert [
-        (edit.start_frame, edit.end_frame, edit.speed) for edit in job.clip_edits
-    ] == [(4, 8, 0.5), (1, 3, 0.75)]
+    assert [(edit.start_frame, edit.end_frame, edit.speed) for edit in job.clip_edits] == [
+        (4, 8, 0.5),
+        (1, 3, 0.75),
+    ]
     assert job.output_fps == 25
 
 
@@ -193,9 +217,7 @@ def test_merge_rejects_unsafe_fps_ids_and_order_before_storing(client_factory, s
     cases.append((missing_order_id, "invalid_order"))
 
     for value, expected_code in cases:
-        response = client.post(
-            "/api/merge", files=clips(2), data={"manifest": json.dumps(value)}
-        )
+        response = client.post("/api/merge", files=clips(2), data={"manifest": json.dumps(value)})
         assert response.status_code == 422
         assert response.json()["error"]["code"] == expected_code
 
@@ -222,6 +244,122 @@ def test_merge_accepts_one_supported_background_audio_and_stores_generated_path(
     wait_for_status(client, response.json()["job_id"], "completed")
     assert captured[0].background_audio_path.name == "background.mp3"
     assert "secret" not in str(captured[0].background_audio_path)
+
+
+def test_merge_accepts_both_overlays_and_stores_generated_paths(client_factory):
+    from backend.app.jobs import OverlaySettings
+
+    captured = []
+
+    def merge(job):
+        captured.append(job)
+        job.result_path.write_bytes(b"done")
+
+    client = client_factory(merge)
+    response = client.post(
+        "/api/merge",
+        files=[
+            *clips(2),
+            ("overlay_image", ("../../brand secret.png", b"image", "image/png")),
+            ("overlay_video", ("CON.mov", b"pip", "video/quicktime")),
+        ],
+        data={"manifest": manifest_with_overlays(2)},
+    )
+
+    assert response.status_code == 202
+    wait_for_status(client, response.json()["job_id"], "completed")
+    job = captured[0]
+    assert job.image_overlay_settings == OverlaySettings(0, 0, "top-right", "small")
+    assert job.video_overlay_settings == OverlaySettings(0, 0, "bottom-left", "medium")
+    assert job.image_overlay_path.name == "overlay-image.png"
+    assert job.video_overlay_path.name == "overlay-video.mov"
+    assert "secret" not in str(job.image_overlay_path)
+    assert "CON" not in str(job.video_overlay_path)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "parts", "code"),
+    [
+        (lambda value: value["overlays"].update(extra=None), (), "invalid_overlay"),
+        (lambda value: value["overlays"]["image"].update(extra=True), (), "invalid_overlay"),
+        (
+            lambda value: value["overlays"]["image"].update(start_frame=True),
+            (),
+            "invalid_overlay_range",
+        ),
+        (
+            lambda value: value["overlays"]["image"].update(end_frame=-1),
+            (),
+            "invalid_overlay_range",
+        ),
+        (lambda value: value["overlays"]["image"].update(position="left"), (), "invalid_overlay"),
+        (lambda value: value["overlays"]["image"].update(size="huge"), (), "invalid_overlay"),
+    ],
+)
+def test_merge_rejects_invalid_overlay_descriptors(client_factory, mutate, parts, code):
+    value = json.loads(manifest_with_overlays(2, video=False))
+    mutate(value)
+    response = client_factory().post(
+        "/api/merge", files=[*clips(2), *parts], data={"manifest": json.dumps(value)}
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == code
+
+
+def test_merge_rejects_overlay_descriptor_file_mismatches_and_duplicates(client_factory):
+    client = client_factory()
+    descriptor_without_file = client.post(
+        "/api/merge", files=clips(2), data={"manifest": manifest_with_overlays(2, video=False)}
+    )
+    orphan_file = client.post(
+        "/api/merge",
+        files=[*clips(2), ("overlay_image", ("logo.png", b"image", "image/png"))],
+        data={"manifest": manifest(2)},
+    )
+    duplicate = client.post(
+        "/api/merge",
+        files=[
+            *clips(2),
+            ("overlay_image", ("one.png", b"one", "image/png")),
+            ("overlay_image", ("two.jpg", b"two", "image/jpeg")),
+        ],
+        data={"manifest": manifest_with_overlays(2, video=False)},
+    )
+
+    assert descriptor_without_file.json()["error"]["code"] == "invalid_overlay"
+    assert orphan_file.json()["error"]["code"] == "invalid_overlay"
+    assert duplicate.json()["error"]["code"] == "invalid_overlay_count"
+
+
+def test_merge_rejects_unsupported_empty_and_oversized_overlays(client_factory, settings):
+    client = client_factory()
+    cases = [
+        (
+            ("overlay_image", ("logo.gif", b"image", "image/gif")),
+            manifest_with_overlays(2, video=False),
+            415,
+            "unsupported_overlay_image_type",
+        ),
+        (
+            ("overlay_image", ("logo.png", b"", "image/png")),
+            manifest_with_overlays(2, video=False),
+            422,
+            "empty_overlay",
+        ),
+        (
+            ("overlay_video", ("pip.mp4", b"x" * 101, "video/mp4")),
+            manifest_with_overlays(2, image=False),
+            413,
+            "overlay_too_large",
+        ),
+    ]
+    for part, raw_manifest, status, code in cases:
+        response = client.post(
+            "/api/merge", files=[*clips(2), part], data={"manifest": raw_manifest}
+        )
+        assert response.status_code == status
+        assert response.json()["error"]["code"] == code
+        assert list(settings.upload_root.iterdir()) == []
 
 
 def test_merge_rejects_unsupported_or_oversized_background_audio(client_factory):
@@ -369,6 +507,9 @@ def test_openapi_describes_repeated_multipart_files(client_factory):
         "maxItems": 10,
         "items": {"type": "string", "format": "binary"},
     }
+    properties = request_body["content"]["multipart/form-data"]["schema"]["properties"]
+    assert properties["overlay_image"] == {"type": "string", "format": "binary"}
+    assert properties["overlay_video"] == {"type": "string", "format": "binary"}
 
 
 def test_job_lookup_distinguishes_malformed_and_unknown_ids(client_factory):

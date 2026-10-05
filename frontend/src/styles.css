@@ -138,6 +138,25 @@ h3,
   text-align: center;
   margin-bottom: 35px;
 }
+.workspace-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid #ffffff1a;
+  padding-bottom: 0.85rem;
+  color: #d7cee9;
+}
+.workspace-title span {
+  color: #a89abb;
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.workspace-title strong {
+  font-size: 1rem;
+}
 .eyebrow {
   display: inline-flex;
   align-items: center;
@@ -1242,6 +1261,139 @@ h1 {
   margin-top: 1rem;
   padding: 1rem;
 }
+.overlay-track {
+  margin-top: 1rem;
+  padding: 1rem;
+}
+.overlay-track-heading,
+.overlay-slot-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.overlay-track-heading h2 {
+  margin: 0.2rem 0 0.8rem;
+  font-size: 1.05rem;
+}
+.overlay-track-heading > span,
+.overlay-slot-heading small,
+.overlay-file span,
+.overlay-guidance {
+  color: #79738c;
+  font-size: 0.76rem;
+}
+.overlay-slots {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+.overlay-slot {
+  min-width: 0;
+  border: 1px solid #e1dbea;
+  border-radius: 13px;
+  padding: 0.8rem;
+}
+.overlay-slot-heading {
+  justify-content: flex-start;
+  margin-bottom: 0.7rem;
+}
+.overlay-slot-heading div,
+.overlay-file {
+  display: grid;
+  min-width: 0;
+}
+.overlay-kind-icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 9px;
+  color: #6244b5;
+  background: #eee8fb;
+}
+.overlay-kind-icon svg {
+  width: 17px;
+}
+.overlay-upload {
+  display: flex;
+  min-height: 72px;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  border: 1px dashed #b8aed7;
+  border-radius: 10px;
+  color: #594480;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+.overlay-upload input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.overlay-editor {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr) auto;
+  gap: 0.65rem;
+  align-items: center;
+}
+.overlay-editor > img,
+.overlay-editor > video {
+  width: 54px;
+  height: 42px;
+  border-radius: 7px;
+  object-fit: contain;
+  background: #171322;
+}
+.overlay-file strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.overlay-replace {
+  position: relative;
+  width: max-content;
+  color: #6244b5;
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.overlay-replace input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.overlay-settings {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+.overlay-settings label {
+  display: grid;
+  gap: 0.25rem;
+  color: #625d76;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.overlay-settings input,
+.overlay-settings select {
+  min-width: 0;
+  border: 1px solid #d9d2e7;
+  border-radius: 8px;
+  padding: 0.45rem;
+  background: #fff;
+}
+.overlay-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #b42318;
+  font-size: 0.76rem;
+}
 .audio-heading {
   display: flex;
   justify-content: space-between;
@@ -1382,6 +1534,9 @@ h1 {
     grid-row: 2;
   }
   .audio-mix-controls {
+    grid-template-columns: 1fr;
+  }
+  .overlay-slots {
     grid-template-columns: 1fr;
   }
   .timeline-controls label {

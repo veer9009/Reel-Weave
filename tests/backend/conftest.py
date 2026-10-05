@@ -16,6 +16,8 @@ def settings(tmp_path: Path):
         working_root=tmp_path / "work",
         max_file_size_bytes=100,
         max_audio_file_size_bytes=100,
+        max_overlay_image_file_size_bytes=100,
+        max_overlay_video_file_size_bytes=100,
         max_clips=10,
         queue_size=2,
         retention_seconds=60,

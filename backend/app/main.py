@@ -35,6 +35,7 @@ from .jobs import (
     JobRegistry,
     ManifestClip,
     MergePlan,
+    OverlaySettings,
     QueueIsFullError,
 )
 from .media import InvalidMediaError, MediaPipeline
@@ -42,6 +43,41 @@ from .storage import Storage, UnsafePathError
 
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv"}
 ALLOWED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".aac", ".m4a"}
+ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
+
+
+def _parse_overlay_settings(value: object, kind: str) -> OverlaySettings | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {
+        "start_frame",
+        "end_frame",
+        "position",
+        "size",
+    }:
+        raise ApiError(422, "invalid_overlay", f"The {kind} overlay settings are invalid.")
+    start = value.get("start_frame")
+    end = value.get("end_frame")
+    if (
+        isinstance(start, bool)
+        or isinstance(end, bool)
+        or not isinstance(start, int)
+        or not isinstance(end, int)
+        or start < 0
+        or end < start
+    ):
+        raise ApiError(
+            422,
+            "invalid_overlay_range",
+            f"The {kind} overlay needs a valid inclusive project-frame range.",
+        )
+    position = value.get("position")
+    size = value.get("size")
+    if position not in {"top-left", "top-right", "bottom-left", "bottom-right", "centre"}:
+        raise ApiError(422, "invalid_overlay", f"The {kind} overlay position is invalid.")
+    if size not in {"small", "medium", "large"}:
+        raise ApiError(422, "invalid_overlay", f"The {kind} overlay size is invalid.")
+    return OverlaySettings(start, end, position, size)
 
 
 def _parse_manifest(raw: object, file_count: int) -> MergePlan:
@@ -89,13 +125,18 @@ def _parse_manifest(raw: object, file_count: int) -> MergePlan:
             raise ApiError(422, "invalid_manifest", "Trim saved flags must be booleans.")
         clips.append(ManifestClip(client_id, ClipEdit(start, end, float(speed), trim_saved)))
     output_fps = value.get("output_fps")
-    if isinstance(output_fps, bool) or not isinstance(output_fps, int) or output_fps not in {
-        24,
-        25,
-        30,
-        50,
-        60,
-    }:
+    if (
+        isinstance(output_fps, bool)
+        or not isinstance(output_fps, int)
+        or output_fps
+        not in {
+            24,
+            25,
+            30,
+            50,
+            60,
+        }
+    ):
         raise ApiError(422, "invalid_fps", "Output FPS must be 24, 25, 30, 50, or 60.")
     order = value.get("order")
     if (
@@ -125,11 +166,18 @@ def _parse_manifest(raw: object, file_count: int) -> MergePlan:
     mutes = (audio.get("original_muted"), audio.get("music_muted"))
     if not all(isinstance(v, bool) for v in mutes):
         raise ApiError(422, "invalid_manifest", "Audio mute settings must be booleans.")
+    overlays = value.get("overlays", {})
+    if not isinstance(overlays, dict) or not set(overlays).issubset({"image", "video"}):
+        raise ApiError(422, "invalid_overlay", "Overlay settings are invalid.")
+    image_overlay = _parse_overlay_settings(overlays.get("image"), "image")
+    video_overlay = _parse_overlay_settings(overlays.get("video"), "video")
     return MergePlan(
         tuple(clips),
         tuple(order),
         output_fps,
         AudioMixSettings(float(volumes[0]), mutes[0], float(volumes[1]), mutes[1]),
+        image_overlay,
+        video_overlay,
     )
 
 
@@ -201,6 +249,8 @@ def create_app(
                 "max_file_size_mb": config.max_file_size_mb,
                 "max_clips": config.max_clips,
                 "max_audio_file_size_mb": config.max_audio_file_size_mb,
+                "max_overlay_image_file_size_mb": config.max_overlay_image_file_size_mb,
+                "max_overlay_video_file_size_mb": config.max_overlay_video_file_size_mb,
             },
         }
 
@@ -221,6 +271,8 @@ def create_app(
                             },
                             "manifest": {"type": "string"},
                             "background_audio": {"type": "string", "format": "binary"},
+                            "overlay_image": {"type": "string", "format": "binary"},
+                            "overlay_video": {"type": "string", "format": "binary"},
                         },
                     }
                 }
@@ -251,7 +303,7 @@ def create_app(
                 )
             try:
                 form = await request.form(
-                    max_files=config.max_clips + 1,
+                    max_files=config.max_clips + 3,
                     max_fields=10,
                     max_part_size=64 * 1024,
                 )
@@ -302,6 +354,48 @@ def create_app(
                     "unsupported_audio_type",
                     "Supported audio formats are MP3, WAV, AAC and M4A.",
                 )
+            overlay_image_parts = form.getlist("overlay_image")
+            overlay_video_parts = form.getlist("overlay_video")
+            if len(overlay_image_parts) > 1 or len(overlay_video_parts) > 1:
+                raise ApiError(
+                    422, "invalid_overlay_count", "Upload at most one overlay of each type."
+                )
+            overlay_image = overlay_image_parts[0] if overlay_image_parts else None
+            overlay_video = overlay_video_parts[0] if overlay_video_parts else None
+            if overlay_image is not None and not isinstance(overlay_image, UploadFile):
+                raise ApiError(422, "invalid_files", "Image overlay must contain one file.")
+            if overlay_video is not None and not isinstance(overlay_video, UploadFile):
+                raise ApiError(422, "invalid_files", "Video overlay must contain one file.")
+            if (merge_plan.image_overlay is None) != (overlay_image is None) or (
+                merge_plan.video_overlay is None
+            ) != (overlay_video is None):
+                raise ApiError(
+                    422,
+                    "invalid_overlay",
+                    "Each overlay descriptor must have exactly one matching file.",
+                )
+            image_extension = (
+                Path(overlay_image.filename or "").suffix.lower()
+                if isinstance(overlay_image, UploadFile)
+                else None
+            )
+            video_extension = (
+                Path(overlay_video.filename or "").suffix.lower()
+                if isinstance(overlay_video, UploadFile)
+                else None
+            )
+            if image_extension is not None and image_extension not in ALLOWED_IMAGE_EXTENSIONS:
+                raise ApiError(
+                    415,
+                    "unsupported_overlay_image_type",
+                    "Image overlays must be PNG, JPG or JPEG files.",
+                )
+            if video_extension is not None and video_extension not in ALLOWED_EXTENSIONS:
+                raise ApiError(
+                    415,
+                    "unsupported_overlay_video_type",
+                    "Video overlays must be MP4, MOV, WebM or MKV files.",
+                )
 
             job_id = str(uuid.uuid4())
             try:
@@ -312,6 +406,8 @@ def create_app(
             registry.add(job)
             job.audio_mix = merge_plan.audio_mix
             job.output_fps = merge_plan.output_fps
+            job.image_overlay_settings = merge_plan.image_overlay
+            job.video_overlay_settings = merge_plan.video_overlay
             catalog_paths: list[Path] = []
             for index, (upload, extension) in enumerate(zip(files, extensions, strict=True)):
                 destination = job.upload_dir / f"{index:03d}{extension}"
@@ -352,6 +448,40 @@ def create_app(
                 if size == 0:
                     raise ApiError(422, "empty_audio", "Background audio cannot be empty.")
                 job.background_audio_path = destination
+            for upload, extension, stem, limit in (
+                (
+                    overlay_image,
+                    image_extension,
+                    "overlay-image",
+                    config.max_overlay_image_file_size_bytes,
+                ),
+                (
+                    overlay_video,
+                    video_extension,
+                    "overlay-video",
+                    config.max_overlay_video_file_size_bytes,
+                ),
+            ):
+                if not isinstance(upload, UploadFile) or extension is None:
+                    continue
+                destination = job.upload_dir / f"{stem}{extension}"
+                size = 0
+                with destination.open("xb") as target:
+                    while chunk := await upload.read(1024 * 1024):
+                        size += len(chunk)
+                        if size > limit:
+                            raise ApiError(
+                                413,
+                                "overlay_too_large",
+                                "The overlay exceeds its configured file size limit.",
+                            )
+                        target.write(chunk)
+                if size == 0:
+                    raise ApiError(422, "empty_overlay", "Overlay files cannot be empty.")
+                if stem == "overlay-image":
+                    job.image_overlay_path = destination
+                else:
+                    job.video_overlay_path = destination
             if uses_builtin_pipeline:
                 try:
                     await asyncio.to_thread(pipeline.validate_job, job)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import struct
@@ -385,3 +386,232 @@ def test_real_frame_trim_speed_and_music_length(
         expected_duration = 1 / 30 + (10 / 30) / speed
         assert abs(float(probe["format"]["duration"]) - expected_duration) <= 0.08
         assert any(stream["codec_type"] == "audio" for stream in probe["streams"])
+
+
+def test_real_overlay_boundaries_transparency_z_order_and_ignored_pip_audio(
+    tmp_path: Path, media_tools
+):
+    ffmpeg, ffprobe = media_tools
+    sources = []
+    for index, (color, tone) in enumerate((("red", 300), ("blue", 500))):
+        path = tmp_path / f"base-{index}.mp4"
+        run_media(
+            [
+                ffmpeg,
+                "-v",
+                "error",
+                "-nostdin",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                f"color=c={color}:s=320x180:r=30:d=1",
+                "-f",
+                "lavfi",
+                "-i",
+                f"sine=frequency={tone}:sample_rate=48000:duration=1",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-shortest",
+                str(path),
+            ]
+        )
+        sources.append(path)
+
+    pip = tmp_path / "pip.mp4"
+    run_media(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-nostdin",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=lime:s=160x90:r=30:d=0.4",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1200:sample_rate=48000:duration=0.4",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(pip),
+        ]
+    )
+    logo = tmp_path / "logo.png"
+    run_media(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-nostdin",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black@0.0:s=100x100,format=rgba,drawbox=x=40:y=40:w=20:h=20:color=yellow@1:t=fill:replace=1",
+            "-frames:v",
+            "1",
+            "-threads",
+            "1",
+            str(logo),
+        ]
+    )
+    music = tmp_path / "music.wav"
+    run_media(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-nostdin",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=800:sample_rate=48000:duration=0.2",
+            str(music),
+        ]
+    )
+
+    settings = Settings(working_root=tmp_path / "work", ffmpeg_path=ffmpeg, ffprobe_path=ffprobe)
+    manifest = {
+        "clips": [
+            {"client_id": "red", "start_frame": 0, "end_frame": 29, "speed": 1},
+            {"client_id": "blue", "start_frame": 0, "end_frame": 29, "speed": 1},
+        ],
+        "order": ["red", "blue"],
+        "output_fps": 30,
+        "overlays": {
+            "image": {
+                "start_frame": 10,
+                "end_frame": 35,
+                "position": "bottom-right",
+                "size": "small",
+            },
+            "video": {
+                "start_frame": 5,
+                "end_frame": 40,
+                "position": "bottom-right",
+                "size": "medium",
+            },
+        },
+        "audio": {
+            "original_volume": 0.8,
+            "original_muted": False,
+            "music_volume": 0.3,
+            "music_muted": False,
+        },
+    }
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/api/merge",
+            files=[
+                *[("files", (path.name, path.read_bytes(), "video/mp4")) for path in sources],
+                ("overlay_image", (logo.name, logo.read_bytes(), "image/png")),
+                ("overlay_video", (pip.name, pip.read_bytes(), "video/mp4")),
+                ("background_audio", (music.name, music.read_bytes(), "audio/wav")),
+            ],
+            data={"manifest": json.dumps(manifest)},
+        )
+        assert response.status_code == 202, response.text
+        terminal = wait_for_job(client, response.json()["job_id"])
+        assert terminal["status"] == "completed", terminal
+        output = tmp_path / "overlaid.mp4"
+        output.write_bytes(client.get(f"/api/jobs/{response.json()['job_id']}/download").content)
+
+    probe = json.loads(
+        run_media(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-count_frames",
+                "-show_streams",
+                "-show_format",
+                "-of",
+                "json",
+                str(output),
+            ]
+        )
+    )
+    video = next(stream for stream in probe["streams"] if stream["codec_type"] == "video")
+    audio = next(stream for stream in probe["streams"] if stream["codec_type"] == "audio")
+    assert (video["codec_name"], video["width"], video["height"]) == ("h264", 1280, 720)
+    assert video["r_frame_rate"] == "30/1"
+    assert int(video["nb_read_frames"]) == 60
+    assert (audio["codec_name"], audio["sample_rate"], audio["channels"]) == ("aac", "48000", 2)
+    assert probe["format"]["format_name"].startswith("mov,mp4")
+    assert abs(float(probe["format"]["duration"]) - 2.0) <= 0.08
+
+    def pixel(frame: int, x: int, y: int) -> tuple[int, int, int]:
+        value = run_media(
+            [
+                ffmpeg,
+                "-v",
+                "error",
+                "-nostdin",
+                "-i",
+                str(output),
+                "-vf",
+                f"select=eq(n\\,{frame}),crop=2:2:{x}:{y},scale=1:1",
+                "-frames:v",
+                "1",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "pipe:1",
+            ]
+        )
+        assert len(value) == 3
+        return tuple(value)
+
+    assert pixel(4, 1000, 500)[0] > 180
+    assert pixel(5, 1000, 500)[1] > 180
+    assert pixel(10, 1120, 560)[1] > 180  # transparent PNG area exposes PIP
+    marker = pixel(10, 1184, 622)
+    assert marker[0] > 160 and marker[1] > 160 and marker[2] < 80, marker  # image above PIP
+    assert pixel(17, 1000, 500)[0] > 180  # short PIP is absent, never frozen
+    assert pixel(36, 1184, 622)[2] > 180  # image ended on frame 35
+
+    pcm = run_media(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-nostdin",
+            "-i",
+            str(output),
+            "-map",
+            "0:a:0",
+            "-ac",
+            "1",
+            "-ar",
+            "48000",
+            "-f",
+            "s16le",
+            "pipe:1",
+        ]
+    )
+    samples = struct.unpack(f"<{len(pcm) // 2}h", pcm)
+
+    def tone_power(frequency: float) -> float:
+        omega = 2 * math.pi * frequency / 48000
+        coefficient = 2 * math.cos(omega)
+        previous = previous2 = 0.0
+        for sample in samples:
+            current = sample + coefficient * previous - previous2
+            previous2, previous = previous, current
+        return previous2 * previous2 + previous * previous - coefficient * previous * previous2
+
+    assert tone_power(1200) < max(tone_power(300), tone_power(500), tone_power(800)) * 0.1

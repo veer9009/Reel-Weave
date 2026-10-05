@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Eye,
-  Volume2,
   LockKeyhole,
   Play,
   Pause,
@@ -12,6 +10,8 @@ import {
 } from 'lucide-react';
 import { resolveProjectFps } from '../lib/clips';
 import type { Clip, ProjectFpsSelection } from '../lib/clips';
+import { projectFrameCount } from '../lib/overlays';
+import type { OverlayState } from '../lib/overlays';
 import './TimelineDemo.css';
 
 const names = [
@@ -63,6 +63,7 @@ export function TimelineDemo({
   canMerge,
   busy,
   onMerge,
+  overlays = { image: null, video: null },
 }: {
   clips: Clip[];
   musicName?: string;
@@ -71,6 +72,7 @@ export function TimelineDemo({
   canMerge: boolean;
   busy: boolean;
   onMerge: () => void;
+  overlays?: OverlayState;
 }) {
   const timelineFps =
     clips.length === 0
@@ -93,10 +95,19 @@ export function TimelineDemo({
             : clip?.metadata?.duration || clip?.duration || 4;
         const duration = sourceDuration / (clip?.speed || 1);
         // Each slot occupies whole timeline frames; source trim/FPS stay untouched.
+        const selectedFrames =
+          clip?.trim && fps
+            ? clip.trim.endFrame - clip.trim.startFrame + 1
+            : Math.max(1, Math.round(sourceDuration * (fps ?? 30)));
         const frameCount =
-          timelineFps === null
+          timelineFps === null || fps === null
             ? null
-            : Math.max(1, Math.round(duration * timelineFps));
+            : projectFrameCount(
+                selectedFrames,
+                fps,
+                clip?.speed || 1,
+                timelineFps,
+              );
         const item = {
           name: clip?.file.name || name,
           clip,
@@ -134,9 +145,9 @@ export function TimelineDemo({
   const [position, setTime] = useState(0);
   const time = Math.min(position, duration);
   const [playing, setPlaying] = useState(false);
-  const [controls, setControls] = useState<Record<string, boolean>>({});
   const [mediaError, setMediaError] = useState(false);
   const video = useRef<HTMLVideoElement>(null);
+  const pipVideo = useRef<HTMLVideoElement>(null);
   const current =
     sequence.find((clip) => time < clip.start + clip.duration) ||
     sequence[sequence.length - 1];
@@ -173,13 +184,39 @@ export function TimelineDemo({
     if (!running && !element.paused) element.pause();
   }, [time, current, running]);
   useEffect(() => syncVideo(), [syncVideo]);
+  const projectFrame = frameAtTime(time);
+  const imageVisible = Boolean(
+    overlays.image &&
+    overlays.image.metadataStatus === 'ready' &&
+    projectFrame !== null &&
+    projectFrame >= overlays.image.startFrame &&
+    projectFrame <= overlays.image.endFrame,
+  );
+  const pipRelativeTime =
+    overlays.video && projectFrame !== null && timelineFps !== null
+      ? (projectFrame - overlays.video.startFrame) / timelineFps
+      : -1;
+  const pipVisible = Boolean(
+    overlays.video &&
+    overlays.video.metadataStatus === 'ready' &&
+    projectFrame !== null &&
+    projectFrame >= overlays.video.startFrame &&
+    projectFrame <= overlays.video.endFrame &&
+    pipRelativeTime >= 0 &&
+    overlays.video.duration !== undefined &&
+    pipRelativeTime < overlays.video.duration,
+  );
+  useEffect(() => {
+    const element = pipVideo.current;
+    if (!element || !pipVisible) return;
+    if (Math.abs(element.currentTime - pipRelativeTime) > 0.08)
+      element.currentTime = pipRelativeTime;
+    if (running && element.paused) void element.play().catch(() => undefined);
+    if (!running && !element.paused) element.pause();
+  }, [pipRelativeTime, pipVisible, running]);
   function seek(value: number) {
     setTime(value);
     setMediaError(false);
-  }
-  function toggle(track: string, control: string) {
-    const key = `${track}-${control}`;
-    setControls((previous) => ({ ...previous, [key]: !previous[key] }));
   }
   const percent = (time / duration) * 100;
   return (
@@ -187,18 +224,18 @@ export function TimelineDemo({
       <header className="td-heading">
         <div>
           <div className="td-kicker">
-            <Layers size={14} /> ASSEMBLY WORKSPACE <span>DEMO</span>
+            <Layers size={14} /> EDIT WORKSPACE
           </div>
-          <h1>ReelWeave — Ad Assembly Timeline</h1>
-          <p>One campaign. Every shot in place.</p>
+          <h1>Sequence 01</h1>
         </div>
         <span className="td-project">
-          AD ASSEMBLY <ChevronRight size={14} /> Sequence 01
+          ReelWeave <ChevronRight size={14} /> Sequence 01
         </span>
       </header>
       <p className="td-notice">
         <span />
-        Prototype preview — multi-track processing is in development.
+        Browser preview is approximate. The downloaded MP4 is rendered by
+        FFmpeg.
       </p>
       <div className="td-top">
         <section className="td-preview-panel" aria-label="Video preview">
@@ -243,6 +280,25 @@ export function TimelineDemo({
                 This clip cannot play in this browser. The storyboard clock is
                 still available.
               </p>
+            )}
+            {pipVisible && overlays.video && (
+              <video
+                ref={pipVideo}
+                src={overlays.video.url}
+                muted
+                playsInline
+                preload="auto"
+                aria-label="PIP overlay preview"
+                className={`td-overlay-preview td-overlay-pip td-overlay-${overlays.video.position} td-overlay-${overlays.video.size}`}
+              />
+            )}
+            {imageVisible && overlays.image && (
+              <img
+                src={overlays.image.url}
+                alt=""
+                aria-label="Image overlay preview"
+                className={`td-overlay-preview td-overlay-image td-overlay-${overlays.image.position} td-overlay-${overlays.image.size}`}
+              />
             )}
           </div>
           <div className="td-transport">
@@ -331,7 +387,7 @@ export function TimelineDemo({
           </div>
         </aside>
       </div>
-      <section className="td-timeline" aria-label="Ad assembly timeline">
+      <section className="td-timeline" aria-label="Sequence timeline">
         <div className="td-timeline-settings">
           <label htmlFor="td-fps">Timeline FPS</label>
           <select
@@ -417,27 +473,8 @@ export function TimelineDemo({
                       )}
                       {track}
                     </strong>
-                    <div>
-                      {[
-                        { key: 'visibility', Icon: Eye },
-                        { key: 'mute', Icon: Volume2 },
-                        { key: 'lock', Icon: LockKeyhole },
-                      ].map(({ key, Icon }) => (
-                        <button
-                          key={key}
-                          aria-label={`${track} ${key} (visual only)`}
-                          title={`${key} — visual only`}
-                          aria-pressed={!!controls[`${track}-${key}`]}
-                          onClick={() => toggle(track, key)}
-                        >
-                          <Icon size={13} />
-                        </button>
-                      ))}
-                    </div>
                   </div>
-                  <div
-                    className={`td-lane ${controls[`${track}-visibility`] ? 'td-dimmed' : ''}`}
-                  >
+                  <div className="td-lane">
                     {track === 'VIDEO 1' &&
                       sequence.map((item) => (
                         <button
@@ -476,13 +513,33 @@ export function TimelineDemo({
                           <i className="td-handle td-handle-end" />
                         </button>
                       ))}
-                    {track === 'VIDEO 2' && (
-                      <div className="td-overlay">
-                        <i className="td-handle" />
-                        <Layers size={16} />
-                        <span>Brand logo · optional overlay</span>
-                        <i className="td-handle td-handle-end" />
-                      </div>
+                    {track === 'VIDEO 2' && totalFrames !== null && (
+                      <>
+                        {overlays.video && (
+                          <div
+                            className="td-overlay td-overlay-lane-pip"
+                            aria-label="PIP overlay lane item"
+                            style={{
+                              left: `${(overlays.video.startFrame / totalFrames) * 100}%`,
+                              width: `${((overlays.video.endFrame - overlays.video.startFrame + 1) / totalFrames) * 100}%`,
+                            }}
+                          >
+                            <Film size={13} /> {overlays.video.file.name}
+                          </div>
+                        )}
+                        {overlays.image && (
+                          <div
+                            className="td-overlay td-overlay-lane-image"
+                            aria-label="Image overlay lane item"
+                            style={{
+                              left: `${(overlays.image.startFrame / totalFrames) * 100}%`,
+                              width: `${((overlays.image.endFrame - overlays.image.startFrame + 1) / totalFrames) * 100}%`,
+                            }}
+                          >
+                            <Layers size={13} /> {overlays.image.file.name}
+                          </div>
+                        )}
+                      </>
                     )}
                     {track === 'AUDIO 1' &&
                       sequence.map((item) => (
@@ -497,12 +554,10 @@ export function TimelineDemo({
                           <Waveform seed={item.index} />
                         </div>
                       ))}
-                    {track === 'AUDIO 2' && (
+                    {track === 'AUDIO 2' && musicName && (
                       <div className="td-music">
                         <span>
-                          <Music2 size={12} />{' '}
-                          {musicName || 'Campaign music / voice-over'} ·
-                          waveform illustration
+                          <Music2 size={12} /> {musicName}
                         </span>
                         <Waveform seed={7} />
                       </div>
@@ -519,7 +574,8 @@ export function TimelineDemo({
             preview
           </span>
           <span>
-            Track controls, waveforms, overlay and trim handles are visual-only.
+            Overlay placement is approximate in-browser; FFmpeg renders the
+            final MP4.
           </span>
         </footer>
       </section>

@@ -3,6 +3,7 @@ import type { ComponentProps } from 'react';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { TimelineDemo } from './TimelineDemo';
+import type { OverlayState } from '../lib/overlays';
 
 afterEach(() => vi.useRealTimers());
 
@@ -12,6 +13,7 @@ const defaultProps = {
   canMerge: false,
   busy: false,
   onMerge: vi.fn(),
+  overlays: { image: null, video: null } as OverlayState,
 };
 
 function TimelineHarness({
@@ -303,14 +305,7 @@ it('shows every real uploaded clip in a twenty-clip Video 1 plan', () => {
 
 it('presents four tracks, twelve sample clips and honest MP4 settings', () => {
   render(<TimelineDemo {...defaultProps} clips={[]} />);
-  expect(
-    screen.getByRole('heading', { name: 'ReelWeave — Ad Assembly Timeline' }),
-  ).toBeVisible();
-  expect(
-    screen.getByText(
-      'Prototype preview — multi-track processing is in development.',
-    ),
-  ).toBeVisible();
+  expect(screen.getByText(/Browser preview is approximate/i)).toBeVisible();
   expect(
     within(screen.getByRole('region', { name: 'VIDEO 1' })).getAllByRole(
       'button',
@@ -319,10 +314,8 @@ it('presents four tracks, twelve sample clips and honest MP4 settings', () => {
   ).toHaveLength(12);
   for (const name of ['VIDEO 2', 'VIDEO 1', 'AUDIO 1', 'AUDIO 2']) {
     expect(screen.getByRole('region', { name })).toBeVisible();
-    expect(
-      screen.getByRole('button', { name: `${name} mute (visual only)` }),
-    ).toHaveAttribute('aria-pressed', 'false');
   }
+  expect(screen.queryByText(/optional overlay/i)).not.toBeInTheDocument();
   expect(screen.getByLabelText('Export format')).toHaveValue('MP4');
   expect(
     within(screen.getByLabelText('Export format')).getAllByRole('option'),
@@ -331,7 +324,7 @@ it('presents four tracks, twelve sample clips and honest MP4 settings', () => {
   expect(screen.getByText('1920 × 1080 · sample')).toBeVisible();
 });
 
-it('plays, pauses, seeks and toggles independent visual track controls', () => {
+it('plays, pauses and seeks the project clock', () => {
   vi.useFakeTimers();
   render(<TimelineDemo {...defaultProps} clips={[]} />);
   fireEvent.click(screen.getByRole('button', { name: 'Play preview' }));
@@ -346,15 +339,89 @@ it('plays, pauses, seeks and toggles independent visual track controls', () => {
   expect(screen.getByLabelText('Current time and frame')).toHaveTextContent(
     '00:08',
   );
-  fireEvent.click(
-    screen.getByRole('button', { name: 'VIDEO 1 mute (visual only)' }),
+});
+
+it('shows scheduled overlays and removes a short PIP at source EOF', () => {
+  const clip = {
+    id: 'base',
+    file: new File(['base'], 'Base.mp4'),
+    url: 'blob:base',
+    metadata: {
+      width: 1280,
+      height: 720,
+      fps: 25,
+      duration: 4,
+      totalFrames: 100,
+      source: 'backend' as const,
+    },
+    metadataStatus: 'ready' as const,
+    trim: { startFrame: 0, endFrame: 99 },
+    trimSaved: false,
+    speed: 1 as const,
+  };
+  const overlays: OverlayState = {
+    image: {
+      kind: 'image',
+      file: new File(['logo'], 'logo.png'),
+      url: 'blob:logo',
+      metadataStatus: 'ready',
+      startFrame: 10,
+      endFrame: 50,
+      position: 'top-left',
+      size: 'small',
+    },
+    video: {
+      kind: 'video',
+      file: new File(['pip'], 'pip.mp4'),
+      url: 'blob:pip',
+      metadataStatus: 'ready',
+      duration: 0.4,
+      startFrame: 10,
+      endFrame: 50,
+      position: 'bottom-right',
+      size: 'medium',
+    },
+  };
+  render(
+    <TimelineDemo
+      {...defaultProps}
+      clips={[clip]}
+      fpsSelection="25"
+      overlays={overlays}
+    />,
   );
   expect(
-    screen.getByRole('button', { name: 'VIDEO 1 mute (visual only)' }),
-  ).toHaveAttribute('aria-pressed', 'true');
+    screen.queryByLabelText('Image overlay preview'),
+  ).not.toBeInTheDocument();
   expect(
-    screen.getByRole('button', { name: 'AUDIO 1 mute (visual only)' }),
-  ).toHaveAttribute('aria-pressed', 'false');
+    screen.queryByLabelText('PIP overlay preview'),
+  ).not.toBeInTheDocument();
+
+  fireEvent.change(screen.getByLabelText('Timeline position'), {
+    target: { value: '0.4' },
+  });
+  expect(screen.getByLabelText('Image overlay preview')).toHaveClass(
+    'td-overlay-top-left',
+    'td-overlay-small',
+  );
+  expect(screen.getByLabelText('PIP overlay preview')).toHaveClass(
+    'td-overlay-bottom-right',
+    'td-overlay-medium',
+  );
+
+  fireEvent.change(screen.getByLabelText('Timeline position'), {
+    target: { value: '0.8' },
+  });
+  expect(screen.getByLabelText('Image overlay preview')).toBeVisible();
+  expect(
+    screen.queryByLabelText('PIP overlay preview'),
+  ).not.toBeInTheDocument();
+  expect(screen.getByLabelText('Image overlay lane item')).toHaveTextContent(
+    'logo.png',
+  );
+  expect(screen.getByLabelText('PIP overlay lane item')).toHaveTextContent(
+    'pip.mp4',
+  );
 });
 
 it('uses uploaded sources and reports their metadata without modifying clips', () => {

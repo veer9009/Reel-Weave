@@ -11,6 +11,24 @@ def completed(args, stdout="", stderr=""):
     return subprocess.CompletedProcess(args=args, returncode=0, stdout=stdout, stderr=stderr)
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(0.49, 0), (0.5, 1), (1.5, 2), (2.5, 3)],
+)
+def test_round_half_up_uses_project_frame_tie_rule(value, expected):
+    from backend.app.timeline import round_half_up
+
+    assert round_half_up(value) == expected
+
+
+def test_project_frame_count_applies_source_fps_speed_and_minimum_frame():
+    from backend.app.timeline import project_frame_count
+
+    assert project_frame_count(5, source_fps=2, speed=1, output_fps=1) == 3
+    assert project_frame_count(30, source_fps=30, speed=0.5, output_fps=30) == 60
+    assert project_frame_count(1, source_fps=60, speed=1, output_fps=24) == 1
+
+
 def test_pipeline_uses_argument_lists_generated_paths_and_preserves_clip_order(
     settings, monkeypatch, tmp_path: Path
 ):
@@ -469,3 +487,236 @@ def test_preflight_rejects_non_audio_music(settings, monkeypatch):
     monkeypatch.setattr(pipeline, "_probe_audio", lambda _path: False)
     with pytest.raises(InvalidMediaError, match="background audio"):
         pipeline.validate_job(job)
+
+
+def test_preflight_calculates_project_frames_and_accepts_valid_overlays(settings, monkeypatch):
+    from backend.app.jobs import ClipEdit, Job, OverlaySettings
+    from backend.app.media import MediaPipeline
+    from backend.app.storage import Storage
+
+    job = Job.create(Storage(settings), "10101010-1010-4010-8010-101010101010")
+    primary = job.upload_dir / "000.mp4"
+    image = job.upload_dir / "overlay-image.png"
+    video = job.upload_dir / "overlay-video.mp4"
+    for path in (primary, image, video):
+        path.write_bytes(b"media")
+    job.input_paths = [primary]
+    job.clip_edits = [ClipEdit(0, 29, 1)]
+    job.output_fps = 25
+    job.image_overlay_path = image
+    job.image_overlay_settings = OverlaySettings(0, 24, "top-right", "small")
+    job.video_overlay_path = video
+    job.video_overlay_settings = OverlaySettings(5, 20, "bottom-left", "medium")
+    pipeline = MediaPipeline(settings)
+
+    def probe(path):
+        if path == primary:
+            return {
+                "streams": [
+                    {
+                        "codec_type": "video",
+                        "avg_frame_rate": "30/1",
+                        "nb_read_frames": "30",
+                        "width": 1280,
+                        "height": 720,
+                    }
+                ]
+            }
+        assert path == video
+        return {
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "avg_frame_rate": "30000/1001",
+                    "nb_read_frames": "12",
+                    "duration": "0.4",
+                    "width": 640,
+                    "height": 360,
+                },
+                {"codec_type": "audio"},
+            ],
+            "format": {"duration": "0.4"},
+        }
+
+    monkeypatch.setattr(pipeline, "_probe", probe)
+    monkeypatch.setattr(
+        pipeline,
+        "_probe_image",
+        lambda path: {
+            "streams": [{"codec_type": "video", "codec_name": "png", "width": 512, "height": 256}]
+        },
+    )
+
+    pipeline.validate_job(job)
+
+    assert job.total_project_frames == 25
+
+
+def test_preflight_rejects_wrong_image_codec_and_excessive_dimensions(settings, monkeypatch):
+    from backend.app.jobs import ClipEdit, Job, OverlaySettings
+    from backend.app.media import InvalidMediaError, MediaPipeline
+    from backend.app.storage import Storage
+
+    job = Job.create(Storage(settings), "20202020-2020-4020-8020-202020202020")
+    job.input_paths = [job.upload_dir / "000.mp4"]
+    job.input_paths[0].write_bytes(b"video")
+    job.clip_edits = [ClipEdit(0, 29, 1)]
+    job.image_overlay_path = job.upload_dir / "overlay-image.png"
+    job.image_overlay_path.write_bytes(b"not really png")
+    job.image_overlay_settings = OverlaySettings(0, 1, "top-left", "small")
+    pipeline = MediaPipeline(settings)
+    monkeypatch.setattr(
+        pipeline,
+        "_probe",
+        lambda path: {
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "avg_frame_rate": "30/1",
+                    "nb_read_frames": "30",
+                    "width": 1280,
+                    "height": 720,
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_probe_image",
+        lambda path: {
+            "streams": [{"codec_type": "video", "codec_name": "gif", "width": 9000, "height": 9000}]
+        },
+    )
+
+    with pytest.raises(InvalidMediaError, match="PNG or JPEG"):
+        pipeline.validate_job(job)
+
+
+def test_preflight_rejects_overlay_range_after_primary_trim_clamp(settings, monkeypatch):
+    from backend.app.jobs import ClipEdit, Job, OverlaySettings
+    from backend.app.media import InvalidMediaError, MediaPipeline
+    from backend.app.storage import Storage
+
+    job = Job.create(Storage(settings), "30303030-3030-4030-8030-303030303030")
+    job.input_paths = [job.upload_dir / "000.mp4"]
+    job.input_paths[0].write_bytes(b"video")
+    job.clip_edits = [ClipEdit(0, 59, 1, trim_saved=False)]
+    job.output_fps = 30
+    job.video_overlay_path = job.upload_dir / "overlay-video.mp4"
+    job.video_overlay_path.write_bytes(b"pip")
+    job.video_overlay_settings = OverlaySettings(0, 30, "centre", "large")
+    pipeline = MediaPipeline(settings)
+    monkeypatch.setattr(
+        pipeline,
+        "_probe",
+        lambda path: {
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "avg_frame_rate": "30/1",
+                    "nb_read_frames": "30",
+                    "duration": "1",
+                    "width": 640,
+                    "height": 360,
+                }
+            ],
+            "format": {"duration": "1"},
+        },
+    )
+
+    with pytest.raises(InvalidMediaError, match="video overlay.*project frame"):
+        pipeline.validate_job(job)
+    assert job.clip_edits == [ClipEdit(0, 29, 1, trim_saved=False)]
+    assert job.total_project_frames == 30
+
+
+def test_image_probe_restricts_protocols_and_demuxers(settings, monkeypatch):
+    from backend.app.media import MediaPipeline
+
+    pipeline = MediaPipeline(settings)
+    captured = []
+
+    def run(args, **kwargs):
+        captured.append(args)
+        return completed(
+            args,
+            stdout=json.dumps(
+                {
+                    "streams": [
+                        {
+                            "codec_type": "video",
+                            "codec_name": "png",
+                            "width": 10,
+                            "height": 10,
+                        }
+                    ]
+                }
+            ),
+        )
+
+    monkeypatch.setattr(pipeline, "_run", run)
+    pipeline._probe_image(Path("overlay.png"))
+
+    args = captured[0]
+    assert args[args.index("-protocol_whitelist") + 1] == "file,pipe"
+    assert args[args.index("-format_whitelist") + 1] == "image2,png_pipe,jpeg_pipe"
+
+
+def test_pipeline_composites_video_then_image_and_preserves_base_audio(settings, monkeypatch):
+    from backend.app.jobs import ClipEdit, Job, OverlaySettings
+    from backend.app.media import MediaPipeline
+    from backend.app.storage import Storage
+
+    job = Job.create(Storage(settings), "40404040-4040-4040-8040-404040404040")
+    job.input_paths = [job.upload_dir / "000.mp4"]
+    job.image_overlay_path = job.upload_dir / "overlay-image.png"
+    job.video_overlay_path = job.upload_dir / "overlay-video.mp4"
+    for path in (*job.input_paths, job.image_overlay_path, job.video_overlay_path):
+        path.write_bytes(b"media")
+    job.clip_edits = [ClipEdit(0, 29, 1)]
+    job.output_fps = 30
+    job.total_project_frames = 30
+    job.video_overlay_settings = OverlaySettings(5, 24, "bottom-right", "medium")
+    job.image_overlay_settings = OverlaySettings(0, 29, "top-left", "small")
+    pipeline = MediaPipeline(settings)
+    monkeypatch.setattr(
+        pipeline,
+        "_probe",
+        lambda path: {
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "avg_frame_rate": "30/1",
+                    "nb_read_frames": "30",
+                    "duration": "1",
+                },
+                {"codec_type": "audio"},
+            ],
+            "format": {"duration": "1"},
+        },
+    )
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        Path(args[-1]).parent.mkdir(parents=True, exist_ok=True)
+        Path(args[-1]).write_bytes(b"media")
+        return completed(args)
+
+    monkeypatch.setattr(pipeline, "_run", run)
+    pipeline.merge(job)
+
+    normalize, concatenate, compose = calls
+    assert normalize[normalize.index("-frames:v") + 1] == "30"
+    assert concatenate[concatenate.index("-frames:v") + 1] == "30"
+    filters = compose[compose.index("-filter_complex") + 1]
+    assert filters.index("[pip]") < filters.index("[image]")
+    assert "eof_action=pass:repeatlast=0" in filters
+    assert compose[compose.index("-map") + 1] == "[outv]"
+    audio_map = compose.index("-map", compose.index("-map") + 1)
+    assert compose[audio_map + 1] == "0:a:0"
+    assert compose[compose.index("-c:a") + 1] == "copy"
+    assert compose[compose.index("-frames:v") + 1] == "30"
+    assert str(job.video_overlay_path) in compose
+    assert str(job.image_overlay_path) in compose
+    assert compose[-1] == str(job.result_path)

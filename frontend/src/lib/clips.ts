@@ -1,7 +1,11 @@
+import type { OverlayState } from './overlays';
+
 export type Limits = {
   max_clips: number;
   max_file_size_mb: number;
   max_audio_file_size_mb?: number;
+  max_overlay_image_file_size_mb?: number;
+  max_overlay_video_file_size_mb?: number;
 };
 export type ClipSpeed = 1 | 0.75 | 0.5;
 export const SUPPORTED_PROJECT_FPS = [24, 25, 30, 50, 60] as const;
@@ -56,6 +60,17 @@ export type MergeManifest = {
     music_volume: number;
     music_muted: boolean;
   };
+  overlays: {
+    image: SerializedOverlay | null;
+    video: SerializedOverlay | null;
+  };
+};
+
+type SerializedOverlay = {
+  start_frame: number;
+  end_frame: number;
+  position: NonNullable<OverlayState['image']>['position'];
+  size: NonNullable<OverlayState['image']>['size'];
 };
 
 export function resolveProjectFps(
@@ -200,8 +215,20 @@ export function buildMergeManifest(
   clips: ClipEdit[],
   audio: AudioSettings,
   outputFps: ProjectFps,
+  overlays: OverlayState = { image: null, video: null },
   order = clips.map((clip) => clip.id),
 ): MergeManifest {
+  const serializeOverlay = (
+    overlay: OverlayState['image'] | OverlayState['video'],
+  ): SerializedOverlay | null =>
+    overlay
+      ? {
+          start_frame: overlay.startFrame,
+          end_frame: overlay.endFrame,
+          position: overlay.position,
+          size: overlay.size,
+        }
+      : null;
   return {
     output_fps: outputFps,
     order,
@@ -217,6 +244,10 @@ export function buildMergeManifest(
       original_muted: audio.originalMuted,
       music_volume: audio.musicVolume,
       music_muted: audio.musicMuted,
+    },
+    overlays: {
+      image: serializeOverlay(overlays.image),
+      video: serializeOverlay(overlays.video),
     },
   };
 }

@@ -9,8 +9,10 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
+from .composition import build_overlay_graph
 from .config import Settings
 from .jobs import ClipEdit, Job
+from .timeline import project_frame_count, round_half_up
 
 logger = logging.getLogger("reelweave.media")
 
@@ -116,6 +118,28 @@ class MediaPipeline:
             raise InvalidMediaError("Background audio metadata is unreadable") from exc
         return any(stream.get("codec_type") == "audio" for stream in data.get("streams", []))
 
+    def _probe_image(self, source: Path) -> dict[str, Any]:
+        result = self._run(
+            [
+                self.settings.ffprobe_path,
+                "-v",
+                "error",
+                "-protocol_whitelist",
+                "file,pipe",
+                "-format_whitelist",
+                "image2,png_pipe,jpeg_pipe",
+                "-show_streams",
+                "-show_format",
+                "-of",
+                "json",
+                str(source),
+            ]
+        )
+        try:
+            return json.loads(result.stdout)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise InvalidMediaError("Image overlay metadata is unreadable") from exc
+
     @staticmethod
     def _video_duration(metadata: dict[str, Any]) -> float | None:
         candidates = [
@@ -179,9 +203,43 @@ class MediaPipeline:
             )
         return clamped
 
+    @staticmethod
+    def _validate_overlay_dimensions(metadata: dict[str, Any], label: str) -> dict[str, Any]:
+        streams = [
+            stream for stream in metadata.get("streams", []) if stream.get("codec_type") == "video"
+        ]
+        if not streams:
+            raise InvalidMediaError(f"The {label} overlay has no video stream")
+        stream = streams[0]
+        try:
+            width = int(stream.get("width"))
+            height = int(stream.get("height"))
+        except (TypeError, ValueError) as exc:
+            raise InvalidMediaError(f"The {label} overlay dimensions are unavailable") from exc
+        if (
+            width <= 0
+            or height <= 0
+            or width > 8192
+            or height > 8192
+            or width * height > 40_000_000
+        ):
+            raise InvalidMediaError(f"The {label} overlay dimensions exceed the supported limit")
+        return stream
+
+    @staticmethod
+    def _validate_overlay_range(job: Job, label: str) -> None:
+        settings = job.image_overlay_settings if label == "image" else job.video_overlay_settings
+        if settings is None:
+            return
+        if settings.end_frame >= job.total_project_frames:
+            raise InvalidMediaError(
+                f"The {label} overlay range is outside the decoded project frame range"
+            )
+
     def validate_job(self, job: Job) -> None:
         if len(job.clip_edits) != len(job.input_paths):
             raise InvalidMediaError("Clip edit count does not match uploads")
+        job.total_project_frames = 0
         for index, (source, edit) in enumerate(zip(job.input_paths, job.clip_edits, strict=True)):
             try:
                 metadata = self._probe(source)
@@ -193,7 +251,46 @@ class MediaPipeline:
             total_frames = self._total_frames(metadata, fps)
             if fps is None or total_frames is None:
                 raise InvalidMediaError(f"Clip {index + 1} frame metadata is unavailable")
-            job.clip_edits[index] = self._clamp_edit(edit, total_frames, index + 1)
+            clamped = self._clamp_edit(edit, total_frames, index + 1)
+            job.clip_edits[index] = clamped
+            job.total_project_frames += project_frame_count(
+                clamped.end_frame - clamped.start_frame + 1,
+                fps,
+                clamped.speed,
+                job.output_fps,
+            )
+        if job.image_overlay_path is not None:
+            try:
+                image_metadata = self._probe_image(job.image_overlay_path)
+            except ProcessingError as exc:
+                raise InvalidMediaError("Image overlay metadata is unreadable.") from exc
+            image_streams = [
+                stream
+                for stream in image_metadata.get("streams", [])
+                if stream.get("codec_type") == "video"
+            ]
+            if len(image_streams) != 1 or image_streams[0].get("codec_name") not in {
+                "png",
+                "mjpeg",
+            }:
+                raise InvalidMediaError("Image overlay must decode as one PNG or JPEG still")
+            self._validate_overlay_dimensions(image_metadata, "image")
+            self._validate_overlay_range(job, "image")
+        if job.video_overlay_path is not None:
+            try:
+                video_metadata = self._probe(job.video_overlay_path)
+            except ProcessingError as exc:
+                raise InvalidMediaError("Video overlay metadata is unreadable.") from exc
+            self._validate_overlay_dimensions(video_metadata, "video")
+            video_fps = self._video_fps(video_metadata)
+            duration = self._video_duration(video_metadata)
+            if (
+                video_fps is None
+                or duration is None
+                or self._total_frames(video_metadata, video_fps) is None
+            ):
+                raise InvalidMediaError("Video overlay duration or frame metadata is unavailable")
+            self._validate_overlay_range(job, "video")
         if job.background_audio_path is not None:
             try:
                 has_background_audio = self._probe_audio(job.background_audio_path)
@@ -225,7 +322,13 @@ class MediaPipeline:
                     job.clip_edits[index] = edit
                 source_start = edit.start_frame / fps
                 source_end = (edit.end_frame + 1) / fps
-                processed_duration = (edit.end_frame - edit.start_frame + 1) / fps / edit.speed
+                output_frames = project_frame_count(
+                    edit.end_frame - edit.start_frame + 1,
+                    fps,
+                    edit.speed,
+                    job.output_fps,
+                )
+                processed_duration = output_frames / job.output_fps
                 video_filter = (
                     f"trim=start_frame={edit.start_frame}:end_frame={edit.end_frame + 1},"
                     f"setpts=PTS-STARTPTS,setpts=(PTS-STARTPTS)/{edit.speed:g},{base_video_filter}"
@@ -235,6 +338,7 @@ class MediaPipeline:
                 source_end = duration
                 processed_duration = duration
                 video_filter = base_video_filter
+                output_frames = None
             has_audio = any(
                 stream.get("codec_type") == "audio" for stream in metadata.get("streams", [])
             )
@@ -298,6 +402,8 @@ class MediaPipeline:
             )
             if processed_duration is not None:
                 args.extend(["-t", f"{processed_duration:.6f}"])
+            if output_frames is not None:
+                args.extend(["-frames:v", str(output_frames)])
             args.extend(["-movflags", "+faststart", str(destination)])
             self._run(args)
             normalized.append(destination)
@@ -308,60 +414,82 @@ class MediaPipeline:
         concat_file.write_text(
             "".join(f"file '{path.name}'\n" for path in normalized), encoding="utf-8"
         )
+        has_overlays = job.image_overlay_path is not None or job.video_overlay_path is not None
         concatenated = (
             job.intermediate_dir / "merged-original.mp4"
-            if job.background_audio_path is not None
+            if job.background_audio_path is not None or has_overlays
             else job.result_path
         )
-        self._run(
-            [
-                self.settings.ffmpeg_path,
-                "-nostdin",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-y",
-                "-protocol_whitelist",
-                "file,pipe",
-                "-format_whitelist",
-                "concat,mov",
-                "-f",
-                "concat",
-                "-safe",
-                "1",
-                "-i",
-                concat_file.name,
-                "-vf",
-                f"fps={job.output_fps},format=yuv420p,setsar=1",
-                "-r",
-                str(job.output_fps),
-                "-fps_mode",
-                "cfr",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "medium",
-                "-crf",
-                "23",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "192k",
-                "-ar",
-                "48000",
-                "-ac",
-                "2",
-                "-movflags",
-                "+faststart",
-                str(concatenated),
-            ],
-            cwd=job.intermediate_dir,
+        final_duration = (
+            job.total_project_frames / job.output_fps
+            if job.total_project_frames > 0
+            else sum(output_durations)
         )
+        if job.total_project_frames <= 0 and output_durations:
+            job.total_project_frames = sum(
+                max(1, round_half_up(duration * job.output_fps)) for duration in output_durations
+            )
+            final_duration = job.total_project_frames / job.output_fps
+        concat_args = [
+            self.settings.ffmpeg_path,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-protocol_whitelist",
+            "file,pipe",
+            "-format_whitelist",
+            "concat,mov",
+            "-f",
+            "concat",
+            "-safe",
+            "1",
+            "-i",
+            concat_file.name,
+            "-vf",
+            f"fps={job.output_fps},format=yuv420p,setsar=1",
+            "-r",
+            str(job.output_fps),
+            "-fps_mode",
+            "cfr",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "23",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            "-movflags",
+            "+faststart",
+        ]
+        if job.total_project_frames > 0:
+            concat_args.extend(["-frames:v", str(job.total_project_frames)])
+        if final_duration > 0:
+            concat_args.extend(["-t", f"{final_duration:.6f}"])
+        concat_args.append(str(concatenated))
+        self._run(concat_args, cwd=job.intermediate_dir)
+
+        composed = concatenated
+        if has_overlays:
+            composed = (
+                job.intermediate_dir / "merged-composited.mp4"
+                if job.background_audio_path is not None
+                else job.result_path
+            )
+            self._compose_overlays(job, concatenated, composed)
+
         if job.background_audio_path is None:
             return
         if len(output_durations) != len(job.input_paths):
             raise InvalidMediaError("Final video duration is unavailable")
-        final_duration = sum(output_durations)
         original_volume = 0.0 if job.audio_mix.original_muted else job.audio_mix.original_volume
         music_volume = 0.0 if job.audio_mix.music_muted else job.audio_mix.music_volume
         filters = (
@@ -383,7 +511,7 @@ class MediaPipeline:
                 "-format_whitelist",
                 "mov,mp3,wav,aac",
                 "-i",
-                str(concatenated),
+                str(composed),
                 "-stream_loop",
                 "-1",
                 "-protocol_whitelist",
@@ -415,3 +543,90 @@ class MediaPipeline:
                 str(job.result_path),
             ]
         )
+
+    def _compose_overlays(self, job: Job, base_path: Path, destination: Path) -> None:
+        args = [
+            self.settings.ffmpeg_path,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-protocol_whitelist",
+            "file,pipe",
+            "-format_whitelist",
+            "mov,matroska,webm",
+            "-i",
+            str(base_path),
+        ]
+        next_index = 1
+        video_input = None
+        image_input = None
+        if job.video_overlay_path is not None and job.video_overlay_settings is not None:
+            args.extend(
+                [
+                    "-protocol_whitelist",
+                    "file,pipe",
+                    "-format_whitelist",
+                    "mov,matroska,webm",
+                    "-i",
+                    str(job.video_overlay_path),
+                ]
+            )
+            video_input = (next_index, job.video_overlay_settings)
+            next_index += 1
+        if job.image_overlay_path is not None and job.image_overlay_settings is not None:
+            args.extend(
+                [
+                    "-loop",
+                    "1",
+                    "-framerate",
+                    str(job.output_fps),
+                    "-protocol_whitelist",
+                    "file,pipe",
+                    "-format_whitelist",
+                    "image2,png_pipe,jpeg_pipe",
+                    "-i",
+                    str(job.image_overlay_path),
+                ]
+            )
+            image_input = (next_index, job.image_overlay_settings)
+        graph = build_overlay_graph(
+            job.output_fps,
+            job.total_project_frames,
+            video_input,
+            image_input,
+        )
+        duration = job.total_project_frames / job.output_fps
+        args.extend(
+            [
+                "-filter_complex",
+                graph.filter_complex,
+                "-map",
+                graph.output_label,
+                "-map",
+                "0:a:0",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                "23",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "copy",
+                "-r",
+                str(job.output_fps),
+                "-fps_mode",
+                "cfr",
+                "-frames:v",
+                str(job.total_project_frames),
+                "-t",
+                f"{duration:.6f}",
+                "-movflags",
+                "+faststart",
+                str(destination),
+            ]
+        )
+        self._run(args)

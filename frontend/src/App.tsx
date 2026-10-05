@@ -6,7 +6,6 @@ import {
   Layers,
   LockKeyhole,
   ShieldCheck,
-  Sparkles,
   TriangleAlert,
   Zap,
 } from 'lucide-react';
@@ -16,6 +15,7 @@ import { MergeSummary } from './components/MergeSummary';
 import { JobResult } from './components/JobResult';
 import { TrimEditor } from './components/TrimEditor';
 import { BackgroundAudioTrack } from './components/BackgroundAudioTrack';
+import { OverlayTrack } from './components/OverlayTrack';
 import { TimelineDemo } from './components/TimelineDemo';
 import type { BackgroundAudio } from './components/BackgroundAudioTrack';
 import { ApiError, getHealth, getJob, submitMerge } from './lib/api';
@@ -35,6 +35,16 @@ import type {
   ClipTrim,
   ProjectFpsSelection,
 } from './lib/clips';
+import {
+  defaultOverlaySchedule,
+  projectTotalFrames,
+  validateOverlaySchedule,
+} from './lib/overlays';
+import type {
+  OverlayKind,
+  OverlaySchedule,
+  OverlayState,
+} from './lib/overlays';
 
 export default function App() {
   const [timelineDemo, setTimelineDemo] = useState(false);
@@ -51,6 +61,10 @@ export default function App() {
   const [editingClipId, setEditingClipId] = useState<string | null>(null);
   const [backgroundAudio, setBackgroundAudio] =
     useState<BackgroundAudio | null>(null);
+  const [overlays, setOverlays] = useState<OverlayState>({
+    image: null,
+    video: null,
+  });
   const [audioSettings, setAudioSettings] = useState<AudioSettings>({
     originalVolume: 1,
     originalMuted: false,
@@ -66,6 +80,8 @@ export default function App() {
     max_clips: 20,
     max_file_size_mb: 200,
     max_audio_file_size_mb: 100,
+    max_overlay_image_file_size_mb: 20,
+    max_overlay_video_file_size_mb: 200,
   };
   const editableClips = clips.filter(isEditableClip);
   const editsValid =
@@ -75,6 +91,16 @@ export default function App() {
     fpsSelection,
     editableClips[0]?.metadata.fps,
   );
+  const totalProjectFrames =
+    outputFps === null ? 0 : projectTotalFrames(editableClips, outputFps);
+  const overlaysValid = (['image', 'video'] as const).every((kind) => {
+    const overlay = overlays[kind];
+    return (
+      !overlay ||
+      (overlay.metadataStatus === 'ready' &&
+        validateOverlaySchedule(overlay, totalProjectFrames) === null)
+    );
+  });
   const canMerge = Boolean(
     !active &&
     !completed &&
@@ -82,6 +108,7 @@ export default function App() {
     health?.ffmpeg_available &&
     health.ffprobe_available &&
     editsValid &&
+    overlaysValid &&
     outputFps !== null,
   );
   const displayedError =
@@ -275,6 +302,103 @@ export default function App() {
     setBackgroundAudio(null);
     setJob(null);
   }
+  function selectOverlay(kind: OverlayKind, file: File) {
+    const isImage = kind === 'image';
+    const supported = isImage
+      ? /\.(png|jpe?g)$/i.test(file.name)
+      : /\.(mp4|mov|webm|mkv)$/i.test(file.name);
+    if (!supported) {
+      setError(
+        isImage
+          ? 'Choose a PNG or JPG image overlay.'
+          : 'Choose an MP4, MOV, WebM, or MKV video overlay.',
+      );
+      return;
+    }
+    const limit = isImage
+      ? (limits.max_overlay_image_file_size_mb ?? 20)
+      : (limits.max_overlay_video_file_size_mb ?? 200);
+    if (!file.size || file.size > limit * 1024 * 1024) {
+      setError(
+        file.size
+          ? `${isImage ? 'Image' : 'Video'} overlay exceeds the ${limit} MB limit.`
+          : `${isImage ? 'Image' : 'Video'} overlay is empty.`,
+      );
+      return;
+    }
+    if (totalProjectFrames < 1) {
+      setError('Add ready Video 1 clips before choosing an overlay.');
+      return;
+    }
+    const previous = overlays[kind];
+    const schedule =
+      previous && validateOverlaySchedule(previous, totalProjectFrames) === null
+        ? {
+            startFrame: previous.startFrame,
+            endFrame: previous.endFrame,
+            position: previous.position,
+            size: previous.size,
+          }
+        : defaultOverlaySchedule(kind, totalProjectFrames);
+    if (previous) {
+      URL.revokeObjectURL(previous.url);
+      urls.current.delete(previous.url);
+    }
+    const url = URL.createObjectURL(file);
+    urls.current.add(url);
+    setOverlays((current) => ({
+      ...current,
+      [kind]: {
+        kind,
+        file,
+        url,
+        metadataStatus: 'loading',
+        ...schedule,
+      },
+    }));
+    setError(null);
+    setJob(null);
+  }
+  function setOverlayMetadata(kind: OverlayKind, duration?: number) {
+    setOverlays((current) => {
+      const overlay = current[kind];
+      if (!overlay) return current;
+      return {
+        ...current,
+        [kind]: { ...overlay, metadataStatus: 'ready', duration },
+      };
+    });
+  }
+  function setOverlayMetadataError(kind: OverlayKind) {
+    setOverlays((current) => {
+      const overlay = current[kind];
+      return overlay
+        ? { ...current, [kind]: { ...overlay, metadataStatus: 'error' } }
+        : current;
+    });
+    setError(
+      `Could not read the ${kind} overlay. Remove it and choose another file.`,
+    );
+  }
+  function changeOverlaySchedule(
+    kind: OverlayKind,
+    changes: Partial<OverlaySchedule>,
+  ) {
+    setOverlays((current) => ({
+      ...current,
+      [kind]: current[kind] ? { ...current[kind], ...changes } : null,
+    }));
+    setJob(null);
+  }
+  function removeOverlay(kind: OverlayKind) {
+    const overlay = overlays[kind];
+    if (!overlay) return;
+    URL.revokeObjectURL(overlay.url);
+    urls.current.delete(overlay.url);
+    setOverlays((current) => ({ ...current, [kind]: null }));
+    setError(null);
+    setJob(null);
+  }
   function removeClip(id: string) {
     const clip = clips.find((c) => c.id === id);
     if (!clip) return;
@@ -313,8 +437,12 @@ export default function App() {
       setJob(
         await submitMerge(
           editableClips,
-          buildMergeManifest(editableClips, audioSettings, outputFps),
-          backgroundAudio?.file,
+          buildMergeManifest(editableClips, audioSettings, outputFps, overlays),
+          {
+            backgroundAudio: backgroundAudio?.file,
+            overlayImage: overlays.image?.file,
+            overlayVideo: overlays.video?.file,
+          },
           controller.signal,
         ),
       );
@@ -335,6 +463,7 @@ export default function App() {
     urls.current.clear();
     setClips([]);
     setBackgroundAudio(null);
+    setOverlays({ image: null, video: null });
     setEditingClipId(null);
     setFpsSelection('auto');
     setAudioSettings({
@@ -377,8 +506,6 @@ export default function App() {
         </button>
         <div className="header-note">
           <LockKeyhole aria-hidden="true" />
-          <span>Your clips. Your story.</span>
-          <span className="dot" />
           <span className="local-label">Local workspace</span>
         </div>
       </header>
@@ -390,6 +517,7 @@ export default function App() {
           onFpsSelectionChange={setFpsSelection}
           canMerge={canMerge}
           busy={active}
+          overlays={overlays}
           onMerge={() => {
             setTimelineDemo(false);
             void merge();
@@ -397,15 +525,9 @@ export default function App() {
         />
       )}
       <main className="workspace" hidden={timelineDemo}>
-        <section className="intro" aria-label="Merge workspace">
-          <span className="eyebrow">
-            <Sparkles aria-hidden="true" />
-            SMALL CLIPS. BIGGER STORIES.
-          </span>
-          <p>
-            Bring your favorite moments together in one seamless video.
-            <br /> Upload, arrange, and let your story unfold.
-          </p>
+        <section className="workspace-title" aria-label="Merge workspace">
+          <span>Sequence 01</span>
+          <strong>Assembly workspace</strong>
         </section>
         <nav className="steps" aria-label="Merge steps">
           {['Upload', 'Arrange', 'Merge'].map((label, index) => (
@@ -531,6 +653,18 @@ export default function App() {
                   }}
                   onRemove={removeBackgroundAudio}
                   onSettings={setAudioSettings}
+                />
+                <OverlayTrack
+                  overlays={overlays}
+                  totalProjectFrames={totalProjectFrames}
+                  imageLimitMb={limits.max_overlay_image_file_size_mb ?? 20}
+                  videoLimitMb={limits.max_overlay_video_file_size_mb ?? 200}
+                  disabled={active}
+                  onSelect={selectOverlay}
+                  onMetadata={setOverlayMetadata}
+                  onMetadataError={setOverlayMetadataError}
+                  onScheduleChange={changeOverlaySchedule}
+                  onRemove={removeOverlay}
                 />
               </>
             )}

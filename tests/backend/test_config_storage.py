@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
@@ -44,6 +45,48 @@ def test_settings_default_to_twenty_clip_ad_assemblies(monkeypatch):
     monkeypatch.delenv("REELWEAVE_MAX_CLIPS", raising=False)
 
     assert Settings.from_env(None).max_clips == 20
+
+
+def test_settings_expose_overlay_limits_and_include_them_in_request_budget(
+    tmp_path: Path, monkeypatch
+):
+    from backend.app.config import Settings
+
+    monkeypatch.setenv("REELWEAVE_MAX_OVERLAY_IMAGE_FILE_SIZE_MB", "7")
+    monkeypatch.setenv("REELWEAVE_MAX_OVERLAY_VIDEO_FILE_SIZE_MB", "11")
+    loaded = Settings.from_env(None)
+
+    assert loaded.max_overlay_image_file_size_bytes == 7 * 1024 * 1024
+    assert loaded.max_overlay_video_file_size_bytes == 11 * 1024 * 1024
+    assert loaded.max_overlay_image_file_size_mb == 7
+    assert loaded.max_overlay_video_file_size_mb == 11
+
+    settings = Settings(
+        working_root=tmp_path / "request-budget",
+        max_file_size_bytes=10,
+        max_audio_file_size_bytes=20,
+        max_overlay_image_file_size_bytes=30,
+        max_overlay_video_file_size_bytes=40,
+        max_clips=2,
+    )
+    expected_overhead = 1024 * 1024 + (2 + 3) * 64 * 1024
+    assert settings.max_request_size_bytes == 10 * 2 + 20 + 30 + 40 + expected_overhead
+
+
+def test_overlay_settings_are_immutable_and_jobs_have_empty_overlay_state(settings):
+    from backend.app.jobs import Job, OverlaySettings
+    from backend.app.storage import Storage
+
+    overlay = OverlaySettings(0, 10, "top-right", "small")
+    with pytest.raises(FrozenInstanceError):
+        overlay.end_frame = 20
+
+    job = Job.create(Storage(settings), "abababab-abab-4bab-8bab-abababababab")
+    assert job.image_overlay_settings is None
+    assert job.image_overlay_path is None
+    assert job.video_overlay_settings is None
+    assert job.video_overlay_path is None
+    assert job.total_project_frames == 0
 
 
 def test_storage_uses_generated_names_and_preserves_order(settings):

@@ -1,6 +1,6 @@
 # ReelWeave verification record
 
-Verified locally on Windows on 2026-09-20. Work continued in the existing
+Milestone 3 verification refreshed locally on Windows on 2026-10-04. Work continued in the existing
 project; no repository was recreated, and no system configuration, global
 dependencies, commits, pushes or deployments were performed.
 
@@ -12,6 +12,9 @@ dependencies, commits, pushes or deployments were performed.
   readouts, one-frame stepping, and per-clip 1x/0.75x/0.5x speed.
 - Separate background-audio track with upload validation, duration display,
   volume/mute controls, short-track looping, long-track trimming, and mixing.
+- One image/logo and one video/PIP overlay on Video 2, with inclusive project-frame
+  ranges, five positions, three sizes, browser preview, and real FFmpeg composition.
+- Short PIP sources become transparent at EOF; the final frame is never frozen.
 - FastAPI health, ordered upload, job status, video, download and deletion routes.
 - Bounded single-worker queue with queued/processing/completed/failed states.
 - Generated paths, job-specific storage, configurable limits and retention cleanup.
@@ -29,15 +32,15 @@ dependencies were installed only into `.venv` and `frontend/node_modules`.
 |---|---|---|
 | FFmpeg / FFprobe | `ffmpeg -version`, `ffprobe -version` | Available; FFmpeg 8.1.2 |
 | Python dependency consistency | `.venv/Scripts/python.exe -m pip check` | No broken requirements |
-| Backend and real integration | `RUN_FFMPEG_TESTS=1` then `.venv/Scripts/python.exe -m pytest tests -q` | 41 passed; 2 upstream warnings |
-| Real FFmpeg integration | `RUN_FFMPEG_TESTS=1` then `.venv/Scripts/python.exe -m pytest tests/integration/test_real_merge.py -q` | 4 passed; 2 upstream warnings |
+| Backend unit suite | `.venv/Scripts/python.exe -m pytest tests/backend -q` | Must pass |
+| Real FFmpeg integration | Set `RUN_FFMPEG_TESTS=1`, then `.venv/Scripts/python.exe -m pytest tests/integration/test_real_merge.py -v` | Must pass when FFmpeg/FFprobe are available; otherwise this opt-in suite may skip |
 | Python lint | `.venv/Scripts/python.exe -m ruff check backend tests` | Passed |
 | Python format | `.venv/Scripts/python.exe -m ruff format --check backend tests` | Passed |
-| Frontend tests | `node_modules/.bin/vitest.cmd run --configLoader runner` (frontend) | 28 passed; jsdom media-method notices only |
+| Frontend tests | `npm.cmd test` (frontend) | Must pass; jsdom media-method notices are expected |
 | Frontend lint | `npm.cmd run lint` (frontend) | Passed |
 | Frontend format | `npm.cmd run format:check` (frontend) | Passed |
 | TypeScript compile | `node_modules/.bin/tsc.cmd -b` (frontend) | Passed |
-| Production bundle | `node_modules/.bin/vite.cmd build --configLoader runner` (frontend) | Passed; 1,750 modules transformed, assets emitted to `frontend/dist` |
+| Production bundle | `npm.cmd run build` (frontend) | Must pass and emit assets to `frontend/dist` |
 | Browser integration | `npm.cmd run test:e2e` (frontend) | 1 passed in 52.8 seconds using installed Edge |
 
 Additional setup/fix commands included `python -m venv .venv`, project-local pip
@@ -60,10 +63,18 @@ They also verify an inclusive one-frame trim, multi-frame 0.5x and 0.75x clips,
 original audio processing, a short background track looped to the final video
 length, and a long background track trimmed at the final-video end.
 
+The Milestone 3 overlay case additionally generates a short PIP with a distinct
+audio tone and a transparent PNG marker. It verifies exact project-frame output,
+scheduled boundaries, transparent pixels, image-over-PIP stacking, base-video
+restoration when the PIP reaches EOF before its scheduled end, MP4 codecs, and
+that PIP audio is not mixed into Audio 1 or Audio 2.
+
 The Edge test runs the local frontend and backend, verifies frame ranges for real
 30 fps and 24 fps clips, steps and saves a frame trim, changes speed, uploads
-background audio, changes volume/mute settings, reorders clips, checks mobile
-overflow and clip-control geometry, merges, plays, downloads and resets. Screenshots are in
+background audio, configures both Video 2 overlay types, rejects an invalid
+inclusive overlay range, inspects multipart overlay fields, changes volume/mute
+settings, reorders clips, checks mobile overflow and clip-control geometry,
+merges, plays, downloads and resets. Screenshots are in
 `docs/screenshots/`.
 
 Integration failures were fixed rather than skipped: unsupported FFprobe

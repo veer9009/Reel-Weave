@@ -12,7 +12,13 @@ const health = {
   status: 'ok',
   ffmpeg_available: true,
   ffprobe_available: true,
-  limits: { max_clips: 10, max_file_size_mb: 200, max_audio_file_size_mb: 100 },
+  limits: {
+    max_clips: 10,
+    max_file_size_mb: 200,
+    max_audio_file_size_mb: 100,
+    max_overlay_image_file_size_mb: 20,
+    max_overlay_video_file_size_mb: 200,
+  },
 };
 const job = {
   job_id: '00000000-0000-4000-8000-000000000001',
@@ -103,6 +109,16 @@ describe('ReelWeave', () => {
       screen.getByRole('region', { name: 'Merge workspace' }),
     ).toBeVisible();
     expect(screen.getByRole('button', { name: /merge clips/i })).toBeVisible();
+    for (const copy of [
+      'Ad Assembly Timeline',
+      'SMALL CLIPS. BIGGER STORIES.',
+      'Bring your favorite moments together in one seamless video.',
+      'Upload, arrange, and let your story unfold.',
+      'Your clips. Your story.',
+    ])
+      expect(
+        screen.queryByText(copy, { exact: false }),
+      ).not.toBeInTheDocument();
   });
   it('opens the timeline with uploaded clips and preserves merge edits when returning', async () => {
     render(<App />);
@@ -173,8 +189,9 @@ describe('ReelWeave', () => {
       music_volume: 0.3,
       music_muted: false,
     });
+    expect(manifest.overlays).toEqual({ image: null, video: null });
     expect(JSON.stringify(manifest)).not.toMatch(
-      /Opening shot|SAMPLE AD|VIDEO 2|overlay|MOV/,
+      /Opening shot|SAMPLE AD|VIDEO 2|MOV/,
     );
     await waitFor(() =>
       expect(
@@ -183,6 +200,82 @@ describe('ReelWeave', () => {
     );
     expect(await screen.findByText('Your story, together.')).toBeVisible();
   }, 15_000);
+  it('validates, edits, and submits one image and one PIP overlay', async () => {
+    render(<App />);
+    const user = await selectTwo();
+    await user.upload(
+      screen.getByLabelText('Choose image overlay'),
+      new File(['logo'], 'logo.png', { type: 'image/png' }),
+    );
+    await user.upload(
+      screen.getByLabelText('Choose video overlay'),
+      new File(['pip'], 'pip.mp4', { type: 'video/mp4' }),
+    );
+    fireEvent.load(document.querySelector('.overlay-editor img')!);
+    const pip = document.querySelector<HTMLVideoElement>(
+      '.overlay-editor video',
+    )!;
+    Object.defineProperty(pip, 'duration', { configurable: true, value: 1 });
+    fireEvent.loadedMetadata(pip);
+    await user.clear(screen.getByLabelText('Image overlay start frame'));
+    await user.type(screen.getByLabelText('Image overlay start frame'), '5');
+    await user.selectOptions(screen.getByLabelText('Video overlay position'), [
+      'centre',
+    ]);
+    await user.selectOptions(screen.getByLabelText('Video overlay size'), [
+      'large',
+    ]);
+    await user.click(
+      screen.getByRole('button', { name: 'Move second.mov up' }),
+    );
+    await user.click(screen.getByRole('button', { name: /merge clips/i }));
+
+    const mergeCall = vi
+      .mocked(fetch)
+      .mock.calls.find((call) => String(call[0]).endsWith('/api/merge'));
+    const body = mergeCall?.[1]?.body as FormData;
+    expect((body.get('overlay_image') as File).name).toBe('logo.png');
+    expect((body.get('overlay_video') as File).name).toBe('pip.mp4');
+    const manifest = JSON.parse(String(body.get('manifest')));
+    expect(manifest.overlays.image).toMatchObject({
+      start_frame: 5,
+      position: 'top-right',
+      size: 'small',
+    });
+    expect(manifest.overlays.video).toMatchObject({
+      position: 'centre',
+      size: 'large',
+    });
+  }, 15_000);
+  it('rejects invalid overlays and revokes a replaced overlay URL once', async () => {
+    vi.mocked(URL.createObjectURL)
+      .mockReturnValueOnce('blob:clip-one')
+      .mockReturnValueOnce('blob:clip-two')
+      .mockReturnValueOnce('blob:old-logo')
+      .mockReturnValueOnce('blob:new-logo');
+    render(<App />);
+    const user = await selectTwo();
+    const invalid = new File(['text'], 'logo.gif', { type: 'image/gif' });
+    const unrestrictedUser = userEvent.setup({ applyAccept: false });
+    await unrestrictedUser.upload(
+      screen.getByLabelText('Choose image overlay'),
+      invalid,
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent(/PNG or JPG/i);
+
+    await user.upload(
+      screen.getByLabelText('Choose image overlay'),
+      new File(['old'], 'old.png', { type: 'image/png' }),
+    );
+    await user.upload(
+      screen.getByLabelText('Replace image overlay'),
+      new File(['new'], 'new.jpg', { type: 'image/jpeg' }),
+    );
+    expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1);
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:old-logo');
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:new-logo');
+    expect(screen.getByText('new.jpg')).toBeVisible();
+  });
   it('keeps missing-tool guidance visible while arranging and can reconnect', async () => {
     let checks = 0;
     vi.stubGlobal(

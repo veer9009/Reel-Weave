@@ -58,15 +58,23 @@ export const getHealth = (signal?: AbortSignal) =>
   });
 export const getJob = (id: string, signal?: AbortSignal) =>
   request<Job>(`/api/jobs/${encodeURIComponent(id)}`, { signal });
+export type MergeUploads = {
+  backgroundAudio?: File;
+  overlayImage?: File;
+  overlayVideo?: File;
+};
 export function submitMerge(
   clips: ClipEdit[],
   manifest: MergeManifest,
-  backgroundAudio?: File,
+  uploads: MergeUploads = {},
   signal?: AbortSignal,
 ): Promise<Job> {
   const body = new FormData();
   clips.forEach((clip) => body.append('files', clip.file));
   body.append('manifest', JSON.stringify(manifest));
-  if (backgroundAudio) body.append('background_audio', backgroundAudio);
+  if (uploads.backgroundAudio)
+    body.append('background_audio', uploads.backgroundAudio);
+  if (uploads.overlayImage) body.append('overlay_image', uploads.overlayImage);
+  if (uploads.overlayVideo) body.append('overlay_video', uploads.overlayVideo);
   return request<Job>('/api/merge', { method: 'POST', body, signal });
 }

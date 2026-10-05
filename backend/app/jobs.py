@@ -13,6 +13,8 @@ from .config import Settings
 from .storage import Storage, UnsafePathError
 
 JobStatus = Literal["queued", "processing", "completed", "failed"]
+OverlayPosition = Literal["top-left", "top-right", "bottom-left", "bottom-right", "centre"]
+OverlaySize = Literal["small", "medium", "large"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,11 +40,21 @@ class ManifestClip:
 
 
 @dataclass(frozen=True, slots=True)
+class OverlaySettings:
+    start_frame: int
+    end_frame: int
+    position: OverlayPosition
+    size: OverlaySize
+
+
+@dataclass(frozen=True, slots=True)
 class MergePlan:
     clips: tuple[ManifestClip, ...]
     order: tuple[str, ...]
     output_fps: int
     audio_mix: AudioMixSettings
+    image_overlay: OverlaySettings | None = None
+    video_overlay: OverlaySettings | None = None
 
 
 @dataclass(slots=True)
@@ -55,8 +67,13 @@ class Job:
     input_paths: list[Path] = field(default_factory=list)
     clip_edits: list[ClipEdit] = field(default_factory=list)
     background_audio_path: Path | None = None
+    image_overlay_settings: OverlaySettings | None = None
+    image_overlay_path: Path | None = None
+    video_overlay_settings: OverlaySettings | None = None
+    video_overlay_path: Path | None = None
     audio_mix: AudioMixSettings = field(default_factory=AudioMixSettings)
     output_fps: int = 30
+    total_project_frames: int = 0
     status: JobStatus = "queued"
     error: str | None = None
     created_at: float = field(default_factory=time.time)

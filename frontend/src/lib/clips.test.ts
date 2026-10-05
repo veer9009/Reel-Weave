@@ -130,6 +130,19 @@ describe('clip edits', () => {
   });
 
   it('builds the merge manifest in current clip order', () => {
+    const overlays = {
+      image: {
+        kind: 'image' as const,
+        file: new File(['image'], 'logo.png'),
+        url: 'blob:logo',
+        metadataStatus: 'ready' as const,
+        startFrame: 0,
+        endFrame: 49,
+        position: 'top-right' as const,
+        size: 'small' as const,
+      },
+      video: null,
+    };
     const manifest = buildMergeManifest(
       [edit('second', 15, 44, 0.75, true), edit('first', 0, 89, 0.5)],
       {
@@ -139,6 +152,7 @@ describe('clip edits', () => {
         musicMuted: true,
       },
       25,
+      overlays,
       ['first', 'second'],
     );
     expect(manifest.output_fps).toBe(25);
@@ -168,6 +182,15 @@ describe('clip edits', () => {
       original_muted: false,
       music_volume: 0.3,
       music_muted: true,
+    });
+    expect(manifest.overlays).toEqual({
+      image: {
+        start_frame: 0,
+        end_frame: 49,
+        position: 'top-right',
+        size: 'small',
+      },
+      video: null,
     });
   });
 });

@@ -29,6 +29,8 @@ class Settings:
     output_root: Path | None = None
     max_file_size_bytes: int = 200 * 1024 * 1024
     max_audio_file_size_bytes: int = 100 * 1024 * 1024
+    max_overlay_image_file_size_bytes: int = 20 * 1024 * 1024
+    max_overlay_video_file_size_bytes: int = 200 * 1024 * 1024
     max_clips: int = 20
     min_clips: int = 2
     queue_size: int = 4
@@ -55,6 +57,8 @@ class Settings:
         for name in (
             "max_file_size_bytes",
             "max_audio_file_size_bytes",
+            "max_overlay_image_file_size_bytes",
+            "max_overlay_video_file_size_bytes",
             "max_clips",
             "min_clips",
             "queue_size",
@@ -83,11 +87,21 @@ class Settings:
         return self.max_audio_file_size_bytes / (1024 * 1024)
 
     @property
+    def max_overlay_image_file_size_mb(self) -> float:
+        return self.max_overlay_image_file_size_bytes / (1024 * 1024)
+
+    @property
+    def max_overlay_video_file_size_mb(self) -> float:
+        return self.max_overlay_video_file_size_bytes / (1024 * 1024)
+
+    @property
     def max_request_size_bytes(self) -> int:
-        multipart_overhead = 1024 * 1024 + self.max_clips * 64 * 1024
+        multipart_overhead = 1024 * 1024 + (self.max_clips + 3) * 64 * 1024
         return (
             self.max_file_size_bytes * self.max_clips
             + self.max_audio_file_size_bytes
+            + self.max_overlay_image_file_size_bytes
+            + self.max_overlay_video_file_size_bytes
             + multipart_overhead
         )
 
@@ -109,6 +123,16 @@ class Settings:
             output_root=Path(output_value) if output_value else None,
             max_file_size_bytes=_env_int("REELWEAVE_MAX_FILE_SIZE_MB", 200) * 1024 * 1024,
             max_audio_file_size_bytes=_env_int("REELWEAVE_MAX_AUDIO_FILE_SIZE_MB", 100)
+            * 1024
+            * 1024,
+            max_overlay_image_file_size_bytes=_env_int(
+                "REELWEAVE_MAX_OVERLAY_IMAGE_FILE_SIZE_MB", 20
+            )
+            * 1024
+            * 1024,
+            max_overlay_video_file_size_bytes=_env_int(
+                "REELWEAVE_MAX_OVERLAY_VIDEO_FILE_SIZE_MB", 200
+            )
             * 1024
             * 1024,
             max_clips=_env_int("REELWEAVE_MAX_CLIPS", 20),
