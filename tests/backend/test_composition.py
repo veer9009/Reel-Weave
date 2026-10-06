@@ -1,6 +1,18 @@
 from __future__ import annotations
 
 
+def test_pip_eof_never_repeats_or_pads_last_frame():
+    from backend.app.composition import build_overlay_graph
+    from backend.app.jobs import OverlaySettings
+
+    graph = build_overlay_graph(25, 50, (1, OverlaySettings(10, 49, "centre", "medium")), None)
+    assert "eof_action=pass:repeatlast=0:shortest=0" in graph.filter_complex
+    assert "tpad" not in graph.filter_complex
+    assert "clone" not in graph.filter_complex
+    assert "loop" not in graph.filter_complex
+    assert "setpts=PTS-STARTPTS+10/(25*TB)[pip]" in graph.filter_complex
+
+
 def test_overlay_graph_maps_sizes_positions_timing_and_z_order():
     from backend.app.composition import build_overlay_graph
     from backend.app.jobs import OverlaySettings

@@ -30,7 +30,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     if (error instanceof DOMException && error.name === 'AbortError')
       throw error;
     throw new ApiError(
-      'Could not reach ReelWeave. Check your connection and make sure the backend is running.',
+      'Could not reach AVStudio. Check your connection and make sure the backend is running.',
       0,
     );
   }

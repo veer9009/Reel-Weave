@@ -1,96 +1,59 @@
-import {
-  ArrowRight,
-  FileVideo,
-  Layers,
-  Monitor,
-  ShieldCheck,
-} from 'lucide-react';
-import { formatDuration, formatSize, outputDuration } from '../lib/clips';
+﻿import { formatTimestamp } from '../lib/clips';
 import type { Clip } from '../lib/clips';
+import type { TimelineProjection } from '../lib/timeline';
 type Props = {
   clips: Clip[];
+  timeline: TimelineProjection;
   disabled: boolean;
   busy: boolean;
   onMerge: () => void;
 };
-export function MergeSummary({ clips, disabled, busy, onMerge }: Props) {
-  const duration =
-    clips.length && clips.every((c) => c.metadata && c.trim && c.speed)
-      ? clips.reduce(
-          (n, c) => n + outputDuration(c.trim!, c.metadata!.fps, c.speed!),
-          0,
-        )
-      : undefined;
+export function MergeSummary({
+  clips,
+  timeline,
+  disabled,
+  busy,
+  onMerge,
+}: Props) {
+  const hint =
+    clips.length < 1
+      ? 'Add at least one video clip to render'
+      : disabled
+        ? 'Resolve metadata, overlay ranges or backend availability before rendering.'
+        : 'Ready to render the current timeline.';
   return (
-    <aside>
-      <section className="panel summary" aria-labelledby="summary-title">
-        <div className="summary-title">
-          <Layers aria-hidden="true" />
-          <h2 id="summary-title">Bring it all together</h2>
+    <section className="summary" aria-label="MP4 delivery">
+      <h2>MP4</h2>
+      <p>1280 × 720 · H.264 + AAC</p>
+      <dl>
+        <div>
+          <dt>Selected clips</dt>
+          <dd>{clips.length} clips</dd>
         </div>
-        <div className="output-format">
-          <span className="format-icon">
-            <FileVideo aria-hidden="true" />
-          </span>
-          <div>
-            <strong>One seamless video</strong>
-            <p>MP4 · H.264 + AAC</p>
-          </div>
-          <span className="format-tag">HD</span>
+        <div>
+          <dt>Project duration</dt>
+          <dd>
+            {timeline.status === 'ready'
+              ? formatTimestamp(timeline.durationSeconds)
+              : 'Unavailable'}
+          </dd>
         </div>
-        <dl>
-          <div>
-            <dt>Selected clips</dt>
-            <dd>
-              {clips.length} {clips.length === 1 ? 'clip' : 'clips'}
-            </dd>
-          </div>
-          <div>
-            <dt>Total size</dt>
-            <dd>
-              {clips.length
-                ? formatSize(clips.reduce((n, c) => n + c.file.size, 0))
-                : '—'}
-            </dd>
-          </div>
-          <div>
-            <dt>Estimated duration</dt>
-            <dd>{duration === undefined ? '—' : formatDuration(duration)}</dd>
-          </div>
-          <div>
-            <dt>Output quality</dt>
-            <dd>720p · 30 fps</dd>
-          </div>
-        </dl>
-        <hr className="summary-divider" />
-        <p className="output-note">
-          <Monitor aria-hidden="true" />
-          Different sizes? No problem. Your clips keep their proportions, with
-          padding where needed.
-        </p>
-        <button
-          type="button"
-          className="primary-button"
-          disabled={disabled}
-          onClick={onMerge}
-        >
-          {busy ? 'Merging your story…' : 'Merge clips'}
-          <ArrowRight aria-hidden="true" />
-        </button>
-        <p className="merge-hint">
-          {clips.length < 2
-            ? 'Add at least 2 clips to get started.'
-            : 'Clips merge in the order shown.'}
-        </p>
-      </section>
-      <p className="privacy-note">
-        <ShieldCheck aria-hidden="true" />
-        <span>
-          Your clips are processed on this backend.
-          <br />
-          Temporary files are automatically cleaned up.
-        </span>
-      </p>
-    </aside>
+        <div>
+          <dt>Project FPS</dt>
+          <dd>{timeline.fps ?? 'Waiting for source FPS'}</dd>
+        </div>
+      </dl>
+      <p>Includes active overlays and configured original/background audio.</p>
+      <button
+        type="button"
+        className="primary-button"
+        disabled={disabled}
+        aria-describedby="render-hint"
+        onClick={onMerge}
+      >
+        {busy ? 'Rendering MP4' : 'Render MP4'}
+      </button>
+      <p id="render-hint">{hint}</p>
+    </section>
   );
 }

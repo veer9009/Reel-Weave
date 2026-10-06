@@ -156,6 +156,8 @@ export function OverlayTrack({
                 Start frame
                 <input
                   aria-label={`${kind === 'image' ? 'Image' : 'Video'} overlay start frame`}
+                  aria-invalid={Boolean(error)}
+                  aria-describedby={error ? `${kind}-overlay-error` : undefined}
                   type="number"
                   min="0"
                   step="1"
@@ -172,6 +174,8 @@ export function OverlayTrack({
                 End frame
                 <input
                   aria-label={`${kind === 'image' ? 'Image' : 'Video'} overlay end frame`}
+                  aria-invalid={Boolean(error)}
+                  aria-describedby={error ? `${kind}-overlay-error` : undefined}
                   type="number"
                   min="0"
                   step="1"
@@ -224,7 +228,17 @@ export function OverlayTrack({
                 </select>
               </label>
             </div>
-            {error && <p className="overlay-error">{error}</p>}
+            {error && (
+              <p id={`${kind}-overlay-error`} className="overlay-error">
+                {error}
+              </p>
+            )}
+            {kind === 'video' && (
+              <p className="overlay-guidance">
+                PIP disappears when its source reaches EOF, even if the
+                scheduled range continues. The final frame is never frozen.
+              </p>
+            )}
           </div>
         )}
       </article>

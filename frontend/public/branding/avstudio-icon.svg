@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <defs><linearGradient id="avstudio-icon-a" x1="12" y1="14" x2="42" y2="50" gradientUnits="userSpaceOnUse"><stop stop-color="#38BDF8"/><stop offset="1" stop-color="#2563EB"/></linearGradient></defs>
+  <rect width="64" height="64" rx="14" fill="#111827"/>
+  <path fill="url(#avstudio-icon-a)" fill-rule="evenodd" d="M10 49 24 14h8l14 35h-9l-3-8H22l-3 8Zm15-15h7l-3.5-10Z"/>
+  <path fill="#111827" d="m30 17 11 25 11-25h8L44 53h-6L22 17Z"/>
+  <path fill="#F3F4F6" d="m30 17 11 25 11-25h7L44 50h-6L23 17Z"/>
+  <path fill="url(#avstudio-icon-a)" d="m24 14 8 0 5 13-7 3-2-6-3 8-8-3Z"/>
+</svg>

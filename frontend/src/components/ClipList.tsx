@@ -1,12 +1,5 @@
-import { useState } from 'react';
-import {
-  ArrowDown,
-  ArrowUp,
-  GripVertical,
-  Trash2,
-  Play,
-  MoveVertical,
-} from 'lucide-react';
+import { useEffect, useRef } from 'react';
+import { ArrowDown, ArrowUp, Trash2, Play, MoveVertical } from 'lucide-react';
 import {
   estimateFrameRate,
   formatDuration,
@@ -69,50 +62,49 @@ export function ClipList({
   onTrim,
   onSpeedChange,
 }: Props) {
-  const [dragId, setDragId] = useState<string | null>(null);
+  const section = useRef<HTMLElement>(null);
+  const focusAfterRemoval = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    const id = focusAfterRemoval.current;
+    if (id === undefined) return;
+    focusAfterRemoval.current = undefined;
+    const entry = Array.from(
+      section.current?.querySelectorAll<HTMLElement>('[data-clip-id]') ?? [],
+    ).find((item) => item.dataset.clipId === id);
+    const target =
+      entry?.querySelector<HTMLButtonElement>('button:not(:disabled)') ??
+      document.querySelector<HTMLButtonElement>(
+        '.browse-button:not(:disabled)',
+      );
+    target?.focus();
+  }, [clips]);
   return (
-    <section className="clip-section" aria-labelledby="clips-title">
+    <section
+      ref={section}
+      className="clip-section"
+      aria-labelledby="clips-title"
+    >
       <div className="clip-heading">
         <h2 id="clips-title">
           Your clips <span className="count">{clips.length}</span>
         </h2>
         <p>
           <MoveVertical aria-hidden="true" />
-          Arrange your story
+          Sequence order
         </p>
       </div>
       {!clips.length ? (
         <div className="empty-clips">
-          <strong>Your story starts here</strong>
-          <p>Add at least two clips, then put them in the perfect order.</p>
+          <strong>No video clips</strong>
+          <p>
+            Add at least one clip to render an MP4. Use the arrow buttons to
+            arrange them.
+          </p>
         </div>
       ) : (
         <ol className="clip-list" aria-label="Clip order">
           {clips.map((clip, index) => (
-            <li
-              key={clip.id}
-              className={`clip-item ${dragId === clip.id ? 'is-dragging' : ''}`}
-              draggable={!disabled}
-              onDragStart={(e) => {
-                if (disabled) return;
-                e.dataTransfer.effectAllowed = 'move';
-                e.dataTransfer.setData('text/plain', clip.id);
-                setDragId(clip.id);
-              }}
-              onDragEnd={() => setDragId(null)}
-              onDragOver={(e) => {
-                if (dragId && !disabled) e.preventDefault();
-              }}
-              onDrop={(e) => {
-                e.preventDefault();
-                if (!disabled && dragId) {
-                  const from = clips.findIndex((c) => c.id === dragId);
-                  onMove(from, index);
-                }
-                setDragId(null);
-              }}
-            >
-              <GripVertical className="grip" aria-hidden="true" />
+            <li key={clip.id} className="clip-item" data-clip-id={clip.id}>
               <span
                 className="clip-position"
                 aria-label={`Position ${index + 1}`}
@@ -152,6 +144,13 @@ export function ClipList({
               </div>
               <div className="clip-details">
                 <h3 title={clip.file.name}>{clip.file.name}</h3>
+                {clip.metadataStatus !== 'ready' && (
+                  <p>
+                    {clip.metadataStatus === 'error'
+                      ? 'Metadata unavailable'
+                      : 'Reading metadata…'}
+                  </p>
+                )}
                 <p>
                   <span>{formatSize(clip.file.size)}</span>
                   <span className="separator">·</span>
@@ -226,7 +225,11 @@ export function ClipList({
                   className="icon-button remove"
                   aria-label={`Remove ${clip.file.name}`}
                   disabled={disabled}
-                  onClick={() => onRemove(clip.id)}
+                  onClick={() => {
+                    focusAfterRemoval.current =
+                      clips[index + 1]?.id ?? clips[index - 1]?.id ?? null;
+                    onRemove(clip.id);
+                  }}
                 >
                   <Trash2 />
                 </button>

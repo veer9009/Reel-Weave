@@ -82,10 +82,21 @@ def test_health_exposes_tool_availability_and_client_limits(client_factory):
 def test_merge_rejects_too_few_or_too_many_files(client_factory):
     client = client_factory()
 
-    for count in (1, 11):
+    for count in (0, 11):
         response = client.post("/api/merge", files=clips(count), data={"manifest": manifest(count)})
         assert response.status_code == 422
         assert response.json()["error"]["code"] == "invalid_file_count"
+
+
+def test_merge_accepts_one_clip(client_factory):
+    def merge(job):
+        assert len(job.input_paths) == len(job.clip_edits) == 1
+        job.result_path.write_bytes(b"done")
+
+    client = client_factory(merge)
+    response = client.post("/api/merge", files=clips(1), data={"manifest": manifest(1)})
+    assert response.status_code == 202
+    wait_for_status(client, response.json()["job_id"], "completed")
 
 
 def test_merge_requires_valid_manifest_and_matching_clip_count(client_factory):
@@ -503,7 +514,7 @@ def test_openapi_describes_repeated_multipart_files(client_factory):
     files_schema = request_body["content"]["multipart/form-data"]["schema"]["properties"]["files"]
     assert files_schema == {
         "type": "array",
-        "minItems": 2,
+        "minItems": 1,
         "maxItems": 10,
         "items": {"type": "string", "format": "binary"},
     }

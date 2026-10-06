@@ -83,14 +83,7 @@ export function BackgroundAudioTrack({
                 : 'Loading duration…'}
             </span>
           </div>
-          <div className="waveform" aria-label="Waveform preview">
-            {Array.from({ length: 28 }, (_, index) => (
-              <i
-                key={index}
-                style={{ height: `${25 + ((index * 17) % 65)}%` }}
-              />
-            ))}
-          </div>
+          <div className="audio-band" aria-hidden="true" />
           <button
             type="button"
             className="icon-button remove"

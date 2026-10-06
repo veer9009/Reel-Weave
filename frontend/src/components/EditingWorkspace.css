@@ -1,0 +1,228 @@
+.editing-workspace {
+  max-width: 1600px;
+  margin: auto;
+  padding: 24px;
+}
+.editing-workspace h1 {
+  font-size: 20px;
+  letter-spacing: 0;
+  margin: 0 0 16px;
+}
+.workspace-panels {
+  display: grid;
+  grid-template-columns: 260px minmax(360px, 1fr) 300px;
+  gap: 16px;
+  align-items: start;
+}
+.workspace-panels > * {
+  min-width: 0;
+}
+.media-panel,
+.inspector {
+  overflow-wrap: anywhere;
+}
+.inspector details {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 10px;
+  background: var(--card);
+}
+.inspector summary {
+  padding: 12px;
+  cursor: pointer;
+  min-height: 44px;
+  font-weight: 600;
+}
+.inspector-content {
+  padding: 12px;
+}
+.inspector-content .panel {
+  border: 0;
+  padding: 0;
+}
+.inspector-content .overlay-slots,
+.inspector-content .audio-mix-controls {
+  display: grid;
+  grid-template-columns: 1fr;
+}
+.program-monitor {
+  padding: 16px;
+}
+.program-monitor h2 {
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+.program-canvas {
+  aspect-ratio: 16/9;
+  background: #05070c;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.program-canvas > video:not(.program-overlay) {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.program-canvas > p {
+  color: var(--muted);
+  padding: 16px;
+  text-align: center;
+}
+.program-overlay {
+  position: absolute;
+  object-fit: contain;
+  max-height: 40%;
+}
+.overlay-small {
+  max-width: 20%;
+}
+.overlay-medium {
+  max-width: 30%;
+}
+.overlay-large {
+  max-width: 40%;
+}
+.overlay-top-left {
+  left: 1.875%;
+  top: 3.333%;
+}
+.overlay-top-right {
+  right: 1.875%;
+  top: 3.333%;
+}
+.overlay-bottom-left {
+  left: 1.875%;
+  bottom: 3.333%;
+}
+.overlay-bottom-right {
+  right: 1.875%;
+  bottom: 3.333%;
+}
+.overlay-centre {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+.program-transport {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  font-size: 12px;
+}
+.preview-note {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 12px;
+}
+.render-region {
+  margin-top: 16px;
+}
+.render-region:empty {
+  display: none;
+}
+.media-panel .upload-card {
+  padding: 16px;
+}
+.media-panel .clip-item {
+  display: grid;
+  grid-template-columns: 20px 40px minmax(0, 1fr);
+  grid-template-areas: 'position thumbnail details' 'controls controls controls' 'actions actions actions';
+  gap: 10px;
+  padding: 12px;
+}
+.media-panel .clip-position {
+  grid-area: position;
+}
+.media-panel .clip-thumbnail {
+  grid-area: thumbnail;
+  width: 40px;
+}
+.media-panel .clip-details {
+  grid-area: details;
+}
+.media-panel .clip-edit-controls {
+  grid-area: controls;
+}
+.media-panel .clip-actions {
+  grid-area: actions;
+  justify-content: flex-end;
+}
+.media-panel .clip-details {
+  min-width: 0;
+  flex: 1;
+}
+.media-panel .clip-details h3 {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.media-panel .clip-edit-controls,
+.media-panel .clip-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.media-panel .clip-edit-controls {
+  align-items: end;
+  margin: 0;
+  width: 100%;
+}
+.media-panel .clip-edit-controls label {
+  min-width: 0;
+  flex: 1;
+}
+.media-panel .clip-edit-controls select {
+  width: 100%;
+}
+.workspace-validation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  color: #fda4af;
+  margin-bottom: 12px;
+}
+.workspace-validation button {
+  background: #152033;
+  color: #f3f4f6;
+  border: 1px solid #64748b;
+  border-radius: 4px;
+  padding: 8px;
+}
+@media (min-width: 1280px) and (min-height: 800px) {
+  .media-panel,
+  .inspector {
+    max-height: 480px;
+    overflow: auto;
+    scrollbar-gutter: stable;
+  }
+  .program-canvas {
+    max-width: 604px;
+    margin: 0 auto;
+  }
+}
+@media (max-width: 1279px) {
+  .workspace-panels {
+    grid-template-columns: 260px minmax(0, 1fr);
+  }
+  .inspector {
+    grid-column: 1/-1;
+  }
+}
+@media (max-width: 899px) {
+  .editing-workspace {
+    padding: 12px;
+  }
+  .workspace-panels {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .inspector {
+    grid-column: auto;
+  }
+  .program-transport {
+    flex-wrap: wrap;
+  }
+}

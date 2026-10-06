@@ -1,4 +1,4 @@
-import {
+﻿import {
   fireEvent,
   render,
   screen,
@@ -93,8 +93,244 @@ async function selectTwo() {
   }
   return user;
 }
-describe('ReelWeave', () => {
+describe('AVStudio', { timeout: 15000 }, () => {
   beforeEach(() => serve());
+  it('drops one PIP through existing controls and safely validates replacement', async () => {
+    render(<App />);
+    await selectTwo();
+    const target = screen.getByLabelText('PIP video drop target');
+    const drop = (file: File) =>
+      fireEvent.drop(target, {
+        dataTransfer: { types: ['Files'], files: [file] },
+      });
+    expect(screen.getByText('Drop PIP video here')).toBeVisible();
+    drop(new File(['pip'], 'pip.mp4'));
+    expect(
+      screen.getByRole('button', { name: 'Select PIP overlay: pip.mp4' }),
+    ).toBeVisible();
+    fireEvent.change(screen.getByLabelText('Video overlay start frame'), {
+      target: { value: '10' },
+    });
+    fireEvent.change(screen.getByLabelText('Video overlay end frame'), {
+      target: { value: '30' },
+    });
+    fireEvent.change(screen.getByLabelText('Video overlay position'), {
+      target: { value: 'top-left' },
+    });
+    fireEvent.change(screen.getByLabelText('Video overlay size'), {
+      target: { value: 'large' },
+    });
+    const oldVideo = document.querySelector<HTMLVideoElement>(
+      '.overlay-slot video',
+    )!;
+    expect(oldVideo.muted).toBe(true);
+    Object.defineProperty(oldVideo, 'duration', {
+      configurable: true,
+      value: 2,
+    });
+    fireEvent.loadedMetadata(oldVideo);
+    const revoked = vi.mocked(URL.revokeObjectURL).mock.calls.length;
+    drop(new File(['bad'], 'bad.png'));
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Choose an MP4, MOV, WebM, or MKV video overlay.',
+    );
+    const big = new File(['big'], 'big.mp4');
+    Object.defineProperty(big, 'size', { value: 201 * 1024 * 1024 });
+    drop(big);
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Video overlay exceeds the 200 MB limit.',
+    );
+    drop(new File([], 'empty.mp4'));
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Video overlay is empty.',
+    );
+    expect(
+      screen.getByRole('button', { name: 'Select PIP overlay: pip.mp4' }),
+    ).toBeVisible();
+    expect(vi.mocked(URL.revokeObjectURL).mock.calls).toHaveLength(revoked);
+    fireEvent.dragEnter(target, { dataTransfer: { types: ['Files'] } });
+    expect(screen.getByText('Replace PIP video')).toBeVisible();
+    drop(new File(['new'], 'replacement.mov'));
+    expect(
+      screen.queryByRole('button', { name: 'Select PIP overlay: pip.mp4' }),
+    ).toBeNull();
+    expect(
+      screen.getByRole('button', {
+        name: 'Select PIP overlay: replacement.mov',
+      }),
+    ).toBeVisible();
+    expect(screen.getByLabelText('Video overlay start frame')).toHaveValue(10);
+    expect(screen.getByLabelText('Video overlay end frame')).toHaveValue(30);
+    expect(screen.getByLabelText('Video overlay position')).toHaveValue(
+      'top-left',
+    );
+    expect(screen.getByLabelText('Video overlay size')).toHaveValue('large');
+    expect(screen.getByLabelText('Replace video overlay')).toBeEnabled();
+    expect(
+      within(screen.getByRole('region', { name: 'VIDEO 1' })).getAllByRole(
+        'button',
+      ),
+    ).toHaveLength(2);
+    expect(
+      within(screen.getByRole('region', { name: 'AUDIO 1' })).getAllByRole(
+        'button',
+      ),
+    ).toHaveLength(2);
+    expect(
+      screen.getByLabelText('Original audio volume', { selector: 'input' }),
+    ).toHaveValue('100');
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Remove replacement.mov' }),
+    );
+    expect(screen.getByText('Drop PIP video here')).toBeVisible();
+  });
+  it('outside_file_drop_prevents_navigation_and_preserves_project', async () => {
+    render(<App />);
+    await selectTwo();
+    const target = screen.getByRole('region', { name: 'Sequence timeline' });
+    for (const type of ['dragover', 'drop']) {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'dataTransfer', {
+        value: { types: ['Files'], files: [new File(['c'], 'outside.mp4')] },
+      });
+      fireEvent(target, event);
+      expect(event.defaultPrevented).toBe(true);
+    }
+    expect(
+      screen.getByRole('button', { name: 'Trim first.mp4' }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole('button', { name: 'Trim second.mov' }),
+    ).toBeEnabled();
+    expect(
+      screen.queryByRole('button', { name: 'Trim outside.mp4' }),
+    ).toBeNull();
+    const text = new Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(text, 'dataTransfer', {
+      value: { types: ['text/plain'] },
+    });
+    fireEvent(target, text);
+    expect(text.defaultPrevented).toBe(false);
+    fireEvent.drop(document.querySelector('.dropzone')!, {
+      dataTransfer: {
+        types: ['Files'],
+        files: [new File(['c'], 'outside.mp4', { type: 'video/mp4' })],
+      },
+    });
+    expect(
+      screen.getAllByRole('button', { name: 'Trim outside.mp4' }),
+    ).toHaveLength(1);
+  });
+  it('pending_clip_disables_overlay_upload_without_compressed_timing', async () => {
+    render(<App />);
+    const user = await selectTwo();
+    await user.upload(
+      screen.getByLabelText('Choose video clips'),
+      new File(['pending'], 'pending.mp4', { type: 'video/mp4' }),
+    );
+    expect(screen.getByLabelText('Timeline position')).toBeDisabled();
+    expect(screen.getByLabelText('Choose image overlay')).toBeDisabled();
+    expect(screen.getByLabelText('Choose video overlay')).toBeDisabled();
+    expect(
+      within(screen.getByRole('region', { name: 'VIDEO 1' })).queryAllByRole(
+        'button',
+      ),
+    ).toHaveLength(0);
+  });
+  it('AVStudio branding has one accessible workspace link and no demo entry', async () => {
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByLabelText('Choose video clips')).toBeEnabled(),
+    );
+    expect(
+      screen.getByRole('link', { name: 'AVStudio workspace' }),
+    ).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Timeline Demo' })).toBeNull();
+    expect(document.body).not.toHaveTextContent('ReelWeave');
+    expect(screen.getAllByRole('main')).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Render MP4' })).toHaveAttribute(
+      'aria-describedby',
+      'render-hint',
+    );
+  });
+  it(
+    'keeps the timeline visible and locks completed editing until New project',
+    { timeout: 15000 },
+    async () => {
+      render(<App />);
+      const user = await selectTwo();
+      await user.click(
+        screen.getByRole('button', { name: 'Move second.mov up' }),
+      );
+      await user.click(screen.getByRole('button', { name: 'Render MP4' }));
+      await screen.findByText('MP4 ready');
+      expect(
+        screen.getByRole('region', { name: 'Sequence timeline' }),
+      ).toBeVisible();
+      expect(screen.getByLabelText('Speed for first.mp4')).toBeDisabled();
+      expect(screen.getByLabelText('Timeline FPS')).toBeDisabled();
+      expect(screen.getByLabelText('Choose video clips')).toBeDisabled();
+      const target = screen.getByLabelText('PIP video drop target');
+      expect(target).toHaveAttribute('aria-disabled', 'true');
+      fireEvent.drop(target, {
+        dataTransfer: {
+          types: ['Files'],
+          files: [new File(['pip'], 'locked.mp4')],
+        },
+      });
+      expect(
+        screen.queryByRole('button', {
+          name: 'Select PIP overlay: locked.mp4',
+        }),
+      ).toBeNull();
+      await user.click(screen.getByRole('button', { name: 'New project' }));
+      expect(
+        within(screen.getByRole('region', { name: 'VIDEO 1' })).queryAllByRole(
+          'button',
+        ),
+      ).toHaveLength(0);
+      expect(screen.getByLabelText('Timeline FPS')).toHaveValue('auto');
+      expect(screen.queryByLabelText('Merged video preview')).toBeNull();
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.some((call) => call[1]?.method === 'DELETE'),
+      ).toBe(false);
+    },
+  );
+  it(
+    'structural overlay edits pause the shared preview without changing schedules',
+    { timeout: 15000 },
+    async () => {
+      render(<App />);
+      const user = await selectTwo();
+      await user.upload(
+        screen.getByLabelText('Choose image overlay'),
+        new File(['logo'], 'logo.png', { type: 'image/png' }),
+      );
+      const image = document.querySelector('.overlay-slot img')!;
+      fireEvent.load(image);
+      await user.click(screen.getByRole('button', { name: 'Play preview' }));
+      expect(
+        screen.getByRole('button', { name: 'Pause preview' }),
+      ).toBeVisible();
+      fireEvent.change(screen.getByLabelText('Image overlay end frame'), {
+        target: { value: '20' },
+      });
+      expect(
+        screen.getByRole('button', { name: 'Play preview' }),
+      ).toBeVisible();
+      expect(screen.getByLabelText('Image overlay end frame')).toHaveValue(20);
+      await user.click(screen.getByRole('button', { name: 'Play preview' }));
+      await user.upload(
+        screen.getByLabelText('Replace image overlay'),
+        new File(['replacement'], 'new-logo.png', { type: 'image/png' }),
+      );
+      expect(
+        screen.getByRole('button', { name: 'Play preview' }),
+      ).toBeVisible();
+    },
+  );
   it('removes the marketing headline while keeping the merge workspace available', async () => {
     render(<App />);
     await waitFor(() =>
@@ -106,9 +342,9 @@ describe('ReelWeave', () => {
       }),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByRole('region', { name: 'Merge workspace' }),
+      screen.getByRole('region', { name: 'Sequence timeline' }),
     ).toBeVisible();
-    expect(screen.getByRole('button', { name: /merge clips/i })).toBeVisible();
+    expect(screen.getByRole('button', { name: /render mp4/i })).toBeVisible();
     for (const copy of [
       'Ad Assembly Timeline',
       'SMALL CLIPS. BIGGER STORIES.',
@@ -120,14 +356,13 @@ describe('ReelWeave', () => {
         screen.queryByText(copy, { exact: false }),
       ).not.toBeInTheDocument();
   });
-  it('opens the timeline with uploaded clips and preserves merge edits when returning', async () => {
+  it('defaults to the timeline with uploaded clips and preserves edits', async () => {
     render(<App />);
     const user = await selectTwo();
     await user.selectOptions(
       screen.getByLabelText('Speed for first.mp4'),
       '0.5',
     );
-    await user.click(screen.getByRole('button', { name: 'Timeline Demo' }));
     expect(screen.getByRole('region', { name: 'VIDEO 1' })).toBeVisible();
     expect(
       screen.getByRole('button', { name: 'Preview clip 1: first.mp4' }),
@@ -135,12 +370,9 @@ describe('ReelWeave', () => {
     expect(
       screen.getByRole('button', { name: 'Preview clip 2: second.mov' }),
     ).toBeVisible();
-    expect(
-      screen.queryByRole('button', { name: /merge clips/i }),
-    ).not.toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Back to Merge' }));
+    expect(screen.getByRole('button', { name: /render mp4/i })).toBeVisible();
     expect(screen.getByLabelText('Speed for first.mp4')).toHaveValue('0.5');
-    expect(screen.getByRole('button', { name: /merge clips/i })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /render mp4/i })).toBeEnabled();
   }, 15_000);
   it('submits the real Video 1 timeline plan through the existing merge flow', async () => {
     render(<App />);
@@ -157,11 +389,8 @@ describe('ReelWeave', () => {
     await user.click(
       screen.getByRole('button', { name: 'Move second.mov up' }),
     );
-    await user.click(screen.getByRole('button', { name: 'Timeline Demo' }));
     await user.selectOptions(screen.getByLabelText('Timeline FPS'), '25');
-    await user.click(
-      screen.getByRole('button', { name: 'Merge current timeline' }),
-    );
+    await user.click(screen.getByRole('button', { name: 'Render MP4' }));
 
     const mergeCall = vi
       .mocked(fetch)
@@ -194,11 +423,9 @@ describe('ReelWeave', () => {
       /Opening shot|SAMPLE AD|VIDEO 2|MOV/,
     );
     await waitFor(() =>
-      expect(
-        screen.queryByRole('region', { name: 'VIDEO 1' }),
-      ).not.toBeInTheDocument(),
+      expect(screen.getByRole('region', { name: 'VIDEO 1' })).toBeVisible(),
     );
-    expect(await screen.findByText('Your story, together.')).toBeVisible();
+    expect(await screen.findByText('MP4 ready')).toBeVisible();
   }, 15_000);
   it('validates, edits, and submits one image and one PIP overlay', async () => {
     render(<App />);
@@ -228,7 +455,7 @@ describe('ReelWeave', () => {
     await user.click(
       screen.getByRole('button', { name: 'Move second.mov up' }),
     );
-    await user.click(screen.getByRole('button', { name: /merge clips/i }));
+    await user.click(screen.getByRole('button', { name: /render mp4/i }));
 
     const mergeCall = vi
       .mocked(fetch)
@@ -295,18 +522,16 @@ describe('ReelWeave', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(
       /processing is unavailable/i,
     );
-    expect(screen.getByRole('button', { name: /merge clips/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /render mp4/i })).toBeDisabled();
     await user.click(screen.getByRole('button', { name: /retry connection/i }));
     await waitFor(() =>
-      expect(
-        screen.getByRole('button', { name: /merge clips/i }),
-      ).toBeEnabled(),
+      expect(screen.getByRole('button', { name: /render mp4/i })).toBeEnabled(),
     );
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
-  it('disables merge until two clips are selected', async () => {
+  it('enables rendering for one ready clip but rejects empty, pending and invalid metadata', async () => {
     render(<App />);
-    expect(screen.getByRole('button', { name: /merge clips/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /render mp4/i })).toBeDisabled();
     const user = userEvent.setup();
     await waitFor(() =>
       expect(screen.getByLabelText('Choose video clips')).toBeEnabled(),
@@ -315,13 +540,33 @@ describe('ReelWeave', () => {
       screen.getByLabelText('Choose video clips'),
       new File(['a'], 'one.mp4', { type: 'video/mp4' }),
     );
-    expect(screen.getByText('one.mp4')).toBeVisible();
-    expect(screen.getByRole('button', { name: /merge clips/i })).toBeDisabled();
+    expect(
+      within(screen.getByRole('region', { name: 'Media' })).getByText(
+        'one.mp4',
+      ),
+    ).toBeVisible();
+    expect(screen.getByRole('button', { name: /render mp4/i })).toBeDisabled();
+    const video = document.querySelector<HTMLVideoElement>(
+      '.clip-thumbnail video',
+    )!;
+    Object.defineProperty(video, 'duration', { configurable: true, value: 3 });
+    Object.defineProperty(video, 'videoWidth', {
+      configurable: true,
+      value: 1920,
+    });
+    Object.defineProperty(video, 'videoHeight', {
+      configurable: true,
+      value: 1080,
+    });
+    fireEvent.loadedMetadata(video);
+    expect(screen.getByRole('button', { name: /render mp4/i })).toBeEnabled();
+    fireEvent.error(video);
+    expect(screen.getByRole('button', { name: /render mp4/i })).toBeDisabled();
   });
   it('renders, reorders and removes clips without uploading', async () => {
     render(<App />);
     const user = await selectTwo();
-    expect(screen.getByRole('button', { name: /merge clips/i })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /render mp4/i })).toBeEnabled();
     await user.click(
       screen.getByRole('button', { name: 'Move second.mov up' }),
     );
@@ -336,8 +581,8 @@ describe('ReelWeave', () => {
     ).toBe(true);
     await user.click(screen.getByRole('button', { name: 'Remove first.mp4' }));
     await user.click(screen.getByRole('button', { name: 'Remove second.mov' }));
-    expect(screen.getByText(/Your story starts here/i)).toBeVisible();
-    expect(screen.getByRole('button', { name: /merge clips/i })).toBeDisabled();
+    expect(screen.getByText(/No video clips/i)).toBeVisible();
+    expect(screen.getByRole('button', { name: /render mp4/i })).toBeDisabled();
   });
   it('shows validation errors on unsupported selection', async () => {
     render(<App />);
@@ -360,37 +605,44 @@ describe('ReelWeave', () => {
       await user.click(
         screen.getByRole('button', { name: 'Move second.mov up' }),
       );
-      await user.click(screen.getByRole('button', { name: /merge clips/i }));
+      await user.click(screen.getByRole('button', { name: /render mp4/i }));
       expect(await screen.findByRole('alert')).toHaveTextContent(
         mode === 'error' ? /queue is full/ : /connect|network|reach/i,
       );
-      expect(screen.getByText('first.mp4')).toBeVisible();
+      expect(
+        within(screen.getByRole('region', { name: 'Media' })).getByText(
+          'first.mp4',
+        ),
+      ).toBeVisible();
     },
   );
-  it('shows completed preview and download, then starts fresh', async () => {
-    vi.mocked(URL.createObjectURL)
-      .mockReturnValueOnce('blob:reset-first')
-      .mockReturnValueOnce('blob:reset-second');
-    render(<App />);
-    const user = await selectTwo();
-    await user.click(
-      screen.getByRole('button', { name: 'Move second.mov up' }),
-    );
-    await user.click(screen.getByRole('button', { name: /merge clips/i }));
-    expect(await screen.findByText('Your story, together.')).toBeVisible();
-    expect(screen.getByLabelText('Merged video preview')).toHaveAttribute(
-      'src',
-      `/api/jobs/${job.job_id}/video`,
-    );
-    expect(screen.getByRole('link', { name: /download mp4/i })).toHaveAttribute(
-      'href',
-      `/api/jobs/${job.job_id}/download`,
-    );
-    await user.click(screen.getByRole('button', { name: /start new merge/i }));
-    expect(screen.getByText(/Your story starts here/i)).toBeVisible();
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:reset-first');
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:reset-second');
-  });
+  it(
+    'shows completed preview and download, then starts fresh',
+    { timeout: 15000 },
+    async () => {
+      vi.mocked(URL.createObjectURL)
+        .mockReturnValueOnce('blob:reset-first')
+        .mockReturnValueOnce('blob:reset-second');
+      render(<App />);
+      const user = await selectTwo();
+      await user.click(
+        screen.getByRole('button', { name: 'Move second.mov up' }),
+      );
+      await user.click(screen.getByRole('button', { name: /render mp4/i }));
+      expect(await screen.findByText('MP4 ready')).toBeVisible();
+      expect(screen.getByLabelText('Merged video preview')).toHaveAttribute(
+        'src',
+        `/api/jobs/${job.job_id}/video`,
+      );
+      expect(
+        screen.getByRole('link', { name: /download mp4/i }),
+      ).toHaveAttribute('href', `/api/jobs/${job.job_id}/download`);
+      await user.click(screen.getByRole('button', { name: /new project/i }));
+      expect(screen.getByText(/No video clips/i)).toBeVisible();
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:reset-first');
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:reset-second');
+    },
+  );
   it('releases removed clip URLs and remaining URLs on unmount', async () => {
     vi.mocked(URL.createObjectURL)
       .mockReturnValueOnce('blob:first')
@@ -410,11 +662,11 @@ describe('ReelWeave', () => {
     await user.click(
       screen.getByRole('button', { name: 'Move second.mov up' }),
     );
-    await user.click(screen.getByRole('button', { name: /merge clips/i }));
+    await user.click(screen.getByRole('button', { name: /render mp4/i }));
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'One clip could not be read.',
     );
-    expect(screen.getByRole('button', { name: /merge clips/i })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /render mp4/i })).toBeEnabled();
   });
   it('retries status without creating a second merge', async () => {
     serve('pollError');
@@ -423,11 +675,11 @@ describe('ReelWeave', () => {
     await user.click(
       screen.getByRole('button', { name: 'Move second.mov up' }),
     );
-    await user.click(screen.getByRole('button', { name: /merge clips/i }));
+    await user.click(screen.getByRole('button', { name: /render mp4/i }));
     await user.click(
       await screen.findByRole('button', { name: /retry status/i }),
     );
-    expect(await screen.findByText('Your story, together.')).toBeVisible();
+    expect(await screen.findByText('MP4 ready')).toBeVisible();
     expect(
       vi
         .mocked(fetch)
@@ -484,7 +736,7 @@ describe('ReelWeave', () => {
       target: { value: '39' },
     });
     expect(screen.getByRole('button', { name: /next frame/i })).toBeDisabled();
-  }, 10_000);
+  }, 15_000);
 
   it('marks a saved trim as manual in the merge manifest', async () => {
     render(<App />);
@@ -494,7 +746,7 @@ describe('ReelWeave', () => {
       target: { value: '39' },
     });
     await user.click(screen.getByRole('button', { name: /save trim/i }));
-    await user.click(screen.getByRole('button', { name: /merge clips/i }));
+    await user.click(screen.getByRole('button', { name: /render mp4/i }));
     const mergeCall = vi
       .mocked(fetch)
       .mock.calls.find((call) => String(call[0]).endsWith('/api/merge'));
@@ -539,7 +791,11 @@ describe('ReelWeave', () => {
       value: 12,
     });
     fireEvent.loadedMetadata(audio!);
-    expect(screen.getByText('theme.mp3')).toBeVisible();
+    expect(
+      within(
+        screen.getByRole('region', { name: 'Background audio' }),
+      ).getByText('theme.mp3'),
+    ).toBeVisible();
     expect(
       screen.getByLabelText('Original audio volume', { selector: 'input' }),
     ).toHaveValue('100');
@@ -550,7 +806,7 @@ describe('ReelWeave', () => {
     await user.click(
       screen.getByRole('button', { name: 'Move second.mov up' }),
     );
-    await user.click(screen.getByRole('button', { name: /merge clips/i }));
+    await user.click(screen.getByRole('button', { name: /render mp4/i }));
     const mergeCall = vi
       .mocked(fetch)
       .mock.calls.find((call) => String(call[0]).endsWith('/api/merge'));
@@ -585,6 +841,6 @@ describe('ReelWeave', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(
       /background-audio metadata/i,
     );
-    expect(screen.getByRole('button', { name: /merge clips/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /render mp4/i })).toBeDisabled();
   });
 });

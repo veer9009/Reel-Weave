@@ -52,6 +52,98 @@ def wait_for_job(client: TestClient, job_id: str) -> dict:
     pytest.fail(f"Job did not finish; observed states: {observed}")
 
 
+def test_real_one_clip_inclusive_trim_fps_download_and_delete(tmp_path: Path, media_tools):
+    ffmpeg, ffprobe = media_tools
+    source = tmp_path / "single.mp4"
+    run_media(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-nostdin",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x180:rate=30",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000",
+            "-t",
+            "1",
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "aac",
+            str(source),
+        ]
+    )
+    settings = Settings(working_root=tmp_path / "work", ffmpeg_path=ffmpeg, ffprobe_path=ffprobe)
+    value = {
+        "clips": [
+            {
+                "client_id": "single",
+                "start_frame": 6,
+                "end_frame": 20,
+                "trim_saved": True,
+                "speed": 1,
+            }
+        ],
+        "order": ["single"],
+        "output_fps": 24,
+        "audio": {
+            "original_volume": 1,
+            "original_muted": False,
+            "music_volume": 0.3,
+            "music_muted": False,
+        },
+    }
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/api/merge",
+            files=[("files", (source.name, source.read_bytes(), "video/mp4"))],
+            data={"manifest": json.dumps(value)},
+        )
+        assert response.status_code == 202, response.text
+        job_id = response.json()["job_id"]
+        assert wait_for_job(client, job_id)["status"] == "completed"
+        preview = client.get(f"/api/jobs/{job_id}/video")
+        download = client.get(f"/api/jobs/{job_id}/download")
+        assert preview.status_code == download.status_code == 200
+        assert preview.content == download.content
+        assert download.headers["content-type"] == "video/mp4"
+        assert "attachment" in download.headers["content-disposition"]
+        output = tmp_path / "single-output.mp4"
+        output.write_bytes(download.content)
+        probe = json.loads(
+            run_media(
+                [
+                    ffprobe,
+                    "-v",
+                    "error",
+                    "-show_streams",
+                    "-show_format",
+                    "-of",
+                    "json",
+                    str(output),
+                ]
+            )
+        )
+        video = next(stream for stream in probe["streams"] if stream["codec_type"] == "video")
+        audio = next(stream for stream in probe["streams"] if stream["codec_type"] == "audio")
+        assert video["codec_name"] == "h264"
+        assert video["r_frame_rate"] == "24/1"
+        assert int(video["nb_frames"]) == 12  # 15 inclusive source frames / 30 FPS * 24 FPS
+        assert (video["width"], video["height"], video["pix_fmt"]) == (1280, 720, "yuv420p")
+        assert audio["codec_name"] == "aac"
+        assert "mp4" in probe["format"]["format_name"].split(",")
+        assert client.delete(f"/api/jobs/{job_id}").status_code == 204
+        assert client.get(f"/api/jobs/{job_id}/video").status_code == 404
+        assert not (settings.upload_root / job_id).exists()
+        assert not (settings.output_root / job_id).exists()
+
+
 def test_real_mixed_merge_playback_download_and_delete(tmp_path: Path, media_tools):
     ffmpeg, ffprobe = media_tools
     source_dir = tmp_path / "fixtures"
@@ -388,8 +480,9 @@ def test_real_frame_trim_speed_and_music_length(
         assert any(stream["codec_type"] == "audio" for stream in probe["streams"])
 
 
+@pytest.mark.parametrize("project_fps,pip_start,pip_end", [(30, 5, 40), (25, 10, 49), (25, 10, 14)])
 def test_real_overlay_boundaries_transparency_z_order_and_ignored_pip_audio(
-    tmp_path: Path, media_tools
+    tmp_path: Path, media_tools, project_fps: int, pip_start: int, pip_end: int
 ):
     ffmpeg, ffprobe = media_tools
     sources = []
@@ -405,7 +498,7 @@ def test_real_overlay_boundaries_transparency_z_order_and_ignored_pip_audio(
                 "-f",
                 "lavfi",
                 "-i",
-                f"color=c={color}:s=320x180:r=30:d=1",
+                f"color=c={color}:s=320x180:r={project_fps}:d=1",
                 "-f",
                 "lavfi",
                 "-i",
@@ -433,7 +526,7 @@ def test_real_overlay_boundaries_transparency_z_order_and_ignored_pip_audio(
             "-f",
             "lavfi",
             "-i",
-            "color=c=lime:s=160x90:r=30:d=0.4",
+            f"color=c=lime:s=160x90:r={project_fps}:d=0.4",
             "-f",
             "lavfi",
             "-i",
@@ -486,11 +579,11 @@ def test_real_overlay_boundaries_transparency_z_order_and_ignored_pip_audio(
     settings = Settings(working_root=tmp_path / "work", ffmpeg_path=ffmpeg, ffprobe_path=ffprobe)
     manifest = {
         "clips": [
-            {"client_id": "red", "start_frame": 0, "end_frame": 29, "speed": 1},
-            {"client_id": "blue", "start_frame": 0, "end_frame": 29, "speed": 1},
+            {"client_id": "red", "start_frame": 0, "end_frame": project_fps - 1, "speed": 1},
+            {"client_id": "blue", "start_frame": 0, "end_frame": project_fps - 1, "speed": 1},
         ],
         "order": ["red", "blue"],
-        "output_fps": 30,
+        "output_fps": project_fps,
         "overlays": {
             "image": {
                 "start_frame": 10,
@@ -499,8 +592,8 @@ def test_real_overlay_boundaries_transparency_z_order_and_ignored_pip_audio(
                 "size": "small",
             },
             "video": {
-                "start_frame": 5,
-                "end_frame": 40,
+                "start_frame": pip_start,
+                "end_frame": pip_end,
                 "position": "bottom-right",
                 "size": "medium",
             },
@@ -528,6 +621,20 @@ def test_real_overlay_boundaries_transparency_z_order_and_ignored_pip_audio(
         assert terminal["status"] == "completed", terminal
         output = tmp_path / "overlaid.mp4"
         output.write_bytes(client.get(f"/api/jobs/{response.json()['job_id']}/download").content)
+        baseline_manifest = {**manifest, "overlays": {"image": None, "video": None}}
+        baseline_response = client.post(
+            "/api/merge",
+            files=[
+                *[("files", (path.name, path.read_bytes(), "video/mp4")) for path in sources],
+                ("background_audio", (music.name, music.read_bytes(), "audio/wav")),
+            ],
+            data={"manifest": json.dumps(baseline_manifest)},
+        )
+        assert baseline_response.status_code == 202, baseline_response.text
+        baseline_id = baseline_response.json()["job_id"]
+        assert wait_for_job(client, baseline_id)["status"] == "completed"
+        baseline = tmp_path / "baseline.mp4"
+        baseline.write_bytes(client.get(f"/api/jobs/{baseline_id}/download").content)
 
     probe = json.loads(
         run_media(
@@ -547,13 +654,13 @@ def test_real_overlay_boundaries_transparency_z_order_and_ignored_pip_audio(
     video = next(stream for stream in probe["streams"] if stream["codec_type"] == "video")
     audio = next(stream for stream in probe["streams"] if stream["codec_type"] == "audio")
     assert (video["codec_name"], video["width"], video["height"]) == ("h264", 1280, 720)
-    assert video["r_frame_rate"] == "30/1"
-    assert int(video["nb_read_frames"]) == 60
+    assert video["r_frame_rate"] == f"{project_fps}/1"
+    assert int(video["nb_read_frames"]) == project_fps * 2
     assert (audio["codec_name"], audio["sample_rate"], audio["channels"]) == ("aac", "48000", 2)
     assert probe["format"]["format_name"].startswith("mov,mp4")
     assert abs(float(probe["format"]["duration"]) - 2.0) <= 0.08
 
-    def pixel(frame: int, x: int, y: int) -> tuple[int, int, int]:
+    def pixel(frame: int, x: int, y: int, media: Path = output) -> tuple[int, int, int]:
         value = run_media(
             [
                 ffmpeg,
@@ -561,7 +668,7 @@ def test_real_overlay_boundaries_transparency_z_order_and_ignored_pip_audio(
                 "error",
                 "-nostdin",
                 "-i",
-                str(output),
+                str(media),
                 "-vf",
                 f"select=eq(n\\,{frame}),crop=2:2:{x}:{y},scale=1:1",
                 "-frames:v",
@@ -576,12 +683,27 @@ def test_real_overlay_boundaries_transparency_z_order_and_ignored_pip_audio(
         assert len(value) == 3
         return tuple(value)
 
-    assert pixel(4, 1000, 500)[0] > 180
-    assert pixel(5, 1000, 500)[1] > 180
+    assert pixel(pip_start - 1, 1000, 500)[0] > 180
+    assert pixel(pip_start, 1000, 500)[1] > 180
     assert pixel(10, 1120, 560)[1] > 180  # transparent PNG area exposes PIP
     marker = pixel(10, 1184, 622)
     assert marker[0] > 160 and marker[1] > 160 and marker[2] < 80, marker  # image above PIP
-    assert pixel(17, 1000, 500)[0] > 180  # short PIP is absent, never frozen
+    eof_frame = pip_start + int(project_fps * 0.4)
+    absent_frame = min(eof_frame, pip_end + 1)
+    assert pixel(absent_frame - 1, 1000, 500)[1] > 180
+    for frame in {absent_frame, absent_frame + 1, pip_end}:
+        if frame < absent_frame:
+            continue
+        actual = pixel(frame, 1000, 500)
+        expected = pixel(frame, 1000, 500, baseline)
+        assert all(abs(a - b) <= 12 for a, b in zip(actual, expected, strict=True)), (
+            frame,
+            actual,
+            expected,
+        )
+    marker_after_eof = pixel(absent_frame, 1184, 622)
+    assert marker_after_eof[0] > 160 and marker_after_eof[1] > 160
+
     assert pixel(36, 1184, 622)[2] > 180  # image ended on frame 35
 
     pcm = run_media(

@@ -17,7 +17,7 @@ export function UploadCard({ disabled, limits, onSelect }: Props) {
         </span>
         <div>
           <h2 id="upload-title">Add your clips</h2>
-          <p>A few moments. One great story.</p>
+          <p>Add source videos to Video 1.</p>
         </div>
       </div>
       <div
@@ -42,7 +42,7 @@ export function UploadCard({ disabled, limits, onSelect }: Props) {
           <CloudUpload aria-hidden="true" />
         </span>
         <h3>Drag & drop your videos here</h3>
-        <p>Every story starts with a few clips.</p>
+        <p>Files are uploaded to the configured backend when rendering.</p>
         <button
           className="browse-button"
           type="button"

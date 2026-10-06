@@ -1,28 +1,34 @@
-# ReelWeave
+# AVStudio
 
-**Turn your clips into one story.**
+AVStudio (formerly ReelWeave) is a local video editing workspace and the application
+layer of DevOps portfolio Project 3. Its default timeline displays uploaded clips,
+overlays and audio, then renders an MP4 through the existing FFmpeg backend.
+It uses no paid APIs or external video-processing services. Historical milestone
+specifications and plans retain their original names under `docs/superpowers`.
 
-ReelWeave is a local video-merging web application and the application layer of
-DevOps portfolio Project 3. Select clips, arrange them, and merge them into an MP4
-with FFmpeg. It uses no paid APIs or external video-processing services.
-
-[Verification results and executed commands](docs/verification.md) ·
-[Desktop screenshot](docs/screenshots/desktop-arranged.png) ·
-[Mobile result screenshot](docs/screenshots/mobile-result.png)
+[Verification record](docs/verification.md) ·
+[Desktop workspace](docs/screenshots/desktop-arranged.png) ·
+[Desktop result](docs/screenshots/desktop-result.png) ·
+[Mobile result](docs/screenshots/mobile-result.png)
 
 ## What it does
 
-- Select or drop MP4, MOV, WebM, and MKV clips; files stay in your browser until you press Merge.
-- Arrange 2–20 clips with drag-and-drop or keyboard-accessible move buttons.
-- See file names, sizes, order, and duration when your browser can read the metadata.
-- Trim every clip with inclusive frame handles, exact frame/timestamp readouts,
-  a playhead, and one-frame previous/next controls.
-- Slow each clip to 0.75x or 0.5x after trimming.
-- Add one MP3, WAV, AAC, or M4A background track, set original/music volume,
-  and mute either track. Short music loops; long music ends with the video.
-- Merge different resolutions, frame rates, codecs, and clips without audio.
-- Follow real job states, preview the output, and download an H.264/AAC MP4.
-- Remove temporary files automatically after a configurable retention period.
+- Open directly into a four-track editing workspace: Video 1 sequential clips,
+  Video 2 image/logo and PIP slots, Audio 1 original clip audio, Audio 2 background music.
+- Select or drop MP4, MOV, WebM and MKV source files; uploads begin at **Render MP4**.
+- Arrange clips with accessible move-up/move-down buttons; the backend supplies count/size limits.
+- Trim inclusive source frames, step one frame at a time, and use 1x, 0.75x or 0.5x speed.
+- Select Auto FPS from the first clip or explicit 24, 25, 30, 50 or 60 FPS.
+- Configure one PNG/JPG image/logo and one video/PIP overlay with inclusive project-frame
+  ranges, five positions and three sizes. Image/logo renders above PIP.
+- Add one MP3, WAV, AAC or M4A background track; adjust and mute original/music audio.
+  Short music loops and long music ends with the project.
+- Select timeline items, inspect source details and seek with a shared integer ruler/playhead.
+  Empty or incomplete projects have no sample timing or synthetic waveforms.
+- Use a silent, approximate browser preview. PIP disappears at source EOF in both
+  browser preview and rendered MP4, even when its scheduled range continues; it never freezes.
+- Follow real job stages, play the authoritative rendered composition/audio and download MP4.
+- Release browser resources with **New project**; backend retention cleanup remains unchanged.
 
 ## Architecture
 
@@ -51,8 +57,8 @@ processes queued jobs sequentially to limit CPU use. No database is required.
 ReelWeave/
 ├── frontend/              React app, Vitest tests, npm lockfile
 │   └── src/
-│       ├── components/    Upload, clip list, summary and result UI
-│       └── lib/           API and clip utilities
+│       ├── components/    Workspace, media, monitor, inspector, timeline and result UI
+│       └── lib/           API, clip and timeline utilities
 ├── backend/               FastAPI application and pip requirements
 │   └── app/               Configuration, routes, jobs, storage and FFmpeg
 ├── tests/
@@ -109,7 +115,7 @@ required encoders may pass the executable check but fail a merge; check
 
 ## Local setup and startup
 
-Run commands from the ReelWeave project root unless a `cd` says otherwise.
+Run commands from the project root unless a `cd` says otherwise.
 All Python dependencies go into a project-local virtual environment. The frontend
 dependencies stay in `frontend/node_modules`.
 
@@ -153,36 +159,54 @@ API docs: **http://127.0.0.1:8000/docs**. OpenAPI schema:
 
 ### Use the app
 
-1. Select at least two videos. Unsupported or oversized selections produce an error.
-2. Put them in order using the drag handles or move-up/move-down buttons.
-3. Use **Trim** to choose inclusive source frames and use **Speed** for each clip.
-4. Optionally choose one background-audio file and adjust the two audio tracks.
-5. Press **Merge clips**. Files upload only now.
-6. Keep the tab open while the job is queued or processing, then preview or download the MP4.
-7. Press **Start new merge** to clear the browser selection. Retention cleanup handles the old job.
+1. Open the default editing workspace and select at least one source video.
+2. Arrange them with the move buttons. Use **Trim** for inclusive source frames and **Speed** per clip.
+3. Choose project FPS alongside the timeline ruler. Browser-derived source FPS is marked estimated.
+4. Optionally configure both Video 2 overlay slots and original/background audio in the inspector.
+   Source trims use source frames; overlay schedules and the ruler use project frames.
+5. Select an interval to inspect it and seek its start, or use **Inspect clip** for very short intervals.
+   Seeking elsewhere leaves inspector selection intact. Browser sequence preview is silent and approximate.
+6. Press **Render MP4**. Files upload now; the timeline remains present during upload and processing.
+7. Play or download the completed MP4. Editing stays locked until **New project**, which clears
+   clips, overlays, music, job/result, selection and project settings without deleting the backend result.
+
+The internal `resetPlayback()` operation only stops playback and returns the ready
+project playhead to frame 0. It preserves the project, selection, settings, results,
+URLs, requests and structural revision; it is distinct from New project.
+
+## Workspace screenshots
+
+| State             | Evidence                                                                      |
+| ----------------- | ----------------------------------------------------------------------------- |
+| Desktop empty     | [Default empty workspace](docs/screenshots/desktop-empty.png)                 |
+| Desktop arranged  | [Real four-track sequence](docs/screenshots/desktop-arranged.png)             |
+| Desktop completed | [Rendered MP4 result](docs/screenshots/desktop-result.png)                    |
+| Mobile arranged   | [Stacked editing controls and timeline](docs/screenshots/mobile-arranged.png) |
+| Mobile completed  | [MP4 playback, download and New project](docs/screenshots/mobile-result.png)  |
 
 ## Environment configuration
 
-The backend loads `backend/.env` when launched from the project root. Existing
+The `REELWEAVE_*` names and existing storage/package/API/output names remain legacy
+configuration contracts for compatibility. The backend loads `backend/.env` when launched from the project root. Existing
 process environment variables take precedence. Copy the example once, then edit
 your `.env`; do not replace an existing configuration when updating the project.
 Relative storage paths resolve from the current working directory.
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `REELWEAVE_WORKING_ROOT` | `./var/reelweave` | Dedicated root for application temporary data |
-| `REELWEAVE_UPLOAD_ROOT` | `<working root>/uploads` | Job-specific uploaded sources |
-| `REELWEAVE_OUTPUT_ROOT` | `<working root>/outputs` | Job-specific downloadable results |
-| `REELWEAVE_MAX_FILE_SIZE_MB` | `200` | Per-file limit in MiB (1,048,576 bytes), displayed as MB in the UI |
-| `REELWEAVE_MAX_AUDIO_FILE_SIZE_MB` | `100` | Background-audio limit in MiB |
-| `REELWEAVE_MAX_CLIPS` | `10` | Maximum files in a merge; minimum is two |
-| `REELWEAVE_QUEUE_SIZE` | `4` | Bounded pending-job capacity; one worker processes jobs |
-| `REELWEAVE_RETENTION_SECONDS` | `3600` | Retention period for terminal jobs |
-| `REELWEAVE_CLEANUP_INTERVAL_SECONDS` | `300` | Cleanup scan interval |
-| `REELWEAVE_ALLOWED_ORIGINS` | `http://localhost:5173` | Comma-separated frontend origins for CORS |
-| `REELWEAVE_FFMPEG_PATH` | `ffmpeg` | Executable name or absolute FFmpeg path |
-| `REELWEAVE_FFPROBE_PATH` | `ffprobe` | Executable name or absolute FFprobe path |
-| `REELWEAVE_SUBPROCESS_TIMEOUT_SECONDS` | `1800` | Timeout for each processing command |
+| Variable                               | Default                  | Purpose                                                            |
+| -------------------------------------- | ------------------------ | ------------------------------------------------------------------ |
+| `REELWEAVE_WORKING_ROOT`               | `./var/reelweave`        | Dedicated root for application temporary data                      |
+| `REELWEAVE_UPLOAD_ROOT`                | `<working root>/uploads` | Job-specific uploaded sources                                      |
+| `REELWEAVE_OUTPUT_ROOT`                | `<working root>/outputs` | Job-specific downloadable results                                  |
+| `REELWEAVE_MAX_FILE_SIZE_MB`           | `200`                    | Per-file limit in MiB (1,048,576 bytes), displayed as MB in the UI |
+| `REELWEAVE_MAX_AUDIO_FILE_SIZE_MB`     | `100`                    | Background-audio limit in MiB                                      |
+| `REELWEAVE_MAX_CLIPS`                  | `10`                     | Maximum files in a merge; minimum is one                           |
+| `REELWEAVE_QUEUE_SIZE`                 | `4`                      | Bounded pending-job capacity; one worker processes jobs            |
+| `REELWEAVE_RETENTION_SECONDS`          | `3600`                   | Retention period for terminal jobs                                 |
+| `REELWEAVE_CLEANUP_INTERVAL_SECONDS`   | `300`                    | Cleanup scan interval                                              |
+| `REELWEAVE_ALLOWED_ORIGINS`            | `http://localhost:5173`  | Comma-separated frontend origins for CORS                          |
+| `REELWEAVE_FFMPEG_PATH`                | `ffmpeg`                 | Executable name or absolute FFmpeg path                            |
+| `REELWEAVE_FFPROBE_PATH`               | `ffprobe`                | Executable name or absolute FFprobe path                           |
+| `REELWEAVE_SUBPROCESS_TIMEOUT_SECONDS` | `1800`                   | Timeout for each processing command                                |
 
 All upload/output directories must be distinct, non-overlapping descendants of
 the dedicated working root. Intermediate files live in `<working root>/intermediate`.
@@ -235,7 +259,7 @@ npm.cmd run test:e2e
 
 The browser test uses an **already installed Microsoft Edge**, starts local Vite
 and FastAPI servers, and exercises selection, ordering, real merging, playback,
-download and reset at desktop/mobile viewport sizes. It requires the backend
+download and New project at desktop/mobile viewport sizes. It requires the backend
 virtual environment and FFmpeg. To use an installed Chrome instead, set
 `$env:PLAYWRIGHT_CHANNEL = 'chrome'` before the command. It writes screenshots in
 `docs/screenshots` and temporary test files under the ignored test-results/var
@@ -263,19 +287,19 @@ or failed job immediately; active jobs return 409.
 
 Use a dedicated, private working directory. A backend restart makes old job IDs
 unavailable immediately, even when orphaned files have not yet expired. The
-**Start new merge** button resets browser state; it does not cancel or delete an
+**New project** button clears browser project state; it does not cancel or delete an
 existing backend job.
 
 ## API endpoints
 
-| Method | Endpoint | Behavior |
-|---|---|---|
-| GET | `/api/health` | API status, FFmpeg/FFprobe availability, upload limits |
-| POST | `/api/merge` | Ordered `files`, required JSON `manifest`, optional `background_audio`; returns HTTP 202 |
-| GET | `/api/jobs/{job_id}` | Current job state and a friendly failure message |
-| GET | `/api/jobs/{job_id}/video` | Inline MP4 for HTML5 playback |
-| GET | `/api/jobs/{job_id}/download` | Attachment with a safe generated filename |
-| DELETE | `/api/jobs/{job_id}` | Deletes a terminal job and its files; active jobs return 409 |
+| Method | Endpoint                      | Behavior                                                                                                                      |
+| ------ | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/health`                 | API status, FFmpeg/FFprobe availability, upload limits                                                                        |
+| POST   | `/api/merge`                  | Ordered `files`, required JSON `manifest`, optional `background_audio`, `overlay_image` and `overlay_video`; returns HTTP 202 |
+| GET    | `/api/jobs/{job_id}`          | Current job state and a friendly failure message                                                                              |
+| GET    | `/api/jobs/{job_id}/video`    | Inline MP4 for HTML5 playback                                                                                                 |
+| GET    | `/api/jobs/{job_id}/download` | Attachment with a safe generated filename                                                                                     |
+| DELETE | `/api/jobs/{job_id}`          | Deletes a terminal job and its files; active jobs return 409                                                                  |
 
 Job states are `queued`, `processing`, `completed`, and `failed`. The UI also
 shows `Uploading` while the POST is in flight; it does not invent percentages.
@@ -324,9 +348,10 @@ once and controls the sequential Video 1 render order. `output_fps` must be
 }
 ```
 
-The timeline action renders only real uploaded Video 1 clips through the same
-merge job, preview, and download endpoints. Sample storyboard cards, Video 2
-overlays, visual-only multi-track controls, and MOV output are not rendered.
+Render MP4 submits real ordered Video 1 clips, active Video 2 overlays and
+configured original/background audio through the same merge job, preview and
+download endpoints. Selection, playhead and structural revision are presentation
+state and never enter the manifest. Output is MP4; MOV remains an input format.
 
 FFprobe's decoded frame count is authoritative. The backend replaces an
 unsaved default with the full decoded range and clamps a stale end frame to the
@@ -352,10 +377,13 @@ the job is queued. Technical diagnostics belong in backend logs, not API respons
 
 ## Video output
 
-ReelWeave trims selected source frames first, applies per-clip speed second,
-concatenates third, and mixes optional music last.
+AVStudio trims selected source frames, applies per-clip speed and concatenates
+Video 1 in order. The existing compositor applies PIP, then image/logo above it,
+and mixes configured original/background audio. PIP becomes absent at source EOF
+without shortening the project or holding its final frame.
 
-The MVP produces 1280×720 video at 30 fps with H.264, yuv420p and 48 kHz stereo AAC.
+Output is 1280×720 SDR video at the selected constant project FPS with H.264,
+yuv420p and 48 kHz stereo AAC.
 Normalization preserves the displayed aspect ratio and pads unused space. Portrait
 clips therefore have bars on the sides. Audio is padded to the video length;
 silent clips get a silent track. Original metadata, subtitles and extra tracks

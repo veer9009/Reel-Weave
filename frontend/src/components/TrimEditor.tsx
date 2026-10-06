@@ -15,8 +15,17 @@ export function TrimEditor({ clip, disabled, onSave, onCancel }: Props) {
   const [playhead, setPlayhead] = useState(clip.trim.startFrame);
   const [thumbnails, setThumbnails] = useState<string[]>([]);
   const video = useRef<HTMLVideoElement>(null);
+  const dialog = useRef<HTMLElement>(null);
   const max = clip.metadata.totalFrames - 1;
   const error = validateTrim(trim, clip.metadata.totalFrames);
+
+  useEffect(() => {
+    const trigger = document.activeElement as HTMLElement | null;
+    dialog.current?.querySelector<HTMLButtonElement>('button')?.focus();
+    return () => {
+      if (trigger?.isConnected) trigger.focus();
+    };
+  }, []);
 
   useEffect(() => {
     if (video.current) {
@@ -68,6 +77,33 @@ export function TrimEditor({ clip, disabled, onSave, onCancel }: Props) {
   return (
     <div className="trim-backdrop" role="presentation">
       <section
+        ref={dialog}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            onCancel();
+          }
+          if (event.key === 'Tab') {
+            const controls = Array.from(
+              dialog.current?.querySelectorAll<HTMLElement>(
+                'button:not(:disabled), input:not(:disabled), select:not(:disabled), video[controls]',
+              ) ?? [],
+            ).sort((a, b) =>
+              a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING
+                ? -1
+                : 1,
+            );
+            const first = controls[0],
+              last = controls.at(-1);
+            if (event.shiftKey && document.activeElement === first) {
+              event.preventDefault();
+              last?.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+              event.preventDefault();
+              first?.focus();
+            }
+          }
+        }}
         className="trim-editor"
         role="dialog"
         aria-modal="true"
@@ -171,6 +207,8 @@ export function TrimEditor({ clip, disabled, onSave, onCancel }: Props) {
             Trim start frame
             <input
               aria-label="Trim start frame"
+              aria-invalid={Boolean(error)}
+              aria-describedby={error ? 'trim-error' : undefined}
               type="range"
               min="0"
               max={max}
@@ -193,6 +231,8 @@ export function TrimEditor({ clip, disabled, onSave, onCancel }: Props) {
             Trim end frame
             <input
               aria-label="Trim end frame"
+              aria-invalid={Boolean(error)}
+              aria-describedby={error ? 'trim-error' : undefined}
               type="range"
               min="0"
               max={max}
@@ -224,7 +264,7 @@ export function TrimEditor({ clip, disabled, onSave, onCancel }: Props) {
           </button>
         </div>
         {error && (
-          <p className="trim-error" role="alert">
+          <p id="trim-error" className="trim-error" role="alert">
             {error}
           </p>
         )}

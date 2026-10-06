@@ -265,7 +265,7 @@ def create_app(
                         "properties": {
                             "files": {
                                 "type": "array",
-                                "minItems": config.min_clips,
+                                "minItems": 1,
                                 "maxItems": config.max_clips,
                                 "items": {"type": "string", "format": "binary"},
                             },
@@ -317,11 +317,11 @@ def create_app(
                 ) from exc
 
             files = form.getlist("files")
-            if not config.min_clips <= len(files) <= config.max_clips:
+            if not 1 <= len(files) <= config.max_clips:
                 raise ApiError(
                     422,
                     "invalid_file_count",
-                    f"Upload between {config.min_clips} and {config.max_clips} clips.",
+                    f"Upload between 1 and {config.max_clips} clips.",
                 )
             if not all(isinstance(item, UploadFile) for item in files):
                 raise ApiError(422, "invalid_files", "Each files field must contain a file.")

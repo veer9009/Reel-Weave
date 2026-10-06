@@ -1,14 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import {
-  Check,
-  Clapperboard,
-  Heart,
-  Layers,
-  LockKeyhole,
-  ShieldCheck,
-  TriangleAlert,
-  Zap,
-} from 'lucide-react';
+import { TriangleAlert } from 'lucide-react';
 import { UploadCard } from './components/UploadCard';
 import { ClipList } from './components/ClipList';
 import { MergeSummary } from './components/MergeSummary';
@@ -16,7 +7,8 @@ import { JobResult } from './components/JobResult';
 import { TrimEditor } from './components/TrimEditor';
 import { BackgroundAudioTrack } from './components/BackgroundAudioTrack';
 import { OverlayTrack } from './components/OverlayTrack';
-import { TimelineDemo } from './components/TimelineDemo';
+import { EditingWorkspace } from './components/EditingWorkspace';
+import { buildTimeline } from './lib/timeline';
 import type { BackgroundAudio } from './components/BackgroundAudioTrack';
 import { ApiError, getHealth, getJob, submitMerge } from './lib/api';
 import type { Health, Job } from './lib/api';
@@ -24,7 +16,6 @@ import {
   buildMergeManifest,
   isEditableClip,
   moveClip,
-  resolveProjectFps,
   validateSelection,
 } from './lib/clips';
 import type {
@@ -37,7 +28,6 @@ import type {
 } from './lib/clips';
 import {
   defaultOverlaySchedule,
-  projectTotalFrames,
   validateOverlaySchedule,
 } from './lib/overlays';
 import type {
@@ -47,7 +37,8 @@ import type {
 } from './lib/overlays';
 
 export default function App() {
-  const [timelineDemo, setTimelineDemo] = useState(false);
+  const [structuralRevision, setStructuralRevision] = useState(0);
+  const resultRegion = useRef<HTMLDivElement>(null);
   const [fpsSelection, setFpsSelection] = useState<ProjectFpsSelection>('auto');
   const [clips, setClips] = useState<Clip[]>([]);
   const [health, setHealth] = useState<Health | null>(null);
@@ -87,12 +78,9 @@ export default function App() {
   const editsValid =
     editableClips.length === clips.length &&
     (!backgroundAudio || backgroundAudio.status === 'ready');
-  const outputFps = resolveProjectFps(
-    fpsSelection,
-    editableClips[0]?.metadata.fps,
-  );
-  const totalProjectFrames =
-    outputFps === null ? 0 : projectTotalFrames(editableClips, outputFps);
+  const timeline = buildTimeline(clips, fpsSelection);
+  const outputFps = timeline.fps;
+  const totalProjectFrames = timeline.totalFrames;
   const overlaysValid = (['image', 'video'] as const).every((kind) => {
     const overlay = overlays[kind];
     return (
@@ -104,7 +92,7 @@ export default function App() {
   const canMerge = Boolean(
     !active &&
     !completed &&
-    clips.length >= 2 &&
+    clips.length >= 1 &&
     health?.ffmpeg_available &&
     health.ffprobe_available &&
     editsValid &&
@@ -218,6 +206,7 @@ export default function App() {
       };
     });
     setClips((current) => [...current, ...additions]);
+    setStructuralRevision((n) => n + 1);
     setError(null);
     setJob(null);
     setAnnouncement(
@@ -265,8 +254,10 @@ export default function App() {
     );
     setEditingClipId(null);
     setJob(null);
+    setStructuralRevision((n) => n + 1);
   }
   function changeSpeed(id: string, speed: ClipSpeed) {
+    setStructuralRevision((n) => n + 1);
     setClips((current) =>
       current.map((clip) => (clip.id === id ? { ...clip, speed } : clip)),
     );
@@ -293,9 +284,11 @@ export default function App() {
     const url = URL.createObjectURL(file);
     urls.current.add(url);
     setBackgroundAudio({ file, url, status: 'loading' });
+    setStructuralRevision((n) => n + 1);
     setError(null);
   }
   function removeBackgroundAudio() {
+    setStructuralRevision((n) => n + 1);
     if (!backgroundAudio) return;
     URL.revokeObjectURL(backgroundAudio.url);
     urls.current.delete(backgroundAudio.url);
@@ -303,6 +296,7 @@ export default function App() {
     setJob(null);
   }
   function selectOverlay(kind: OverlayKind, file: File) {
+    if (active || job?.status === 'completed') return;
     const isImage = kind === 'image';
     const supported = isImage
       ? /\.(png|jpe?g)$/i.test(file.name)
@@ -330,6 +324,7 @@ export default function App() {
       setError('Add ready Video 1 clips before choosing an overlay.');
       return;
     }
+    setStructuralRevision((value) => value + 1);
     const previous = overlays[kind];
     const schedule =
       previous && validateOverlaySchedule(previous, totalProjectFrames) === null
@@ -384,6 +379,7 @@ export default function App() {
     kind: OverlayKind,
     changes: Partial<OverlaySchedule>,
   ) {
+    setStructuralRevision((n) => n + 1);
     setOverlays((current) => ({
       ...current,
       [kind]: current[kind] ? { ...current[kind], ...changes } : null,
@@ -391,6 +387,7 @@ export default function App() {
     setJob(null);
   }
   function removeOverlay(kind: OverlayKind) {
+    setStructuralRevision((n) => n + 1);
     const overlay = overlays[kind];
     if (!overlay) return;
     URL.revokeObjectURL(overlay.url);
@@ -400,6 +397,7 @@ export default function App() {
     setJob(null);
   }
   function removeClip(id: string) {
+    setStructuralRevision((n) => n + 1);
     const clip = clips.find((c) => c.id === id);
     if (!clip) return;
     URL.revokeObjectURL(clip.url);
@@ -412,6 +410,7 @@ export default function App() {
   function reorder(from: number, to: number) {
     setClips((current) => moveClip(current, from, to));
     setJob(null);
+    setStructuralRevision((n) => n + 1);
     setAnnouncement(
       `${clips[from]?.file.name ?? 'Clip'} moved to position ${to + 1}.`,
     );
@@ -458,7 +457,7 @@ export default function App() {
       uploadController.current = null;
     }
   }
-  function reset() {
+  function newProject() {
     urls.current.forEach((url) => URL.revokeObjectURL(url));
     urls.current.clear();
     setClips([]);
@@ -475,275 +474,214 @@ export default function App() {
     setJob(null);
     setError(null);
     setPollError(false);
-    setAnnouncement('Ready for a new story.');
+    setAnnouncement('New project ready.');
+    setStructuralRevision((n) => n + 1);
   }
-  const step = active || completed ? 2 : clips.length ? 1 : 0;
+  const editingLocked = active || completed;
+  useEffect(() => {
+    if (active || completed || job?.status === 'failed')
+      resultRegion.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [active, completed, job?.status]);
   return (
     <div
       className="app"
-      onDragOver={(e) => {
-        if (e.dataTransfer.types.includes('Files')) e.preventDefault();
+      onDragOver={(event) => {
+        if (event.dataTransfer.types.includes('Files')) event.preventDefault();
       }}
-      onDrop={(e) => {
-        if (e.dataTransfer.types.includes('Files')) e.preventDefault();
+      onDrop={(event) => {
+        if (event.dataTransfer.types.includes('Files')) event.preventDefault();
       }}
     >
       <header className="site-header">
-        <a className="brand" href="/" aria-label="ReelWeave home">
-          <span className="brand-mark">
-            <Clapperboard aria-hidden="true" />
-          </span>
-          <span>
-            Reel<span>Weave</span>
-          </span>
-        </a>
-        <button
-          className="timeline-entry"
-          aria-pressed={timelineDemo}
-          onClick={() => setTimelineDemo((open) => !open)}
+        <a
+          className="brand"
+          href="/"
+          aria-label="AVStudio workspace"
+          onClick={(event) => event.preventDefault()}
         >
-          {timelineDemo ? 'Back to Merge' : 'Timeline Demo'}
-        </button>
-        <div className="header-note">
-          <LockKeyhole aria-hidden="true" />
-          <span className="local-label">Local workspace</span>
-        </div>
+          <img
+            className="brand-wordmark"
+            src="/branding/avstudio-wordmark.svg"
+            width="240"
+            height="64"
+            alt=""
+          />
+          <img
+            className="brand-icon"
+            src="/branding/avstudio-icon.svg"
+            width="32"
+            height="32"
+            alt=""
+          />
+          <span className="compact-brand-name">AVStudio</span>
+        </a>
+        <span className="header-note">
+          {health
+            ? health.ffmpeg_available && health.ffprobe_available
+              ? 'Backend ready'
+              : 'Processing unavailable'
+            : 'Connecting to backend'}
+        </span>
       </header>
-      {timelineDemo && (
-        <TimelineDemo
-          clips={clips}
-          musicName={backgroundAudio?.file.name}
-          fpsSelection={fpsSelection}
-          onFpsSelectionChange={setFpsSelection}
-          canMerge={canMerge}
-          busy={active}
-          overlays={overlays}
-          onMerge={() => {
-            setTimelineDemo(false);
-            void merge();
-          }}
-        />
-      )}
-      <main className="workspace" hidden={timelineDemo}>
-        <section className="workspace-title" aria-label="Merge workspace">
-          <span>Sequence 01</span>
-          <strong>Assembly workspace</strong>
-        </section>
-        <nav className="steps" aria-label="Merge steps">
-          {['Upload', 'Arrange', 'Merge'].map((label, index) => (
-            <div key={label} style={{ display: 'contents' }}>
-              {index > 0 && <span className="step-line" aria-hidden="true" />}
-              <span
-                className={`step ${index === step ? 'active' : index < step ? 'done' : ''}`}
-                aria-current={index === step ? 'step' : undefined}
-              >
-                <span className="step-number">
-                  {index < step ? <Check aria-hidden="true" /> : index + 1}
-                </span>
-                {label}
-              </span>
-            </div>
-          ))}
-        </nav>
-        {displayedError && (
-          <div role="alert" className="error-banner">
-            <TriangleAlert aria-hidden="true" />
-            <span>{displayedError}</span>
-            {pollError ? (
-              <button
-                className="text-button"
-                onClick={() => {
-                  setError(null);
-                  setPollError(false);
-                  setPollAttempt((n) => n + 1);
-                }}
-              >
-                Retry status
-              </button>
-            ) : !health ||
-              !health.ffmpeg_available ||
-              !health.ffprobe_available ? (
-              <button
-                className="text-button"
-                onClick={() => {
-                  setError(null);
-                  setHealthAttempt((n) => n + 1);
-                }}
-              >
-                Retry connection
-              </button>
-            ) : null}
-          </div>
-        )}
-        <div className="sr-only" role="status" aria-live="polite">
-          {announcement}
+      {displayedError && (
+        <div role="alert" className="error-banner">
+          <TriangleAlert aria-hidden="true" />
+          <span>{displayedError}</span>
+          {pollError ? (
+            <button
+              className="text-button"
+              onClick={() => {
+                setError(null);
+                setPollError(false);
+                setPollAttempt((n) => n + 1);
+              }}
+            >
+              Retry status
+            </button>
+          ) : !health ||
+            !health.ffmpeg_available ||
+            !health.ffprobe_available ? (
+            <button
+              className="text-button"
+              onClick={() => {
+                setError(null);
+                setHealthAttempt((n) => n + 1);
+              }}
+            >
+              Retry connection
+            </button>
+          ) : null}
         </div>
-        <div className="editor-grid">
-          <div className="editor-main">
-            {completed ? (
-              <JobResult key={job.job_id} job={job} onReset={reset} />
-            ) : (
-              <>
-                {active ? (
-                  <section
-                    className="panel processing"
-                    aria-live="polite"
-                    aria-busy="true"
-                  >
-                    <span className="spinner" aria-hidden="true" />
-                    <h2>
-                      {uploading
-                        ? 'Uploading your clips…'
-                        : job?.status === 'queued'
-                          ? 'Your story is in the queue.'
-                          : 'Weaving your story…'}
-                    </h2>
-                    <p>
-                      {uploading
-                        ? 'Sending your clips in the order you chose. Keep this tab open.'
-                        : job?.status === 'queued'
-                          ? 'Your clips are ready. Processing will begin when the worker is available.'
-                          : 'Matching your clips and bringing every moment together. Longer videos may take a little time.'}
-                    </p>
-                    <span className="status-pill">
-                      <span className="pulse-dot" />
-                      {uploading
-                        ? 'Uploading'
-                        : job?.status === 'queued'
-                          ? 'Queued'
-                          : 'Processing'}
-                    </span>
-                  </section>
-                ) : (
-                  <UploadCard
-                    disabled={!health}
-                    limits={limits}
-                    onSelect={selectFiles}
-                  />
-                )}
-                <ClipList
-                  clips={clips}
-                  disabled={active}
-                  onMove={reorder}
-                  onRemove={removeClip}
-                  onMetadata={setClipMetadata}
-                  onMetadataError={setClipMetadataError}
-                  onTrim={setEditingClipId}
-                  onSpeedChange={changeSpeed}
-                />
-                <BackgroundAudioTrack
-                  audio={backgroundAudio}
-                  settings={audioSettings}
-                  disabled={active}
-                  onSelect={selectBackgroundAudio}
-                  onMetadata={(duration) =>
-                    setBackgroundAudio((current) =>
-                      current
-                        ? { ...current, duration, status: 'ready' }
-                        : null,
-                    )
-                  }
-                  onMetadataError={() => {
-                    setBackgroundAudio((current) =>
-                      current ? { ...current, status: 'error' } : null,
-                    );
-                    setError(
-                      'Could not read the background-audio metadata. Remove it and choose another file.',
-                    );
-                  }}
-                  onRemove={removeBackgroundAudio}
-                  onSettings={setAudioSettings}
-                />
-                <OverlayTrack
-                  overlays={overlays}
-                  totalProjectFrames={totalProjectFrames}
-                  imageLimitMb={limits.max_overlay_image_file_size_mb ?? 20}
-                  videoLimitMb={limits.max_overlay_video_file_size_mb ?? 200}
-                  disabled={active}
-                  onSelect={selectOverlay}
-                  onMetadata={setOverlayMetadata}
-                  onMetadataError={setOverlayMetadataError}
-                  onScheduleChange={changeOverlaySchedule}
-                  onRemove={removeOverlay}
-                />
-              </>
-            )}
-          </div>
+      )}
+      <div className="sr-only" role="status" aria-live="polite">
+        {announcement}
+      </div>
+      <EditingWorkspace
+        clips={clips}
+        timeline={timeline}
+        overlays={overlays}
+        backgroundAudio={backgroundAudio}
+        audioSettings={audioSettings}
+        fpsSelection={fpsSelection}
+        structuralRevision={structuralRevision}
+        editingLocked={editingLocked}
+        onPipDrop={(file) => selectOverlay('video', file)}
+        onFpsSelectionChange={(fps) => {
+          setFpsSelection(fps);
+          setStructuralRevision((n) => n + 1);
+        }}
+        mediaContent={
+          <>
+            <UploadCard
+              disabled={!health || editingLocked}
+              limits={limits}
+              onSelect={selectFiles}
+            />
+            <ClipList
+              clips={clips}
+              disabled={editingLocked}
+              onMove={reorder}
+              onRemove={removeClip}
+              onMetadata={setClipMetadata}
+              onMetadataError={setClipMetadataError}
+              onTrim={setEditingClipId}
+              onSpeedChange={changeSpeed}
+            />
+          </>
+        }
+        clipContent={
+          <p>
+            Use the media list to trim, change speed, move or remove a clip.
+            Source details follow the selected clip.
+          </p>
+        }
+        overlayContent={
+          <OverlayTrack
+            overlays={overlays}
+            totalProjectFrames={totalProjectFrames}
+            imageLimitMb={limits.max_overlay_image_file_size_mb ?? 20}
+            videoLimitMb={limits.max_overlay_video_file_size_mb ?? 200}
+            disabled={editingLocked}
+            onSelect={selectOverlay}
+            onMetadata={setOverlayMetadata}
+            onMetadataError={setOverlayMetadataError}
+            onScheduleChange={changeOverlaySchedule}
+            onRemove={removeOverlay}
+          />
+        }
+        audioContent={
+          <BackgroundAudioTrack
+            audio={backgroundAudio}
+            settings={audioSettings}
+            disabled={editingLocked}
+            onSelect={selectBackgroundAudio}
+            onMetadata={(duration) =>
+              setBackgroundAudio((current) =>
+                current ? { ...current, duration, status: 'ready' } : null,
+              )
+            }
+            onMetadataError={() => {
+              setBackgroundAudio((current) =>
+                current ? { ...current, status: 'error' } : null,
+              );
+              setError(
+                'Could not read the background-audio metadata. Remove it and choose another file.',
+              );
+            }}
+            onRemove={removeBackgroundAudio}
+            onSettings={setAudioSettings}
+          />
+        }
+        deliveryContent={
           <MergeSummary
             clips={clips}
-            busy={active}
+            timeline={timeline}
             disabled={!canMerge}
+            busy={active}
             onMerge={() => void merge()}
           />
-        </div>
-        {editingClipId &&
-          (() => {
-            const clip = clips.find(
-              (candidate) => candidate.id === editingClipId,
-            );
-            return clip && isEditableClip(clip) ? (
-              <TrimEditor
-                clip={clip}
-                disabled={active}
-                onSave={saveTrim}
-                onCancel={() => setEditingClipId(null)}
-              />
-            ) : null;
-          })()}
-        <section className="features" aria-label="Made for your moments">
-          <div className="feature">
-            <span className="feature-icon">
-              <Layers aria-hidden="true" />
-            </span>
-            <div>
-              <h3>Different clips. One format.</h3>
-              <p>
-                Mix formats, sizes, and frame rates.
-                <br />
-                We take care of the details.
-              </p>
-            </div>
+        }
+        resultContent={
+          <div ref={resultRegion}>
+            {completed && job ? (
+              <JobResult key={job.job_id} job={job} onNewProject={newProject} />
+            ) : active ? (
+              <div
+                className="panel processing"
+                role="status"
+                aria-live="polite"
+              >
+                <h2>
+                  {uploading
+                    ? 'Uploading media'
+                    : job?.status === 'queued'
+                      ? 'Queued'
+                      : 'Rendering MP4'}
+                </h2>
+                <p>
+                  Keep this tab open while the backend processes your media.
+                </p>
+              </div>
+            ) : job?.status === 'failed' ? (
+              <p role="status">Render failed</p>
+            ) : null}
           </div>
-          <div className="feature">
-            <span className="feature-icon">
-              <Zap aria-hidden="true" />
-            </span>
-            <div>
-              <h3>Simple from start to finish.</h3>
-              <p>
-                No timeline to learn. Just your clips,
-                <br />
-                in the order that tells your story.
-              </p>
-            </div>
-          </div>
-          <div className="feature">
-            <span className="feature-icon">
-              <ShieldCheck aria-hidden="true" />
-            </span>
-            <div>
-              <h3>Your moments stay yours.</h3>
-              <p>
-                No third-party video services.
-                <br />
-                Automatic temporary-file cleanup.
-              </p>
-            </div>
-          </div>
-        </section>
-        <footer className="site-footer">
-          <span className="footer-brand">
-            ReelWeave{' '}
-            <span style={{ fontWeight: 400, color: '#9494ac', fontSize: 10 }}>
-              {' '}
-              / Made for your moments.
-            </span>
-          </span>
-          <p>
-            Woven with care <Heart aria-hidden="true" />
-          </p>
-        </footer>
-      </main>
+        }
+      />
+      {editingClipId &&
+        (() => {
+          const clip = clips.find(
+            (candidate) => candidate.id === editingClipId,
+          );
+          return clip && isEditableClip(clip) ? (
+            <TrimEditor
+              clip={clip}
+              disabled={editingLocked}
+              onSave={saveTrim}
+              onCancel={() => setEditingClipId(null)}
+            />
+          ) : null;
+        })()}
     </div>
   );
 }
