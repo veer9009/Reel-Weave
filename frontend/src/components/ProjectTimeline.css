@@ -117,6 +117,49 @@
   display: block;
   font-size: 10px;
 }
+.video-block[draggable='true'] {
+  cursor: grab;
+}
+.timeline-video-card {
+  position: absolute;
+  top: 4px;
+  height: calc(100% - 8px);
+}
+.timeline-video-card > .video-block {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+.timeline-trim-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  min-width: 0;
+  padding: 0;
+  border: 1px solid #d5f2ff;
+  border-radius: 2px;
+  background: #368ba7;
+  cursor: ew-resize;
+  touch-action: none;
+  z-index: 3;
+}
+.timeline-trim-handle:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.trim-left {
+  left: 0;
+}
+.trim-right {
+  right: 0;
+}
+.video-block.clip-drop-target {
+  outline: 2px dashed #38bdf8;
+  outline-offset: -2px;
+}
 .timeline-block[aria-pressed='true'] {
   outline: 2px solid #38bdf8;
   outline-offset: -2px;

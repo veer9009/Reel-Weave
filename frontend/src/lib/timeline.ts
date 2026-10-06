@@ -1,5 +1,11 @@
 import { isEditableClip, resolveProjectFps } from './clips';
-import type { Clip, ClipEdit, ProjectFps, ProjectFpsSelection } from './clips';
+import type {
+  Clip,
+  ClipEdit,
+  ClipTrim,
+  ProjectFps,
+  ProjectFpsSelection,
+} from './clips';
 import { projectFrameCount } from './overlays';
 import type { OverlayKind } from './overlays';
 
@@ -21,6 +27,75 @@ export type TimelineProjection = {
   totalFrames: number;
   durationSeconds: number;
 };
+
+export function planVersionReplacement(
+  timeline: TimelineProjection,
+  targetId: string,
+  version2: Clip,
+  frame: number,
+): { leftTrim: ClipTrim; rightTrim: ClipTrim } | { error: string } {
+  const item = timeline.items.find(({ clip }) => clip.id === targetId);
+  if (version2.id === targetId)
+    return {
+      error:
+        'Version 2 must be a different timeline occurrence from the target clip.',
+    };
+  if (
+    timeline.status !== 'ready' ||
+    !timeline.fps ||
+    !item ||
+    !Number.isInteger(frame) ||
+    frame <= item.startFrame ||
+    frame >= item.endFrame
+  )
+    return {
+      error: 'Select a Video 1 clip and move the playhead strictly inside it.',
+    };
+  if (
+    !isEditableClip(version2) ||
+    !Number.isFinite(version2.metadata.fps) ||
+    version2.metadata.fps <= 0 ||
+    !Number.isFinite(item.clip.metadata.fps) ||
+    item.clip.metadata.fps <= 0
+  )
+    return { error: 'Choose another ready Video 1 source as Version 2.' };
+  const target = item.clip;
+  const sourceFps = target.metadata.fps;
+  const cutFrame =
+    target.trim.startFrame +
+    Math.floor(
+      ((frame - item.startFrame) / timeline.fps) * target.speed * sourceFps +
+        1e-9,
+    );
+  if (cutFrame >= target.trim.endFrame)
+    return {
+      error:
+        'Move the playhead earlier so at least one source frame remains after the cut.',
+    };
+  const startTime = (cutFrame + 1) / sourceFps;
+  const endTime = (target.trim.endFrame + 1) / sourceFps;
+  const replacementFps = version2.metadata.fps;
+  if (
+    version2.metadata.totalFrames < Math.ceil(endTime * replacementFps - 1e-9)
+  )
+    return {
+      error:
+        'Version 2 is too short to cover the matching source range. Choose a longer source.',
+    };
+  const rightTrim = {
+    startFrame: Math.round(startTime * replacementFps),
+    endFrame: Math.round(endTime * replacementFps) - 1,
+  };
+  if (rightTrim.startFrame > rightTrim.endFrame)
+    return {
+      error:
+        'The remaining range is shorter than one Version 2 frame. Move the playhead earlier.',
+    };
+  return {
+    leftTrim: { startFrame: target.trim.startFrame, endFrame: cutFrame },
+    rightTrim,
+  };
+}
 
 export function buildTimeline(
   clips: Clip[],

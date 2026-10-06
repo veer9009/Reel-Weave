@@ -26,6 +26,7 @@ it('exact_real_lane_counts_audio_alignment_and_music_presence', () => {
   expect(
     within(screen.getByRole('region', { name: 'VIDEO 1' })).getAllByRole(
       'button',
+      { name: /Preview clip/ },
     ),
   ).toHaveLength(2);
   expect(
@@ -55,6 +56,51 @@ it('overlay_sublanes_select_and_seek_without_editing', () => {
     kind: 'overlay',
     overlayKind: 'video',
   });
+});
+it('moves an earlier Video 1 clip later and ignores self, external and cancelled drops', () => {
+  const onMove = vi.fn();
+  render(<ProjectTimeline {...props} onMove={onMove} />);
+  const first = screen.getByRole('button', { name: 'Preview clip 1: a.mp4' });
+  const second = screen.getByRole('button', { name: 'Preview clip 2: b.mp4' });
+  const dataTransfer = {
+    types: ['application/x-avstudio-clip'],
+    setData: vi.fn(),
+  };
+  fireEvent.drop(second, { dataTransfer });
+  expect(onMove).not.toHaveBeenCalled();
+  fireEvent.dragStart(first, { dataTransfer });
+  fireEvent.drop(first, { dataTransfer });
+  expect(onMove).not.toHaveBeenCalled();
+  fireEvent.dragStart(first, { dataTransfer });
+  fireEvent.dragEnd(first);
+  fireEvent.drop(second, { dataTransfer });
+  expect(onMove).not.toHaveBeenCalled();
+  fireEvent.dragStart(first, { dataTransfer });
+  fireEvent.drop(second, {
+    dataTransfer: {
+      types: ['Files'],
+      files: [new File(['v'], 'external.mp4')],
+    },
+  });
+  expect(onMove).not.toHaveBeenCalled();
+  fireEvent.dragStart(first, { dataTransfer });
+  fireEvent.drop(second, { dataTransfer });
+  expect(onMove).toHaveBeenCalledExactlyOnceWith(0, 1);
+});
+it('rejects Video 1 reorder when editing becomes locked during a drag', () => {
+  const onMove = vi.fn();
+  const view = render(<ProjectTimeline {...props} onMove={onMove} />);
+  const first = screen.getByRole('button', { name: 'Preview clip 1: a.mp4' });
+  const second = screen.getByRole('button', { name: 'Preview clip 2: b.mp4' });
+  const dataTransfer = {
+    types: ['application/x-avstudio-clip'],
+    setData: vi.fn(),
+  };
+  fireEvent.dragStart(first, { dataTransfer });
+  view.rerender(<ProjectTimeline {...props} disabled onMove={onMove} />);
+  expect(first.draggable).toBe(false);
+  fireEvent.drop(second, { dataTransfer });
+  expect(onMove).not.toHaveBeenCalled();
 });
 it('empty_lanes_have_no_samples_or_timing', () => {
   render(

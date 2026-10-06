@@ -27,6 +27,7 @@ const job = {
 };
 function serve(
   mode: 'success' | 'error' | 'network' | 'failed' | 'pollError' = 'success',
+  expectedFiles = ['second.mov', 'first.mp4'],
 ) {
   let pollCount = 0;
   vi.stubGlobal(
@@ -50,7 +51,7 @@ function serve(
         const names = (init?.body as FormData)
           .getAll('files')
           .map((f) => (f as File).name);
-        expect(names).toEqual(['second.mov', 'first.mp4']);
+        expect(names).toEqual(expectedFiles);
         return new Response(JSON.stringify(job), { status: 202 });
       }
       if (url.includes('/api/jobs/')) {
@@ -68,19 +69,26 @@ function serve(
     }),
   );
 }
-async function selectTwo() {
+async function selectTwo(
+  secondDuration = 3,
+  secondSource = new File(['b'], 'second.mov', { type: 'video/quicktime' }),
+) {
   const user = userEvent.setup();
   await waitFor(() =>
     expect(screen.getByLabelText('Choose video clips')).toBeEnabled(),
   );
   await user.upload(screen.getByLabelText('Choose video clips'), [
     new File(['a'], 'first.mp4', { type: 'video/mp4' }),
-    new File(['b'], 'second.mov', { type: 'video/quicktime' }),
+    secondSource,
   ]);
+  let metadataIndex = 0;
   for (const video of document.querySelectorAll<HTMLVideoElement>(
     '.clip-thumbnail video',
   )) {
-    Object.defineProperty(video, 'duration', { configurable: true, value: 3 });
+    Object.defineProperty(video, 'duration', {
+      configurable: true,
+      value: metadataIndex++ === 1 ? secondDuration : 3,
+    });
     Object.defineProperty(video, 'videoWidth', {
       configurable: true,
       value: 1920,
@@ -95,6 +103,467 @@ async function selectTwo() {
 }
 describe('AVStudio', { timeout: 15000 }, () => {
   beforeEach(() => serve());
+  it('Replace after playhead consumes exactly the original V2 occurrence and renders only V1-left then V2-right', async () => {
+    serve('success', ['first.mp4', 'second.mov']);
+    vi.mocked(URL.createObjectURL)
+      .mockReturnValueOnce('blob:v1')
+      .mockReturnValueOnce('blob:v2')
+      .mockReturnValueOnce('blob:replacement');
+    const view = render(<App />);
+    const user = await selectTwo();
+    await user.selectOptions(
+      screen.getByLabelText('Speed for first.mp4'),
+      '0.5',
+    );
+    await user.click(
+      screen.getByRole('button', { name: 'Preview clip 1: first.mp4' }),
+    );
+    fireEvent.change(screen.getByLabelText('Timeline position'), {
+      target: { value: '59' },
+    });
+    await user.selectOptions(
+      screen.getByLabelText('Version 2 source'),
+      document.querySelectorAll<HTMLElement>('.clip-item')[1].dataset.clipId!,
+    );
+    await user.click(
+      screen.getByRole('button', { name: 'Replace after playhead' }),
+    );
+    const items = within(
+      screen.getByRole('list', { name: 'Clip order' }),
+    ).getAllByRole('listitem');
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveTextContent('first.mp4');
+    expect(items[0]).toHaveTextContent('Frames 0–29');
+    expect(items[1]).toHaveTextContent('second.mov');
+    expect(items[1]).toHaveTextContent('Frames 30–89');
+    const lane = screen.getByRole('region', { name: 'VIDEO 1' });
+    expect(
+      within(lane)
+        .getAllByRole('button', { name: /Preview clip/ })
+        .map((button) => button.textContent),
+    ).toEqual([
+      expect.stringContaining('first.mp4'),
+      expect.stringContaining('second.mov'),
+    ]);
+    expect(
+      screen.getByRole('button', { name: 'Preview clip 2: second.mov' }),
+    ).toHaveAttribute('title', expect.stringContaining('Frames 60–179'));
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:v2');
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:replacement');
+    await user.click(screen.getByRole('button', { name: 'Render MP4' }));
+    await screen.findByText('MP4 ready');
+    const mergeCall = vi
+      .mocked(fetch)
+      .mock.calls.find((call) => String(call[0]).endsWith('/api/merge'));
+    const body = mergeCall?.[1]?.body as FormData;
+    expect(body.getAll('files').map((file) => (file as File).name)).toEqual([
+      'first.mp4',
+      'second.mov',
+    ]);
+    const manifest = JSON.parse(String(body.get('manifest')));
+    expect(
+      manifest.clips.map(
+        ({
+          start_frame,
+          end_frame,
+        }: {
+          start_frame: number;
+          end_frame: number;
+        }) => [start_frame, end_frame],
+      ),
+    ).toEqual([
+      [0, 29],
+      [30, 89],
+    ]);
+    expect(manifest.order).toEqual(
+      manifest.clips.map(({ client_id }: { client_id: string }) => client_id),
+    );
+    expect(manifest.clips.map(({ speed }: { speed: number }) => speed)).toEqual(
+      [0.5, 0.5],
+    );
+    expect(
+      screen.getByRole('button', { name: 'Replace after playhead' }),
+    ).toBeDisabled();
+    view.unmount();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:replacement');
+  });
+  it('Replace after playhead preserves other occurrences in relative order and anchors the playhead when V2 precedes V1', async () => {
+    render(<App />);
+    const version2Source = new File(['b'], 'second.mov', {
+      type: 'video/quicktime',
+    });
+    const user = await selectTwo(3, version2Source);
+    await user.upload(screen.getByLabelText('Choose video clips'), [
+      new File(['a'], 'before.mp4'),
+      new File(['b'], 'between.mp4'),
+      new File(['c'], 'after.mp4'),
+      version2Source,
+    ]);
+    for (const video of document.querySelectorAll<HTMLVideoElement>(
+      '.clip-thumbnail video',
+    )) {
+      Object.defineProperty(video, 'duration', {
+        configurable: true,
+        value: 3,
+      });
+      Object.defineProperty(video, 'videoWidth', {
+        configurable: true,
+        value: 1920,
+      });
+      Object.defineProperty(video, 'videoHeight', {
+        configurable: true,
+        value: 1080,
+      });
+      fireEvent.loadedMetadata(video);
+    }
+    const original = within(
+      screen.getByRole('list', { name: 'Clip order' }),
+    ).getAllByRole('listitem');
+    const targetId = original[0].getAttribute('data-clip-id');
+    const sourceId = original[1].getAttribute('data-clip-id');
+    const otherIds = original
+      .slice(2)
+      .map((item) => item.getAttribute('data-clip-id'));
+    await user.click(
+      within(original[1]).getByRole('button', { name: 'Move second.mov up' }),
+    );
+    await user.click(
+      screen.getByRole('button', { name: 'Preview clip 2: first.mp4' }),
+    );
+    fireEvent.change(screen.getByLabelText('Timeline position'), {
+      target: { value: '119' },
+    });
+    await user.selectOptions(
+      screen.getByLabelText('Version 2 source'),
+      sourceId!,
+    );
+    await user.click(
+      screen.getByRole('button', { name: 'Replace after playhead' }),
+    );
+    const result = within(
+      screen.getByRole('list', { name: 'Clip order' }),
+    ).getAllByRole('listitem');
+    expect(result).toHaveLength(6);
+    expect(result[0]).toHaveTextContent('first.mp4');
+    expect(result[1]).toHaveTextContent('second.mov');
+    expect(
+      result.some((item) => item.getAttribute('data-clip-id') === sourceId),
+    ).toBe(false);
+    expect(
+      result.slice(2).map((item) => item.getAttribute('data-clip-id')),
+    ).toEqual(otherIds);
+    expect(screen.getByLabelText('Inspect clip')).toHaveValue(targetId);
+    expect(screen.getByLabelText('Timeline position')).toHaveValue('29');
+  });
+  it('Replace after playhead rejects the target itself with a clear message and leaves the timeline unchanged', async () => {
+    render(<App />);
+    const user = await selectTwo();
+    await user.click(
+      screen.getByRole('button', { name: 'Preview clip 1: first.mp4' }),
+    );
+    fireEvent.change(screen.getByLabelText('Timeline position'), {
+      target: { value: '29' },
+    });
+    const list = screen.getByRole('list', { name: 'Clip order' });
+    const before = list.textContent;
+    const targetId = within(list)
+      .getAllByRole('listitem')[0]
+      .getAttribute('data-clip-id')!;
+    await user.selectOptions(
+      screen.getByLabelText('Version 2 source'),
+      targetId,
+    );
+    await user.click(
+      screen.getByRole('button', { name: 'Replace after playhead' }),
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Version 2 must be a different timeline occurrence from the target clip.',
+    );
+    expect(list.textContent).toBe(before);
+    expect(screen.getByLabelText('Timeline position')).toHaveValue('29');
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(2);
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+  });
+  it('Replace after playhead rejects boundary positions and a too-short V2 without changing clips', async () => {
+    render(<App />);
+    const user = await selectTwo(1);
+    const action = screen.getByRole('button', {
+      name: 'Replace after playhead',
+    });
+    expect(action).toBeDisabled();
+    await user.click(
+      screen.getByRole('button', { name: 'Preview clip 1: first.mp4' }),
+    );
+    await user.selectOptions(
+      screen.getByLabelText('Version 2 source'),
+      document.querySelectorAll<HTMLElement>('.clip-item')[1].dataset.clipId!,
+    );
+    expect(action).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Timeline position'), {
+      target: { value: '89' },
+    });
+    expect(action).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Timeline position'), {
+      target: { value: '29' },
+    });
+    expect(action).toBeEnabled();
+    await user.click(action);
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      /Version 2.*too short/i,
+    );
+    const items = within(
+      screen.getByRole('list', { name: 'Clip order' }),
+    ).getAllByRole('listitem');
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveTextContent('Frames 0–89');
+    expect(items[1]).toHaveTextContent('Frames 0–29');
+  });
+  function pointer(target: Element, type: string, clientX: number) {
+    const event = new Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperties(event, {
+      clientX: { value: clientX },
+      pointerId: { value: 1 },
+      button: { value: 0 },
+    });
+    fireEvent(target, event);
+  }
+  function trimLane() {
+    const lane = screen
+      .getByRole('region', { name: 'VIDEO 1' })
+      .querySelector('.track-content')!;
+    vi.spyOn(lane, 'getBoundingClientRect').mockReturnValue({
+      width: 600,
+    } as DOMRect);
+    return lane;
+  }
+  it('one-clip timeline handle shrinks the visible width during dragging', async () => {
+    render(<App />);
+    const user = await selectTwo();
+    await user.click(screen.getByRole('button', { name: 'Remove second.mov' }));
+    trimLane();
+    const card = screen.getByRole('button', {
+      name: 'Preview clip 1: first.mp4',
+    }).parentElement!;
+    expect(card.style.width).toBe('100%');
+    const handle = screen.getByRole('button', {
+      name: 'Trim end of first.mp4',
+    });
+    pointer(handle, 'pointerdown', 100);
+    pointer(handle, 'pointermove', 50);
+    expect(parseFloat(card.style.width)).toBeLessThan(100);
+    pointer(handle, 'pointerup', 50);
+    expect(screen.getByRole('button', { name: 'Render MP4' })).toBeEnabled();
+  });
+  it('left timeline trim handle updates inclusive source start and clamps to a valid range', async () => {
+    render(<App />);
+    await selectTwo();
+    trimLane();
+    const card = screen.getByRole('button', {
+      name: 'Preview clip 1: first.mp4',
+    });
+    const originalWidth = card.parentElement!.style.width;
+    const handle = screen.getByRole('button', {
+      name: 'Trim start of first.mp4',
+    });
+    pointer(handle, 'pointerdown', 100);
+    pointer(handle, 'pointermove', 150);
+    expect(
+      within(screen.getByRole('list', { name: 'Clip order' })).getAllByRole(
+        'listitem',
+      )[0],
+    ).toHaveTextContent('Frames 15–89');
+    expect(card.parentElement!.style.width).not.toBe(originalWidth);
+    pointer(handle, 'pointermove', 1100);
+    expect(
+      within(screen.getByRole('list', { name: 'Clip order' })).getAllByRole(
+        'listitem',
+      )[0],
+    ).toHaveTextContent('Frames 89–89');
+    pointer(handle, 'pointermove', -100);
+    expect(
+      within(screen.getByRole('list', { name: 'Clip order' })).getAllByRole(
+        'listitem',
+      )[0],
+    ).toHaveTextContent('Frames 0–89');
+    pointer(handle, 'pointerup', -100);
+  });
+  it('right timeline trim handle updates inclusive source end and clamps to a valid range', async () => {
+    render(<App />);
+    await selectTwo();
+    trimLane();
+    const handle = screen.getByRole('button', {
+      name: 'Trim end of first.mp4',
+    });
+    pointer(handle, 'pointerdown', 100);
+    pointer(handle, 'pointermove', 50);
+    expect(
+      within(screen.getByRole('list', { name: 'Clip order' })).getAllByRole(
+        'listitem',
+      )[0],
+    ).toHaveTextContent('Frames 0–74');
+    pointer(handle, 'pointermove', -1000);
+    expect(
+      within(screen.getByRole('list', { name: 'Clip order' })).getAllByRole(
+        'listitem',
+      )[0],
+    ).toHaveTextContent('Frames 0–0');
+    pointer(handle, 'pointermove', 1100);
+    expect(
+      within(screen.getByRole('list', { name: 'Clip order' })).getAllByRole(
+        'listitem',
+      )[0],
+    ).toHaveTextContent('Frames 0–89');
+    pointer(handle, 'pointerup', 1100);
+  });
+  it('timeline trim handle interactions never reorder Video 1', async () => {
+    render(<App />);
+    await selectTwo();
+    trimLane();
+    const handle = screen.getByRole('button', {
+      name: 'Trim start of second.mov',
+    });
+    pointer(handle, 'pointerdown', 100);
+    const dataTransfer = {
+      types: ['application/x-avstudio-clip'],
+      setData: vi.fn(),
+    };
+    expect(fireEvent.dragStart(handle, { dataTransfer })).toBe(false);
+    fireEvent.drop(
+      screen.getByRole('button', { name: 'Preview clip 1: first.mp4' }),
+      { dataTransfer },
+    );
+    pointer(handle, 'pointermove', 150);
+    pointer(handle, 'pointerup', 150);
+    const items = within(
+      screen.getByRole('list', { name: 'Clip order' }),
+    ).getAllByRole('listitem');
+    expect(items[0]).toHaveTextContent('first.mp4');
+    expect(items[1]).toHaveTextContent('second.mov');
+    expect(items[1]).toHaveTextContent('Frames 15–89');
+  });
+  it('timeline handle source frames respect speed and explicit FPS and reach the Trim editor and manifest', async () => {
+    render(<App />);
+    const user = await selectTwo();
+    await user.selectOptions(
+      screen.getByLabelText('Speed for first.mp4'),
+      '0.5',
+    );
+    await user.selectOptions(screen.getByLabelText('Timeline FPS'), '25');
+    trimLane();
+    const handle = screen.getByRole('button', {
+      name: 'Trim start of first.mp4',
+    });
+    pointer(handle, 'pointerdown', 100);
+    pointer(handle, 'pointermove', 140);
+    pointer(handle, 'pointerup', 140);
+    await user.click(screen.getByRole('button', { name: 'Trim first.mp4' }));
+    expect(screen.getByLabelText(/trim start frame/i)).toHaveValue('9');
+    expect(screen.getByLabelText(/trim end frame/i)).toHaveValue('89');
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await user.click(
+      screen.getByRole('button', { name: 'Move second.mov up' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Render MP4' }));
+    await screen.findByText('MP4 ready');
+    const mergeCall = vi
+      .mocked(fetch)
+      .mock.calls.find((call) => String(call[0]).endsWith('/api/merge'));
+    const manifest = JSON.parse(
+      String((mergeCall?.[1]?.body as FormData).get('manifest')),
+    );
+    expect(manifest.output_fps).toBe(25);
+    expect(manifest.clips[1]).toMatchObject({
+      start_frame: 9,
+      end_frame: 89,
+      trim_saved: true,
+      speed: 0.5,
+    });
+    expect(
+      screen.getByRole('button', { name: 'Trim start of first.mp4' }),
+    ).toBeDisabled();
+    pointer(handle, 'pointerdown', 100);
+    pointer(handle, 'pointermove', 300);
+    expect(
+      within(screen.getByRole('list', { name: 'Clip order' })).getAllByRole(
+        'listitem',
+      )[1],
+    ).toHaveTextContent('Frames 9–89');
+  });
+  it('dragging a later Video 1 clip before an earlier clip updates displayed order', async () => {
+    render(<App />);
+    await selectTwo();
+    const later = screen.getByRole('button', {
+      name: 'Preview clip 2: second.mov',
+    });
+    const earlier = screen.getByRole('button', {
+      name: 'Preview clip 1: first.mp4',
+    });
+    const dataTransfer = {
+      types: ['application/x-avstudio-clip'],
+      setData: vi.fn(),
+      effectAllowed: '',
+      dropEffect: '',
+    };
+    expect(later.draggable).toBe(true);
+    fireEvent.dragStart(later, { dataTransfer });
+    fireEvent.dragOver(earlier, { dataTransfer });
+    fireEvent.drop(earlier, { dataTransfer });
+    const list = screen.getByRole('list', { name: 'Clip order' });
+    expect(within(list).getAllByRole('listitem')[0]).toHaveTextContent(
+      'second.mov',
+    );
+    expect(within(list).getAllByRole('listitem')[1]).toHaveTextContent(
+      'first.mp4',
+    );
+  });
+  it('Video 1 drag order reaches the timeline and existing render manifest', async () => {
+    render(<App />);
+    const user = await selectTwo();
+    const later = screen.getByRole('button', {
+      name: 'Preview clip 2: second.mov',
+    });
+    const earlier = screen.getByRole('button', {
+      name: 'Preview clip 1: first.mp4',
+    });
+    const firstId =
+      document.querySelector<HTMLElement>('.clip-item')!.dataset.clipId;
+    const secondId =
+      document.querySelectorAll<HTMLElement>('.clip-item')[1].dataset.clipId;
+    const dataTransfer = {
+      types: ['application/x-avstudio-clip'],
+      setData: vi.fn(),
+      effectAllowed: '',
+      dropEffect: '',
+    };
+    fireEvent.dragStart(later, { dataTransfer });
+    fireEvent.drop(earlier, { dataTransfer });
+    const lane = screen.getByRole('region', { name: 'VIDEO 1' });
+    expect(
+      within(lane)
+        .getAllByRole('button', { name: /Preview clip/ })
+        .map((button) => button.textContent),
+    ).toEqual([
+      expect.stringContaining('second.mov'),
+      expect.stringContaining('first.mp4'),
+    ]);
+    expect(
+      screen.getByRole('button', { name: 'Preview clip 1: second.mov' }),
+    ).toHaveAttribute('title', expect.stringContaining('Frames 0'));
+    await user.click(screen.getByRole('button', { name: 'Render MP4' }));
+    await screen.findByText('MP4 ready');
+    const mergeCall = vi
+      .mocked(fetch)
+      .mock.calls.find((call) => String(call[0]).endsWith('/api/merge'));
+    const body = mergeCall?.[1]?.body as FormData;
+    expect(body.getAll('files').map((file) => (file as File).name)).toEqual([
+      'second.mov',
+      'first.mp4',
+    ]);
+    expect(JSON.parse(String(body.get('manifest'))).order).toEqual([
+      secondId,
+      firstId,
+    ]);
+  });
   it('drops one PIP through existing controls and safely validates replacement', async () => {
     render(<App />);
     await selectTwo();
@@ -169,6 +638,7 @@ describe('AVStudio', { timeout: 15000 }, () => {
     expect(
       within(screen.getByRole('region', { name: 'VIDEO 1' })).getAllByRole(
         'button',
+        { name: /Preview clip/ },
       ),
     ).toHaveLength(2);
     expect(

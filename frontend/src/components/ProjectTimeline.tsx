@@ -1,10 +1,15 @@
-import { useState } from 'react';
-import type { AudioSettings, ProjectFpsSelection } from '../lib/clips';
+import { useRef, useState } from 'react';
+import type {
+  AudioSettings,
+  ClipTrim,
+  ProjectFpsSelection,
+} from '../lib/clips';
 import { formatTimestamp } from '../lib/clips';
 import { validateOverlaySchedule } from '../lib/overlays';
 import type { OverlayState } from '../lib/overlays';
 import type { TimelineProjection, TimelineSelection } from '../lib/timeline';
 import type { BackgroundAudio } from './BackgroundAudioTrack';
+import { TimelineTrimHandle } from './TimelineTrimHandle';
 import './ProjectTimeline.css';
 type Props = {
   timeline: TimelineProjection;
@@ -19,6 +24,8 @@ type Props = {
   onSeek: (frame: number) => void;
   onSelect: (selection: TimelineSelection) => void;
   onPipDrop?: (file: File) => void;
+  onMove?: (from: number, to: number) => void;
+  onTrim?: (id: string, trim: ClipTrim) => void;
 };
 export function ProjectTimeline({
   timeline,
@@ -33,13 +40,20 @@ export function ProjectTimeline({
   onSeek,
   onSelect,
   onPipDrop,
+  onMove,
+  onTrim,
 }: Props) {
   const [draggingPip, setDraggingPip] = useState(false);
+  const [trimScaleFrames, setTrimScaleFrames] = useState<number | null>(null);
+  const draggedClip = useRef<string | null>(null);
+  const [clipDropTarget, setClipDropTarget] = useState<string | null>(null);
+  const clipDragType = 'application/x-avstudio-clip';
   const total = timeline.totalFrames;
+  const displayFrames = disabled ? total : (trimScaleFrames ?? total);
   const dropDisabled = disabled || total < 1 || !onPipDrop;
   const geometry = (start: number, count: number) => ({
-    left: `${total ? (start / total) * 100 : 0}%`,
-    width: `${total ? (count / total) * 100 : 0}%`,
+    left: `${displayFrames ? (start / displayFrames) * 100 : 0}%`,
+    width: `${displayFrames ? (count / displayFrames) * 100 : 0}%`,
   });
   const choose = (value: TimelineSelection, start?: number) => {
     onSelect(value);
@@ -106,7 +120,10 @@ export function ProjectTimeline({
                     ),
                   ),
                 ].map((tick) => (
-                  <span key={tick} style={{ left: `${(tick / total) * 100}%` }}>
+                  <span
+                    key={tick}
+                    style={{ left: `${(tick / displayFrames) * 100}%` }}
+                  >
                     {tick} f
                   </span>
                 ))}
@@ -116,6 +133,9 @@ export function ProjectTimeline({
                 min={0}
                 max={Math.max(0, total - 1)}
                 step={1}
+                style={{
+                  width: `${displayFrames ? (total / displayFrames) * 100 : 100}%`,
+                }}
                 value={frame ?? 0}
                 disabled={frame === null}
                 aria-valuetext={
@@ -132,7 +152,7 @@ export function ProjectTimeline({
               className="timeline-playhead"
               aria-hidden="true"
               style={{
-                left: `calc(120px + (100% - 120px) * ${total ? (frame ?? 0) / total : 0})`,
+                left: `calc(120px + (100% - 120px) * ${displayFrames ? (frame ?? 0) / displayFrames : 0})`,
               }}
             />
             <section className="timeline-track" aria-label="VIDEO 2">
@@ -242,28 +262,99 @@ export function ProjectTimeline({
               <div className="track-content">
                 {timeline.items.length ? (
                   timeline.items.map((item, index) => (
-                    <button
+                    <div
                       key={item.clip.id}
-                      className="timeline-block video-block"
+                      className="timeline-video-card"
                       style={geometry(item.startFrame, item.frameCount)}
-                      aria-label={`Preview clip ${index + 1}: ${item.clip.file.name}`}
-                      aria-pressed={
-                        selection.kind === 'clip' &&
-                        selection.id === item.clip.id
-                      }
-                      title={`${item.clip.file.name} · Frames ${item.startFrame}–${item.endFrame} · Source ${item.clip.metadata.fps} FPS`}
-                      onClick={() =>
-                        choose(
-                          { kind: 'clip', id: item.clip.id },
-                          item.startFrame,
-                        )
-                      }
                     >
-                      {item.clip.file.name}
-                      <small>
-                        Frames {item.startFrame}–{item.endFrame}
-                      </small>
-                    </button>
+                      <button
+                        className={`timeline-block video-block${clipDropTarget === item.clip.id && !disabled ? ' clip-drop-target' : ''}`}
+                        draggable={!disabled && Boolean(onMove)}
+                        onDragStart={(event) => {
+                          if (disabled || !onMove) {
+                            event.preventDefault();
+                            return;
+                          }
+                          draggedClip.current = item.clip.id;
+                          event.dataTransfer.setData(
+                            clipDragType,
+                            item.clip.id,
+                          );
+                          event.dataTransfer.effectAllowed = 'move';
+                        }}
+                        onDragOver={(event) => {
+                          if (
+                            disabled ||
+                            !onMove ||
+                            !draggedClip.current ||
+                            !event.dataTransfer.types.includes(clipDragType)
+                          )
+                            return;
+                          event.preventDefault();
+                          event.dataTransfer.dropEffect = 'move';
+                          if (draggedClip.current !== item.clip.id)
+                            setClipDropTarget(item.clip.id);
+                        }}
+                        onDragLeave={() => setClipDropTarget(null)}
+                        onDragEnd={() => {
+                          draggedClip.current = null;
+                          setClipDropTarget(null);
+                        }}
+                        onDrop={(event) => {
+                          const sourceId = draggedClip.current;
+                          draggedClip.current = null;
+                          setClipDropTarget(null);
+                          if (
+                            disabled ||
+                            !onMove ||
+                            !sourceId ||
+                            !event.dataTransfer.types.includes(clipDragType)
+                          )
+                            return;
+                          event.preventDefault();
+                          event.stopPropagation();
+                          const from = timeline.items.findIndex(
+                            (entry) => entry.clip.id === sourceId,
+                          );
+                          if (from >= 0 && from !== index) onMove(from, index);
+                        }}
+                        aria-label={`Preview clip ${index + 1}: ${item.clip.file.name}`}
+                        aria-pressed={
+                          selection.kind === 'clip' &&
+                          selection.id === item.clip.id
+                        }
+                        title={`${item.clip.file.name} · Frames ${item.startFrame}–${item.endFrame} · Source ${item.clip.metadata.fps} FPS`}
+                        onClick={() =>
+                          choose(
+                            { kind: 'clip', id: item.clip.id },
+                            item.startFrame,
+                          )
+                        }
+                      >
+                        {item.clip.file.name}
+                        <small>
+                          Frames {item.startFrame}–{item.endFrame}
+                        </small>
+                      </button>
+                      {(['startFrame', 'endFrame'] as const).map((edge) => (
+                        <TimelineTrimHandle
+                          key={edge}
+                          clip={item.clip}
+                          edge={edge}
+                          fps={timeline.fps!}
+                          totalFrames={total}
+                          disabled={disabled}
+                          onTrim={onTrim}
+                          onDragActive={(active) => {
+                            setTrimScaleFrames(active ? total : null);
+                            if (active) {
+                              draggedClip.current = null;
+                              setClipDropTarget(null);
+                            }
+                          }}
+                        />
+                      ))}
+                    </div>
                   ))
                 ) : (
                   <span>Add ready video clips</span>

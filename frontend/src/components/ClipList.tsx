@@ -119,6 +119,8 @@ export function ClipList({
                   preload="metadata"
                   aria-hidden="true"
                   onLoadedMetadata={(e) => {
+                    if (clip.metadataStatus === 'ready' && clip.metadata)
+                      return;
                     const video = e.currentTarget;
                     const duration = video.duration;
                     if (!Number.isFinite(duration) || duration <= 0) {

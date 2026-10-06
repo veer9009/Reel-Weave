@@ -8,7 +8,7 @@ import { TrimEditor } from './components/TrimEditor';
 import { BackgroundAudioTrack } from './components/BackgroundAudioTrack';
 import { OverlayTrack } from './components/OverlayTrack';
 import { EditingWorkspace } from './components/EditingWorkspace';
-import { buildTimeline } from './lib/timeline';
+import { buildTimeline, planVersionReplacement } from './lib/timeline';
 import type { BackgroundAudio } from './components/BackgroundAudioTrack';
 import { ApiError, getHealth, getJob, submitMerge } from './lib/api';
 import type { Health, Job } from './lib/api';
@@ -247,6 +247,7 @@ export default function App() {
     );
   }
   function saveTrim(id: string, trim: ClipTrim) {
+    if (active || completed) return;
     setClips((current) =>
       current.map((clip) =>
         clip.id === id ? { ...clip, trim, trimSaved: true } : clip,
@@ -408,12 +409,71 @@ export default function App() {
     setAnnouncement(`${clip.file.name} removed.`);
   }
   function reorder(from: number, to: number) {
+    if (active || completed) return;
     setClips((current) => moveClip(current, from, to));
     setJob(null);
     setStructuralRevision((n) => n + 1);
     setAnnouncement(
       `${clips[from]?.file.name ?? 'Clip'} moved to position ${to + 1}.`,
     );
+  }
+  function replaceAfterPlayhead(
+    targetId: string,
+    sourceId: string,
+    frame: number,
+  ) {
+    if (active || completed) return;
+    const target = clips.find((clip) => clip.id === targetId);
+    const source = clips.find((clip) => clip.id === sourceId);
+    if (!target || !source) {
+      setError('Choose an existing ready Video 1 clip and Version 2 source.');
+      return;
+    }
+    const plan = planVersionReplacement(timeline, targetId, source, frame);
+    if ('error' in plan) {
+      setError(plan.error);
+      return;
+    }
+    const url = URL.createObjectURL(source.file);
+    urls.current.add(url);
+    const left: Clip = { ...target, trim: plan.leftTrim, trimSaved: true };
+    const right: Clip = {
+      ...source,
+      id: crypto.randomUUID(),
+      url,
+      trim: plan.rightTrim,
+      trimSaved: true,
+      speed: target.speed,
+    };
+    const nextClips = clips.flatMap((clip) =>
+      clip.id === targetId ? [left, right] : clip.id === sourceId ? [] : [clip],
+    );
+    const nextTimeline = buildTimeline(nextClips, fpsSelection);
+    const previousTarget = timeline.items.find(
+      (item) => item.clip.id === targetId,
+    )!;
+    const nextTarget = nextTimeline.items.find(
+      (item) => item.clip.id === targetId,
+    )!;
+    const nextFrame = Math.min(
+      nextTarget.endFrame,
+      nextTarget.startFrame +
+        Math.round(
+          ((frame - previousTarget.startFrame) / timeline.fps!) *
+            nextTimeline.fps!,
+        ),
+    );
+    if (!nextClips.some((clip) => clip.url === source.url)) {
+      URL.revokeObjectURL(source.url);
+      urls.current.delete(source.url);
+    }
+    setClips(nextClips);
+    setJob(null);
+    setError(null);
+    setEditingClipId(null);
+    setStructuralRevision((revision) => revision + 1);
+    setAnnouncement('Video 1 replaced after the playhead.');
+    return nextFrame;
   }
   async function merge() {
     if (!canMerge || outputFps === null) return;
@@ -566,6 +626,9 @@ export default function App() {
         structuralRevision={structuralRevision}
         editingLocked={editingLocked}
         onPipDrop={(file) => selectOverlay('video', file)}
+        onMove={reorder}
+        onTrim={saveTrim}
+        onReplaceAfterPlayhead={replaceAfterPlayhead}
         onFpsSelectionChange={(fps) => {
           setFpsSelection(fps);
           setStructuralRevision((n) => n + 1);
