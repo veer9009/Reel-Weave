@@ -28,6 +28,50 @@ export type TimelineProjection = {
   durationSeconds: number;
 };
 
+export function planClipSplit(
+  timeline: TimelineProjection,
+  targetId: string,
+  frame: number,
+): { leftTrim: ClipTrim; rightTrim: ClipTrim } | { error: string } {
+  const item = timeline.items.find(({ clip }) => clip.id === targetId);
+  if (item && item.clip.trim.startFrame === item.clip.trim.endFrame)
+    return { error: 'Cannot split a one-frame clip. Choose a longer range.' };
+  if (
+    timeline.status !== 'ready' ||
+    !timeline.fps ||
+    !item ||
+    !Number.isInteger(frame) ||
+    frame <= item.startFrame ||
+    frame >= item.endFrame
+  )
+    return {
+      error:
+        'Select a ready Video 1 clip and move the playhead strictly inside it.',
+    };
+  const target = item.clip;
+  const cutFrame =
+    target.trim.startFrame +
+    Math.floor(
+      ((frame - item.startFrame) / timeline.fps) *
+        target.speed *
+        target.metadata.fps +
+        1e-9,
+    );
+  if (
+    !Number.isFinite(cutFrame) ||
+    cutFrame < target.trim.startFrame ||
+    cutFrame >= target.trim.endFrame
+  )
+    return {
+      error:
+        'Move the playhead earlier so at least one source frame remains after the split.',
+    };
+  return {
+    leftTrim: { startFrame: target.trim.startFrame, endFrame: cutFrame },
+    rightTrim: { startFrame: cutFrame + 1, endFrame: target.trim.endFrame },
+  };
+}
+
 export function planVersionReplacement(
   timeline: TimelineProjection,
   targetId: string,

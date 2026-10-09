@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import type {
   AudioSettings,
   ClipTrim,
@@ -12,6 +13,7 @@ import type { BackgroundAudio } from './BackgroundAudioTrack';
 import { TimelineTrimHandle } from './TimelineTrimHandle';
 import './ProjectTimeline.css';
 type Props = {
+  videoToolbar?: ReactNode;
   timeline: TimelineProjection;
   overlays: OverlayState;
   backgroundAudio: BackgroundAudio | null;
@@ -28,6 +30,7 @@ type Props = {
   onTrim?: (id: string, trim: ClipTrim) => void;
 };
 export function ProjectTimeline({
+  videoToolbar,
   timeline,
   overlays,
   backgroundAudio,
@@ -257,6 +260,13 @@ export function ProjectTimeline({
                 })}
               </div>
             </section>
+            <div
+              className="timeline-video-toolbar"
+              role="toolbar"
+              aria-label="Video 1 editing controls"
+            >
+              {videoToolbar}
+            </div>
             <section className="timeline-track" aria-label="VIDEO 1">
               <h3>Video 1</h3>
               <div className="track-content">

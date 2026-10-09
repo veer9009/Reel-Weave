@@ -103,6 +103,384 @@ async function selectTwo(
 }
 describe('AVStudio', { timeout: 15000 }, () => {
   beforeEach(() => serve());
+  it('Ripple Delete removes a selected middle clip and its Audio 1 segment and shifts remaining clips left in render order', async () => {
+    serve('success', ['first.mp4', 'third.mp4', 'fourth.mp4']);
+    render(<App />);
+    await selectTwo();
+    fireEvent.change(screen.getByLabelText('Choose video clips'), {
+      target: {
+        files: [
+          new File(['c'], 'third.mp4', { type: 'video/mp4' }),
+          new File(['d'], 'fourth.mp4', { type: 'video/mp4' }),
+        ],
+      },
+    });
+    for (const video of Array.from(
+      document.querySelectorAll<HTMLVideoElement>('.clip-thumbnail video'),
+    ).slice(2)) {
+      Object.defineProperty(video, 'duration', {
+        configurable: true,
+        value: 3,
+      });
+      Object.defineProperty(video, 'videoWidth', {
+        configurable: true,
+        value: 1920,
+      });
+      Object.defineProperty(video, 'videoHeight', {
+        configurable: true,
+        value: 1080,
+      });
+      fireEvent.loadedMetadata(video);
+    }
+    const ids = Array.from(
+      document.querySelectorAll<HTMLElement>('.clip-item'),
+      (item) => item.dataset.clipId,
+    );
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Preview clip 2: second.mov' }),
+    );
+    fireEvent.keyDown(document, { key: 'Delete' });
+    expect(
+      Array.from(
+        document.querySelectorAll<HTMLElement>('.clip-item'),
+        (item) => item.dataset.clipId,
+      ),
+    ).toEqual([ids[0], ids[2], ids[3]]);
+    const lane = screen.getByRole('region', { name: 'VIDEO 1' });
+    expect(
+      within(lane).getByRole('button', { name: 'Preview clip 2: third.mp4' }),
+    ).toHaveAttribute('title', expect.stringContaining('Frames 90–179'));
+    expect(
+      within(lane).getByRole('button', { name: 'Preview clip 3: fourth.mp4' }),
+    ).toHaveAttribute('title', expect.stringContaining('Frames 180–269'));
+    const audio = screen.getByRole('region', { name: 'AUDIO 1' });
+    expect(
+      within(audio)
+        .getAllByRole('button')
+        .map((button) => button.getAttribute('aria-label')),
+    ).toEqual([
+      'Original audio: first.mp4',
+      'Original audio: third.mp4',
+      'Original audio: fourth.mp4',
+    ]);
+    expect(
+      within(audio)
+        .getAllByRole('button')
+        .map((button) => button.style.left),
+    ).toEqual(['0%', '33.33333333333333%', '66.66666666666666%']);
+    fireEvent.click(screen.getByRole('button', { name: 'Render MP4' }));
+    await screen.findByText('MP4 ready');
+    const mergeCall = vi
+      .mocked(fetch)
+      .mock.calls.find((call) => String(call[0]).endsWith('/api/merge'));
+    const manifest = JSON.parse(
+      String((mergeCall?.[1]?.body as FormData).get('manifest')),
+    );
+    expect(manifest.order).toEqual([ids[0], ids[2], ids[3]]);
+    expect(
+      manifest.clips.map((clip: { client_id: string }) => clip.client_id),
+    ).toEqual(manifest.order);
+  });
+  it.each(['left', 'right'] as const)(
+    'Ripple Delete of the %s split half closes the gap and renders only the surviving source ranges',
+    async (half) => {
+      serve('success', ['first.mp4', 'second.mov']);
+      vi.mocked(URL.createObjectURL)
+        .mockReturnValueOnce('blob:original')
+        .mockReturnValueOnce('blob:other')
+        .mockReturnValueOnce('blob:split-right');
+      render(<App />);
+      await selectTwo();
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Preview clip 1: first.mp4' }),
+      );
+      fireEvent.change(screen.getByLabelText('Timeline position'), {
+        target: { value: '29' },
+      });
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Split at playhead' }),
+      );
+      const ids = Array.from(
+        document.querySelectorAll<HTMLElement>('.clip-item'),
+        (item) => item.dataset.clipId,
+      );
+      if (half === 'left')
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Preview clip 1: first.mp4' }),
+        );
+      // The right half is selected automatically after splitting.
+      fireEvent.keyDown(document, { key: 'Backspace' });
+      const survivors = half === 'left' ? [ids[1], ids[2]] : [ids[0], ids[2]];
+      expect(
+        Array.from(
+          document.querySelectorAll<HTMLElement>('.clip-item'),
+          (item) => item.dataset.clipId,
+        ),
+      ).toEqual(survivors);
+      expect(
+        screen.getByRole('button', { name: 'Preview clip 1: first.mp4' }),
+      ).toHaveAttribute(
+        'title',
+        expect.stringContaining(
+          half === 'left' ? 'Frames 0–59' : 'Frames 0–29',
+        ),
+      );
+      expect(
+        screen.getByRole('button', { name: 'Preview clip 2: second.mov' }),
+      ).toHaveAttribute(
+        'title',
+        expect.stringContaining(
+          half === 'left' ? 'Frames 60–149' : 'Frames 30–119',
+        ),
+      );
+      expect(
+        within(screen.getByRole('region', { name: 'AUDIO 1' })).getAllByRole(
+          'button',
+        ),
+      ).toHaveLength(2);
+      expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(
+        half === 'left' ? 'blob:split-right' : 'blob:original',
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Render MP4' }));
+      await screen.findByText('MP4 ready');
+      const mergeCall = vi
+        .mocked(fetch)
+        .mock.calls.find((call) => String(call[0]).endsWith('/api/merge'));
+      const body = mergeCall?.[1]?.body as FormData;
+      expect(body.getAll('files').map((file) => (file as File).name)).toEqual([
+        'first.mp4',
+        'second.mov',
+      ]);
+      const manifest = JSON.parse(String(body.get('manifest')));
+      expect(manifest.order).toEqual(survivors);
+      expect(
+        manifest.clips.map(
+          (clip: { start_frame: number; end_frame: number }) => [
+            clip.start_frame,
+            clip.end_frame,
+          ],
+        ),
+      ).toEqual([half === 'left' ? [30, 89] : [0, 29], [0, 89]]);
+    },
+  );
+  it('Ripple Delete of the final clip empties Video 1 and Audio 1 and disables rendering while retaining PIP and music', async () => {
+    render(<App />);
+    await selectTwo();
+    fireEvent.change(screen.getByLabelText('Choose video overlay'), {
+      target: { files: [new File(['pip'], 'pip.mp4', { type: 'video/mp4' })] },
+    });
+    fireEvent.change(screen.getByLabelText('Choose background audio'), {
+      target: {
+        files: [new File(['music'], 'theme.mp3', { type: 'audio/mpeg' })],
+      },
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Preview clip 2: second.mov' }),
+    );
+    // The existing visible trash action must share the same ripple removal.
+    fireEvent.click(screen.getByRole('button', { name: 'Remove second.mov' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Preview clip 1: first.mp4' }),
+    );
+    fireEvent.keyDown(document, { key: 'Delete' });
+    expect(
+      within(screen.getByRole('region', { name: 'VIDEO 1' })).queryAllByRole(
+        'button',
+      ),
+    ).toHaveLength(0);
+    expect(
+      within(screen.getByRole('region', { name: 'AUDIO 1' })).queryAllByRole(
+        'button',
+      ),
+    ).toHaveLength(0);
+    expect(screen.getByText(/No video clips/i)).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Render MP4' })).toBeDisabled();
+    expect(screen.getByLabelText('Inspect clip')).toHaveValue('');
+    expect(screen.getByLabelText('Timeline position')).toBeDisabled();
+    expect(
+      within(screen.getByRole('region', { name: 'Overlays' })).getByText(
+        'pip.mp4',
+      ),
+    ).toBeVisible();
+    expect(
+      within(
+        screen.getByRole('region', { name: 'Background audio' }),
+      ).getByText('theme.mp3'),
+    ).toBeVisible();
+  });
+  it('Split at the existing clip limit stays disabled and leaves the renderable project unchanged', async () => {
+    const limitedHealth = {
+      ...health,
+      limits: { ...health.limits, max_clips: 2 },
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(limitedHealth))),
+    );
+    render(<App />);
+    const user = await selectTwo();
+    await user.click(
+      screen.getByRole('button', { name: 'Preview clip 1: first.mp4' }),
+    );
+    fireEvent.change(screen.getByLabelText('Timeline position'), {
+      target: { value: '29' },
+    });
+    const ids = Array.from(
+      document.querySelectorAll<HTMLElement>('.clip-item'),
+      (item) => item.dataset.clipId,
+    );
+    const split = screen.getByRole('button', { name: 'Split at playhead' });
+    expect(split).toBeDisabled();
+    expect(split).toHaveAttribute(
+      'title',
+      expect.stringMatching(/clip limit.*remove a clip/i),
+    );
+    await user.click(split);
+    expect(
+      Array.from(
+        document.querySelectorAll<HTMLElement>('.clip-item'),
+        (item) => item.dataset.clipId,
+      ),
+    ).toEqual(ids);
+    expect(screen.getByRole('button', { name: 'Render MP4' })).toBeEnabled();
+  });
+  it('Split replaces the selected occurrence in order with unique independent clips and renders that order', async () => {
+    serve('success', ['first.mp4', 'second.mov', 'second.mov']);
+    vi.mocked(URL.createObjectURL)
+      .mockReturnValueOnce('blob:prefix')
+      .mockReturnValueOnce('blob:target')
+      .mockReturnValueOnce('blob:right');
+    render(<App />);
+    const user = await selectTwo();
+    await user.click(screen.getByLabelText(/mute original audio/i));
+    await user.selectOptions(
+      screen.getByLabelText('Speed for second.mov'),
+      '0.5',
+    );
+    const originalIds = Array.from(
+      document.querySelectorAll<HTMLElement>('.clip-item'),
+      (item) => item.dataset.clipId!,
+    );
+    await user.click(
+      screen.getByRole('button', { name: 'Preview clip 2: second.mov' }),
+    );
+    fireEvent.change(screen.getByLabelText('Timeline position'), {
+      target: { value: '149' },
+    });
+    await user.click(screen.getByRole('button', { name: 'Split at playhead' }));
+    const items = within(
+      screen.getByRole('list', { name: 'Clip order' }),
+    ).getAllByRole('listitem');
+    expect(items).toHaveLength(3);
+    expect(items[0]).toHaveTextContent('first.mp4');
+    expect(items[1]).toHaveTextContent('Frames 0–29');
+    expect(items[2]).toHaveTextContent('Frames 30–89');
+    const ids = Array.from(
+      document.querySelectorAll<HTMLElement>('.clip-item'),
+      (item) => item.dataset.clipId!,
+    );
+    expect(ids[0]).toBe(originalIds[0]);
+    expect(new Set(ids).size).toBe(3);
+    expect(ids).not.toContain(originalIds[1]);
+    expect(screen.getByLabelText('Inspect clip')).toHaveValue(ids[2]);
+    expect(screen.getByLabelText('Timeline position')).toHaveValue('149');
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:target');
+    // Changing the left half does not edit the right half.
+    await user.selectOptions(
+      screen.getAllByLabelText('Speed for second.mov')[0],
+      '0.75',
+    );
+    expect(screen.getAllByLabelText('Speed for second.mov')[1]).toHaveValue(
+      '0.5',
+    );
+    await user.click(screen.getByRole('button', { name: 'Render MP4' }));
+    await screen.findByText('MP4 ready');
+    const mergeCall = vi
+      .mocked(fetch)
+      .mock.calls.find((call) => String(call[0]).endsWith('/api/merge'));
+    const body = mergeCall?.[1]?.body as FormData;
+    expect(body.getAll('files').map((file) => (file as File).name)).toEqual([
+      'first.mp4',
+      'second.mov',
+      'second.mov',
+    ]);
+    const manifest = JSON.parse(String(body.get('manifest')));
+    expect(manifest.order).toEqual(ids);
+    expect(manifest.clips).toEqual([
+      expect.objectContaining({
+        client_id: ids[0],
+        start_frame: 0,
+        end_frame: 89,
+        speed: 1,
+      }),
+      expect.objectContaining({
+        client_id: ids[1],
+        start_frame: 0,
+        end_frame: 29,
+        speed: 0.75,
+        trim_saved: true,
+      }),
+      expect.objectContaining({
+        client_id: ids[2],
+        start_frame: 30,
+        end_frame: 89,
+        speed: 0.5,
+        trim_saved: true,
+      }),
+    ]);
+    expect(manifest.audio.original_muted).toBe(true);
+    expect(screen.getByRole('link', { name: /download mp4/i })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: /new project/i }));
+    expect(screen.getByText(/No video clips/i)).toBeVisible();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:target');
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:right');
+  });
+  it('Split is disabled with a visible reason at boundaries and for a one-frame range without changing clips', async () => {
+    render(<App />);
+    const user = await selectTwo();
+    await user.click(
+      screen.getByRole('button', { name: 'Preview clip 1: first.mp4' }),
+    );
+    const split = screen.getByRole('button', { name: 'Split at playhead' });
+    const ids = Array.from(
+      document.querySelectorAll<HTMLElement>('.clip-item'),
+      (item) => item.dataset.clipId,
+    );
+    for (const frame of [0, 89]) {
+      fireEvent.change(screen.getByLabelText('Timeline position'), {
+        target: { value: String(frame) },
+      });
+      expect(split).toBeDisabled();
+      expect(
+        screen.getByText(
+          'Select a Video 1 clip, then click inside it to choose the cut point.',
+        ),
+      ).toBeVisible();
+      await user.click(split);
+    }
+    await user.click(screen.getByRole('button', { name: 'Trim first.mp4' }));
+    fireEvent.change(screen.getByLabelText(/trim end frame/i), {
+      target: { value: '0' },
+    });
+    await user.click(screen.getByRole('button', { name: /save trim/i }));
+    expect(split).toBeDisabled();
+    expect(split).toHaveAttribute(
+      'title',
+      expect.stringMatching(/cannot split a one.frame/i),
+    );
+    await user.click(split);
+    expect(
+      Array.from(
+        document.querySelectorAll<HTMLElement>('.clip-item'),
+        (item) => item.dataset.clipId,
+      ),
+    ).toEqual(ids);
+    expect(
+      within(screen.getByRole('list', { name: 'Clip order' })).getAllByRole(
+        'listitem',
+      )[0],
+    ).toHaveTextContent('Frames 0–0');
+  });
   it('Replace after playhead consumes exactly the original V2 occurrence and renders only V1-left then V2-right', async () => {
     serve('success', ['first.mp4', 'second.mov']);
     vi.mocked(URL.createObjectURL)

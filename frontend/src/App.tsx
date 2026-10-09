@@ -8,7 +8,11 @@ import { TrimEditor } from './components/TrimEditor';
 import { BackgroundAudioTrack } from './components/BackgroundAudioTrack';
 import { OverlayTrack } from './components/OverlayTrack';
 import { EditingWorkspace } from './components/EditingWorkspace';
-import { buildTimeline, planVersionReplacement } from './lib/timeline';
+import {
+  buildTimeline,
+  planClipSplit,
+  planVersionReplacement,
+} from './lib/timeline';
 import type { BackgroundAudio } from './components/BackgroundAudioTrack';
 import { ApiError, getHealth, getJob, submitMerge } from './lib/api';
 import type { Health, Job } from './lib/api';
@@ -398,6 +402,7 @@ export default function App() {
     setJob(null);
   }
   function removeClip(id: string) {
+    if (active || completed) return;
     setStructuralRevision((n) => n + 1);
     const clip = clips.find((c) => c.id === id);
     if (!clip) return;
@@ -416,6 +421,43 @@ export default function App() {
     setAnnouncement(
       `${clips[from]?.file.name ?? 'Clip'} moved to position ${to + 1}.`,
     );
+  }
+  function splitAtPlayhead(targetId: string, frame: number) {
+    if (active || completed) return;
+    if (clips.length >= limits.max_clips) {
+      setError('Clip limit reached. Remove a clip before splitting.');
+      return;
+    }
+    const plan = planClipSplit(timeline, targetId, frame);
+    if ('error' in plan) {
+      setError(plan.error);
+      return;
+    }
+    const target = clips.find((clip) => clip.id === targetId)!;
+    const url = URL.createObjectURL(target.file);
+    urls.current.add(url);
+    const left: Clip = {
+      ...target,
+      id: crypto.randomUUID(),
+      trim: plan.leftTrim,
+      trimSaved: true,
+    };
+    const right: Clip = {
+      ...target,
+      id: crypto.randomUUID(),
+      url,
+      trim: plan.rightTrim,
+      trimSaved: true,
+    };
+    setClips(
+      clips.flatMap((clip) => (clip.id === targetId ? [left, right] : [clip])),
+    );
+    setJob(null);
+    setError(null);
+    setEditingClipId(null);
+    setStructuralRevision((revision) => revision + 1);
+    setAnnouncement('Video 1 split at the playhead. Right clip selected.');
+    return right.id;
   }
   function replaceAfterPlayhead(
     targetId: string,
@@ -628,7 +670,10 @@ export default function App() {
         onPipDrop={(file) => selectOverlay('video', file)}
         onMove={reorder}
         onTrim={saveTrim}
+        onDeleteClip={removeClip}
         onReplaceAfterPlayhead={replaceAfterPlayhead}
+        onSplitAtPlayhead={splitAtPlayhead}
+        maxClips={limits.max_clips}
         onFpsSelectionChange={(fps) => {
           setFpsSelection(fps);
           setStructuralRevision((n) => n + 1);
