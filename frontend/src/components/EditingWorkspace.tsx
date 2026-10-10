@@ -18,7 +18,11 @@ import { Inspector } from './Inspector';
 import { ProgramMonitor } from './ProgramMonitor';
 import { ProjectTimeline } from './ProjectTimeline';
 import './EditingWorkspace.css';
-type Props = {
+import type { HistoryControls } from '../lib/editHistory';
+import type { TrimTransactions } from './TimelineTrimHandle';
+import { useHistoryShortcuts } from '../hooks/useHistoryShortcuts';
+type Props = TrimTransactions & {
+  historyControls?: HistoryControls;
   clips: Clip[];
   timeline: TimelineProjection;
   overlays: OverlayState;
@@ -47,6 +51,15 @@ type Props = {
   resultContent: ReactNode;
 };
 export function EditingWorkspace(props: Props) {
+  useHistoryShortcuts(
+    props.historyControls ?? {
+      canUndo: false,
+      canRedo: false,
+      shortcutsAllowed: false,
+      undo: () => false,
+      redo: () => false,
+    },
+  );
   const {
     clips,
     timeline,
@@ -279,6 +292,27 @@ export function EditingWorkspace(props: Props) {
             <button
               type="button"
               className="secondary-button"
+              aria-keyshortcuts="Control+Z"
+              title="Undo (Ctrl+Z)"
+              disabled={!props.historyControls?.canUndo}
+              onClick={() => props.historyControls?.undo()}
+            >
+              Undo
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              aria-keyshortcuts="Control+Y Control+Shift+Z"
+              title="Redo (Ctrl+Y or Ctrl+Shift+Z)"
+              disabled={!props.historyControls?.canRedo}
+              onClick={() => props.historyControls?.redo()}
+            >
+              Redo
+            </button>
+            <small>Ctrl+Z · Ctrl+Y / Ctrl+Shift+Z</small>
+            <button
+              type="button"
+              className="secondary-button"
               disabled={!canSplit}
               title={splitReason ?? undefined}
               aria-describedby={!canSplit ? 'split-reason' : undefined}
@@ -320,6 +354,9 @@ export function EditingWorkspace(props: Props) {
         onPipDrop={props.onPipDrop}
         onMove={props.onMove}
         onTrim={props.onTrim}
+        onTrimBegin={props.onTrimBegin}
+        onTrimPreview={props.onTrimPreview}
+        onTrimEnd={props.onTrimEnd}
       />
       <section className="render-region" aria-label="Render result">
         {props.resultContent}

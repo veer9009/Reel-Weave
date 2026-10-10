@@ -10,8 +10,13 @@ import type {
   OverlayState,
 } from '../lib/overlays';
 import { validateOverlaySchedule } from '../lib/overlays';
+import { PipCandidateProbe } from './PipCandidateProbe';
+import type { SourceToken } from '../lib/projectSources';
 
 type Props = {
+  pipCandidate?: { token: SourceToken; url: string; name?: string } | null;
+  onPipCandidateReady?: (token: SourceToken, duration: number) => void;
+  onPipCandidateError?: (token: SourceToken) => void;
   overlays: OverlayState;
   totalProjectFrames: number;
   imageLimitMb: number;
@@ -47,6 +52,9 @@ export function OverlayTrack({
   onMetadataError,
   onScheduleChange,
   onRemove,
+  pipCandidate,
+  onPipCandidateReady,
+  onPipCandidateError,
 }: Props) {
   const timelineUnavailable = totalProjectFrames < 1;
 
@@ -79,6 +87,21 @@ export function OverlayTrack({
             </small>
           </div>
         </div>
+        {kind === 'video' && pipCandidate && (
+          <div className="overlay-editor" role="status">
+            <strong>{pipCandidate.name}</strong>
+            <span>Reading media…</span>
+            <PipCandidateProbe
+              key={pipCandidate.token.sourceId}
+              token={pipCandidate.token}
+              url={pipCandidate.url}
+              onReady={(token, duration) =>
+                onPipCandidateReady?.(token, duration)
+              }
+              onError={(token) => onPipCandidateError?.(token)}
+            />
+          </div>
+        )}
         {!overlay ? (
           <label className="overlay-upload">
             <Upload aria-hidden="true" />

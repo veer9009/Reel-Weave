@@ -11,8 +11,9 @@ import type { OverlayState } from '../lib/overlays';
 import type { TimelineProjection, TimelineSelection } from '../lib/timeline';
 import type { BackgroundAudio } from './BackgroundAudioTrack';
 import { TimelineTrimHandle } from './TimelineTrimHandle';
+import type { TrimTransactions } from './TimelineTrimHandle';
 import './ProjectTimeline.css';
-type Props = {
+type Props = TrimTransactions & {
   videoToolbar?: ReactNode;
   timeline: TimelineProjection;
   overlays: OverlayState;
@@ -45,6 +46,9 @@ export function ProjectTimeline({
   onPipDrop,
   onMove,
   onTrim,
+  onTrimBegin,
+  onTrimPreview,
+  onTrimEnd,
 }: Props) {
   const [draggingPip, setDraggingPip] = useState(false);
   const [trimScaleFrames, setTrimScaleFrames] = useState<number | null>(null);
@@ -355,6 +359,9 @@ export function ProjectTimeline({
                           totalFrames={total}
                           disabled={disabled}
                           onTrim={onTrim}
+                          onTrimBegin={onTrimBegin}
+                          onTrimPreview={onTrimPreview}
+                          onTrimEnd={onTrimEnd}
                           onDragActive={(active) => {
                             setTrimScaleFrames(active ? total : null);
                             if (active) {

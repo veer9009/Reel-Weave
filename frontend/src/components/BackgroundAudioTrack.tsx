@@ -1,4 +1,6 @@
 import { Music, Trash2, Upload } from 'lucide-react';
+import { useEffect, useRef } from 'react';
+import type { GestureToken } from '../lib/editHistory';
 import { formatDuration } from '../lib/clips';
 import type { AudioSettings } from '../lib/clips';
 
@@ -10,6 +12,15 @@ export type BackgroundAudio = {
 };
 
 type Props = {
+  onVolumeBegin?: (
+    field: 'originalVolume' | 'musicVolume',
+  ) => GestureToken | null;
+  onVolumePreview?: (
+    token: GestureToken,
+    field: 'originalVolume' | 'musicVolume',
+    value: number,
+  ) => void;
+  onVolumeEnd?: (token: GestureToken, accept: boolean) => void;
   audio: BackgroundAudio | null;
   settings: AudioSettings;
   disabled: boolean;
@@ -29,9 +40,137 @@ export function BackgroundAudioTrack({
   onMetadataError,
   onRemove,
   onSettings,
+  onVolumeBegin,
+  onVolumePreview,
+  onVolumeEnd,
 }: Props) {
-  const update = (values: Partial<AudioSettings>) =>
+  const gesture = useRef<{
+    token: GestureToken;
+    mode: 'pointer' | 'keyboard';
+    pointerId?: number;
+  } | null>(null);
+  const endRef = useRef(onVolumeEnd);
+  useEffect(() => {
+    endRef.current = onVolumeEnd;
+  });
+  const finish = (accept: boolean) => {
+    const current = gesture.current;
+    gesture.current = null;
+    if (current) onVolumeEnd?.(current.token, accept);
+  };
+  useEffect(() => {
+    if (disabled && gesture.current) {
+      const current = gesture.current;
+      gesture.current = null;
+      endRef.current?.(current.token, false);
+    }
+  }, [disabled]);
+  useEffect(
+    () => () => {
+      const current = gesture.current;
+      gesture.current = null;
+      if (current) endRef.current?.(current.token, false);
+    },
+    [],
+  );
+  const update = (values: Partial<AudioSettings>) => {
+    finish(true);
     onSettings({ ...settings, ...values });
+  };
+  const rangeEvents = {
+    onPointerDown: (
+      field: 'originalVolume' | 'musicVolume',
+      event: React.PointerEvent<HTMLInputElement>,
+    ) => {
+      if (disabled || event.button > 0) return;
+      const token = onVolumeBegin?.(field);
+      if (token) {
+        gesture.current = {
+          token,
+          mode: 'pointer',
+          pointerId: event.pointerId,
+        };
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+      }
+    },
+    onPointerUp: (event: React.PointerEvent<HTMLInputElement>) => {
+      if (
+        gesture.current?.mode !== 'pointer' ||
+        gesture.current.pointerId !== event.pointerId
+      )
+        return;
+      finish(true);
+      if (event.currentTarget.hasPointerCapture?.(event.pointerId))
+        event.currentTarget.releasePointerCapture(event.pointerId);
+    },
+    onPointerCancel: (event: React.PointerEvent<HTMLInputElement>) => {
+      if (
+        gesture.current?.mode === 'pointer' &&
+        gesture.current.pointerId === event.pointerId
+      )
+        finish(false);
+    },
+    onLostPointerCapture: (event: React.PointerEvent<HTMLInputElement>) => {
+      if (
+        gesture.current?.mode === 'pointer' &&
+        gesture.current.pointerId === event.pointerId
+      )
+        finish(false);
+    },
+    onKeyDown: (
+      field: 'originalVolume' | 'musicVolume',
+      event: React.KeyboardEvent<HTMLInputElement>,
+    ) => {
+      if (
+        disabled ||
+        gesture.current ||
+        event.ctrlKey ||
+        event.altKey ||
+        event.metaKey ||
+        ![
+          'ArrowLeft',
+          'ArrowRight',
+          'ArrowUp',
+          'ArrowDown',
+          'Home',
+          'End',
+          'PageUp',
+          'PageDown',
+        ].includes(event.key)
+      )
+        return;
+      const token = onVolumeBegin?.(field);
+      if (token) gesture.current = { token, mode: 'keyboard' };
+    },
+    onKeyUp: (event: React.KeyboardEvent<HTMLInputElement>) => {
+      if (
+        gesture.current?.mode === 'keyboard' &&
+        [
+          'ArrowLeft',
+          'ArrowRight',
+          'ArrowUp',
+          'ArrowDown',
+          'Home',
+          'End',
+          'PageUp',
+          'PageDown',
+        ].includes(event.key)
+      )
+        finish(true);
+    },
+    onBlur: () => {
+      if (gesture.current?.mode === 'keyboard') finish(true);
+    },
+    onChange: (
+      field: 'originalVolume' | 'musicVolume',
+      event: React.ChangeEvent<HTMLInputElement>,
+    ) => {
+      const value = Number(event.target.value) / 100;
+      if (gesture.current)
+        onVolumePreview?.(gesture.current.token, field, value);
+      else onSettings({ ...settings, [field]: value });
+    },
+  };
   return (
     <section
       className="background-audio panel"
@@ -106,9 +245,18 @@ export function BackgroundAudioTrack({
             max="100"
             value={Math.round(settings.originalVolume * 100)}
             disabled={disabled}
-            onChange={(event) =>
-              update({ originalVolume: Number(event.target.value) / 100 })
+            onPointerDown={(event) =>
+              rangeEvents.onPointerDown('originalVolume', event)
             }
+            onPointerUp={rangeEvents.onPointerUp}
+            onPointerCancel={rangeEvents.onPointerCancel}
+            onLostPointerCapture={rangeEvents.onLostPointerCapture}
+            onKeyDown={(event) =>
+              rangeEvents.onKeyDown('originalVolume', event)
+            }
+            onKeyUp={rangeEvents.onKeyUp}
+            onBlur={rangeEvents.onBlur}
+            onChange={(event) => rangeEvents.onChange('originalVolume', event)}
           />
         </label>
         <label className="mute-control">
@@ -133,9 +281,16 @@ export function BackgroundAudioTrack({
             max="100"
             value={Math.round(settings.musicVolume * 100)}
             disabled={disabled || !audio}
-            onChange={(event) =>
-              update({ musicVolume: Number(event.target.value) / 100 })
+            onPointerDown={(event) =>
+              rangeEvents.onPointerDown('musicVolume', event)
             }
+            onPointerUp={rangeEvents.onPointerUp}
+            onPointerCancel={rangeEvents.onPointerCancel}
+            onLostPointerCapture={rangeEvents.onLostPointerCapture}
+            onKeyDown={(event) => rangeEvents.onKeyDown('musicVolume', event)}
+            onKeyUp={rangeEvents.onKeyUp}
+            onBlur={rangeEvents.onBlur}
+            onChange={(event) => rangeEvents.onChange('musicVolume', event)}
           />
         </label>
         <label className="mute-control">

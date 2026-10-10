@@ -187,8 +187,7 @@ describe('AVStudio', { timeout: 15000 }, () => {
       serve('success', ['first.mp4', 'second.mov']);
       vi.mocked(URL.createObjectURL)
         .mockReturnValueOnce('blob:original')
-        .mockReturnValueOnce('blob:other')
-        .mockReturnValueOnce('blob:split-right');
+        .mockReturnValueOnce('blob:other');
       render(<App />);
       await selectTwo();
       fireEvent.click(
@@ -238,9 +237,7 @@ describe('AVStudio', { timeout: 15000 }, () => {
           'button',
         ),
       ).toHaveLength(2);
-      expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(
-        half === 'left' ? 'blob:split-right' : 'blob:original',
-      );
+      expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:original');
       fireEvent.click(screen.getByRole('button', { name: 'Render MP4' }));
       await screen.findByText('MP4 ready');
       const mergeCall = vi
@@ -348,8 +345,7 @@ describe('AVStudio', { timeout: 15000 }, () => {
     serve('success', ['first.mp4', 'second.mov', 'second.mov']);
     vi.mocked(URL.createObjectURL)
       .mockReturnValueOnce('blob:prefix')
-      .mockReturnValueOnce('blob:target')
-      .mockReturnValueOnce('blob:right');
+      .mockReturnValueOnce('blob:target');
     render(<App />);
     const user = await selectTwo();
     await user.click(screen.getByLabelText(/mute original audio/i));
@@ -433,7 +429,7 @@ describe('AVStudio', { timeout: 15000 }, () => {
     await user.click(screen.getByRole('button', { name: /new project/i }));
     expect(screen.getByText(/No video clips/i)).toBeVisible();
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:target');
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:right');
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(2);
   });
   it('Split is disabled with a visible reason at boundaries and for a one-frame range without changing clips', async () => {
     render(<App />);
@@ -485,8 +481,7 @@ describe('AVStudio', { timeout: 15000 }, () => {
     serve('success', ['first.mp4', 'second.mov']);
     vi.mocked(URL.createObjectURL)
       .mockReturnValueOnce('blob:v1')
-      .mockReturnValueOnce('blob:v2')
-      .mockReturnValueOnce('blob:replacement');
+      .mockReturnValueOnce('blob:v2');
     const view = render(<App />);
     const user = await selectTwo();
     await user.selectOptions(
@@ -526,8 +521,8 @@ describe('AVStudio', { timeout: 15000 }, () => {
     expect(
       screen.getByRole('button', { name: 'Preview clip 2: second.mov' }),
     ).toHaveAttribute('title', expect.stringContaining('Frames 60–179'));
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:v2');
-    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:replacement');
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:v2');
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:v1');
     await user.click(screen.getByRole('button', { name: 'Render MP4' }));
     await screen.findByText('MP4 ready');
     const mergeCall = vi
@@ -563,7 +558,7 @@ describe('AVStudio', { timeout: 15000 }, () => {
       screen.getByRole('button', { name: 'Replace after playhead' }),
     ).toBeDisabled();
     view.unmount();
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:replacement');
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:v2');
   });
   it('Replace after playhead preserves other occurrences in relative order and anchors the playhead when V2 precedes V1', async () => {
     render(<App />);
@@ -952,6 +947,12 @@ describe('AVStudio', { timeout: 15000 }, () => {
       });
     expect(screen.getByText('Drop PIP video here')).toBeVisible();
     drop(new File(['pip'], 'pip.mp4'));
+    const oldVideo = screen.getByLabelText('Loading PIP candidate');
+    Object.defineProperty(oldVideo, 'duration', {
+      configurable: true,
+      value: 2,
+    });
+    fireEvent.loadedMetadata(oldVideo);
     expect(
       screen.getByRole('button', { name: 'Select PIP overlay: pip.mp4' }),
     ).toBeVisible();
@@ -967,15 +968,9 @@ describe('AVStudio', { timeout: 15000 }, () => {
     fireEvent.change(screen.getByLabelText('Video overlay size'), {
       target: { value: 'large' },
     });
-    const oldVideo = document.querySelector<HTMLVideoElement>(
-      '.overlay-slot video',
-    )!;
-    expect(oldVideo.muted).toBe(true);
-    Object.defineProperty(oldVideo, 'duration', {
-      configurable: true,
-      value: 2,
-    });
-    fireEvent.loadedMetadata(oldVideo);
+    expect(
+      document.querySelector<HTMLVideoElement>('.overlay-slot video')!.muted,
+    ).toBe(true);
     const revoked = vi.mocked(URL.revokeObjectURL).mock.calls.length;
     drop(new File(['bad'], 'bad.png'));
     expect(screen.getByRole('alert')).toHaveTextContent(
@@ -998,6 +993,15 @@ describe('AVStudio', { timeout: 15000 }, () => {
     fireEvent.dragEnter(target, { dataTransfer: { types: ['Files'] } });
     expect(screen.getByText('Replace PIP video')).toBeVisible();
     drop(new File(['new'], 'replacement.mov'));
+    expect(
+      screen.getByRole('button', { name: 'Select PIP overlay: pip.mp4' }),
+    ).toBeVisible();
+    const replacementVideo = screen.getByLabelText('Loading PIP candidate');
+    Object.defineProperty(replacementVideo, 'duration', {
+      configurable: true,
+      value: 2,
+    });
+    fireEvent.loadedMetadata(replacementVideo);
     expect(
       screen.queryByRole('button', { name: 'Select PIP overlay: pip.mp4' }),
     ).toBeNull();
@@ -1491,16 +1495,17 @@ describe('AVStudio', { timeout: 15000 }, () => {
       expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:reset-second');
     },
   );
-  it('releases removed clip URLs and remaining URLs on unmount', async () => {
+  it('retains removed clip URLs for Undo and releases session URLs on unmount', async () => {
     vi.mocked(URL.createObjectURL)
       .mockReturnValueOnce('blob:first')
       .mockReturnValueOnce('blob:second');
     const view = render(<App />);
     const user = await selectTwo();
     await user.click(screen.getByRole('button', { name: 'Remove first.mp4' }));
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:first');
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:first');
     expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:second');
     view.unmount();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:first');
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:second');
   });
   it('shows failed processing and allows correction', async () => {

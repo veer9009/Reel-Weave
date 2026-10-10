@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+﻿import { useEffect, useRef, useState } from 'react';
 import { TriangleAlert } from 'lucide-react';
+import { useMemo } from 'react';
 import { UploadCard } from './components/UploadCard';
 import { ClipList } from './components/ClipList';
 import { MergeSummary } from './components/MergeSummary';
@@ -8,6 +9,10 @@ import { TrimEditor } from './components/TrimEditor';
 import { BackgroundAudioTrack } from './components/BackgroundAudioTrack';
 import { OverlayTrack } from './components/OverlayTrack';
 import { EditingWorkspace } from './components/EditingWorkspace';
+import { useEditHistory } from './hooks/useEditHistory';
+import { materializeSnapshot } from './lib/historyProjection';
+import type { SourceToken } from './lib/projectSources';
+import type { EditSnapshot } from './lib/editHistory';
 import {
   buildTimeline,
   planClipSplit,
@@ -28,7 +33,6 @@ import type {
   ClipMetadata,
   ClipSpeed,
   ClipTrim,
-  ProjectFpsSelection,
 } from './lib/clips';
 import {
   defaultOverlaySchedule,
@@ -41,31 +45,25 @@ import type {
 } from './lib/overlays';
 
 export default function App() {
-  const [structuralRevision, setStructuralRevision] = useState(0);
   const resultRegion = useRef<HTMLDivElement>(null);
-  const [fpsSelection, setFpsSelection] = useState<ProjectFpsSelection>('auto');
-  const [clips, setClips] = useState<Clip[]>([]);
   const [health, setHealth] = useState<Health | null>(null);
   const [healthAttempt, setHealthAttempt] = useState(0);
   const [job, setJob] = useState<Job | null>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const [pollError, setPollError] = useState(false);
   const [pollAttempt, setPollAttempt] = useState(0);
   const [announcement, setAnnouncement] = useState('');
   const [editingClipId, setEditingClipId] = useState<string | null>(null);
   const [backgroundAudio, setBackgroundAudio] =
     useState<BackgroundAudio | null>(null);
-  const [overlays, setOverlays] = useState<OverlayState>({
+  const [externalOverlays, setOverlays] = useState<OverlayState>({
     image: null,
     video: null,
   });
-  const [audioSettings, setAudioSettings] = useState<AudioSettings>({
-    originalVolume: 1,
-    originalMuted: false,
-    musicVolume: 0.3,
-    musicMuted: false,
-  });
+  const [imageToken, setImageToken] = useState<SourceToken | null>(null);
+  const [musicToken, setMusicToken] = useState<SourceToken | null>(null);
   const urls = useRef(new Set<string>());
   const uploadController = useRef<AbortController | null>(null);
   const active =
@@ -78,11 +76,89 @@ export default function App() {
     max_overlay_image_file_size_mb: 20,
     max_overlay_video_file_size_mb: 200,
   };
+  const history = useEditHistory({
+    limits,
+    editingLocked: Boolean(active || completed),
+    trimDraftOpen: editingClipId !== null,
+    onError: setHistoryError,
+    onAnnouncement: (message) => {
+      setHistoryError(null);
+      setAnnouncement(message);
+    },
+  });
+  // Keep audio-only edits from replacing the current preview geometry.
+  const projectionKey = JSON.stringify({
+    video1: history.view.video1,
+    pip: history.view.pip,
+  });
+  const sourceRevision = history.sourceRevision;
+  const sources = history.sources;
+  const projected = useMemo(
+    () =>
+      materializeSnapshot(
+        JSON.parse(projectionKey) as Pick<EditSnapshot, 'video1' | 'pip'>,
+        sources,
+      ),
+    [projectionKey, sourceRevision, sources],
+  );
+  const clips = projected.clips;
+  const overlays = { ...externalOverlays, video: projected.pip };
+  const fpsSelection = history.view.fpsSelection;
+  const audioSettings = history.view.audio;
+  const structuralRevision = history.structuralRevision;
+  const clipSourceTokens = new Map(
+    history.view.video1.map((v) => [
+      v.id,
+      history.sources.get(v.sourceId)!.token,
+    ]),
+  );
+  const pipSourceToken = history.view.pip
+    ? history.sources.get(history.view.pip.sourceId)?.token
+    : null;
+
+  function externalOwners(
+    image: SourceToken | null,
+    music: SourceToken | null,
+  ) {
+    history.sources.setExternalOwners(
+      new Set(
+        [image?.sourceId, music?.sourceId].filter((id): id is string =>
+          Boolean(id),
+        ),
+      ),
+    );
+  }
+  function commitClips(
+    action: 'trim' | 'reorder' | 'split' | 'ripple-delete' | 'version-replace',
+    label: string,
+    next: Clip[],
+    derivedFrom: ReadonlyMap<string, string> = new Map(),
+  ) {
+    const occurrences = history.history.present.video1;
+    return history.commit(action, label, {
+      ...history.history.present,
+      video1: next.map((c) => {
+        const original = occurrences.find(
+          (v) => v.id === (derivedFrom.get(c.id) ?? c.id),
+        )!;
+        return {
+          id: c.id,
+          sourceId: original.sourceId,
+          trim: c.trim ?? null,
+          trimSaved: c.trimSaved ?? false,
+          speed: c.speed ?? 1,
+        };
+      }),
+    });
+  }
   const editableClips = clips.filter(isEditableClip);
   const editsValid =
     editableClips.length === clips.length &&
     (!backgroundAudio || backgroundAudio.status === 'ready');
-  const timeline = buildTimeline(clips, fpsSelection);
+  const timeline = useMemo(
+    () => buildTimeline(clips, fpsSelection),
+    [clips, fpsSelection],
+  );
   const outputFps = timeline.fps;
   const totalProjectFrames = timeline.totalFrames;
   const overlaysValid = (['image', 'video'] as const).every((kind) => {
@@ -96,6 +172,7 @@ export default function App() {
   const canMerge = Boolean(
     !active &&
     !completed &&
+    !history.gestureActive &&
     clips.length >= 1 &&
     health?.ffmpeg_available &&
     health.ffprobe_available &&
@@ -197,20 +274,7 @@ export default function App() {
       setError(validation);
       return;
     }
-    const additions = files.map((file) => {
-      const url = URL.createObjectURL(file);
-      urls.current.add(url);
-      return {
-        id: crypto.randomUUID(),
-        file,
-        url,
-        metadataStatus: 'loading' as const,
-        trimSaved: false,
-        speed: 1 as const,
-      };
-    });
-    setClips((current) => [...current, ...additions]);
-    setStructuralRevision((n) => n + 1);
+    history.importVideo1(files);
     setError(null);
     setJob(null);
     setAnnouncement(
@@ -218,54 +282,31 @@ export default function App() {
     );
   }
   function setClipMetadata(id: string, metadata: ClipMetadata) {
-    setClips((current) =>
-      current.map((clip) =>
-        clip.id === id
-          ? {
-              ...clip,
-              duration: metadata.duration,
-              metadata,
-              metadataStatus: 'ready',
-              trim: clip.trim ?? {
-                startFrame: 0,
-                endFrame: metadata.totalFrames - 1,
-              },
-              trimSaved: clip.trimSaved ?? false,
-              speed: clip.speed ?? 1,
-            }
-          : clip,
-      ),
-    );
+    const token = clipSourceTokens.get(id);
+    if (token) history.sourceReady(token, { clipMetadata: metadata });
   }
   function setClipMetadataError(id: string) {
     const clip = clips.find((candidate) => candidate.id === id);
-    setClips((current) =>
-      current.map((candidate) =>
-        candidate.id === id
-          ? { ...candidate, metadataStatus: 'error' }
-          : candidate,
-      ),
-    );
+    const token = clipSourceTokens.get(id);
+    if (!token || !history.sourceError(token)) return;
     setError(
       `Could not read metadata for ${clip?.file.name ?? 'this clip'}. Remove it and choose a browser-readable video.`,
     );
   }
   function saveTrim(id: string, trim: ClipTrim) {
     if (active || completed) return;
-    setClips((current) =>
-      current.map((clip) =>
+    commitClips(
+      'trim',
+      'Trim clip',
+      clips.map((clip) =>
         clip.id === id ? { ...clip, trim, trimSaved: true } : clip,
       ),
     );
     setEditingClipId(null);
     setJob(null);
-    setStructuralRevision((n) => n + 1);
   }
   function changeSpeed(id: string, speed: ClipSpeed) {
-    setStructuralRevision((n) => n + 1);
-    setClips((current) =>
-      current.map((clip) => (clip.id === id ? { ...clip, speed } : clip)),
-    );
+    history.rebaseSpeed(id, speed);
     setJob(null);
   }
   function selectBackgroundAudio(file: File) {
@@ -282,21 +323,21 @@ export default function App() {
       );
       return;
     }
-    if (backgroundAudio) {
-      URL.revokeObjectURL(backgroundAudio.url);
-      urls.current.delete(backgroundAudio.url);
-    }
-    const url = URL.createObjectURL(file);
-    urls.current.add(url);
+    const token = history.sources.register(file, 'music');
+    externalOwners(imageToken, token);
+    setMusicToken(token);
+    const url = history.sources.ensureUrl(token.sourceId);
+    history.excludedUserEdit();
     setBackgroundAudio({ file, url, status: 'loading' });
-    setStructuralRevision((n) => n + 1);
+    history.notifyStructuralChange();
     setError(null);
   }
   function removeBackgroundAudio() {
-    setStructuralRevision((n) => n + 1);
+    history.notifyStructuralChange();
     if (!backgroundAudio) return;
-    URL.revokeObjectURL(backgroundAudio.url);
-    urls.current.delete(backgroundAudio.url);
+    externalOwners(imageToken, null);
+    setMusicToken(null);
+    history.excludedUserEdit();
     setBackgroundAudio(null);
     setJob(null);
   }
@@ -329,7 +370,12 @@ export default function App() {
       setError('Add ready Video 1 clips before choosing an overlay.');
       return;
     }
-    setStructuralRevision((value) => value + 1);
+    if (kind === 'video') {
+      history.stagePip(file);
+      setError(null);
+      return;
+    }
+    history.notifyStructuralChange();
     const previous = overlays[kind];
     const schedule =
       previous && validateOverlaySchedule(previous, totalProjectFrames) === null
@@ -340,12 +386,11 @@ export default function App() {
             size: previous.size,
           }
         : defaultOverlaySchedule(kind, totalProjectFrames);
-    if (previous) {
-      URL.revokeObjectURL(previous.url);
-      urls.current.delete(previous.url);
-    }
-    const url = URL.createObjectURL(file);
-    urls.current.add(url);
+    const token = history.sources.register(file, 'image');
+    externalOwners(token, musicToken);
+    setImageToken(token);
+    const url = history.sources.ensureUrl(token.sourceId);
+    history.excludedUserEdit();
     setOverlays((current) => ({
       ...current,
       [kind]: {
@@ -360,6 +405,15 @@ export default function App() {
     setJob(null);
   }
   function setOverlayMetadata(kind: OverlayKind, duration?: number) {
+    const token = kind === 'image' ? imageToken : pipSourceToken;
+    if (
+      kind === 'image' &&
+      token &&
+      !history.sources.externalOwners.has(token.sourceId)
+    )
+      return;
+    if (!token || !history.sourceReady(token, { duration })) return;
+    if (kind === 'video') return;
     setOverlays((current) => {
       const overlay = current[kind];
       if (!overlay) return current;
@@ -370,6 +424,15 @@ export default function App() {
     });
   }
   function setOverlayMetadataError(kind: OverlayKind) {
+    const token = kind === 'image' ? imageToken : pipSourceToken;
+    if (
+      kind === 'image' &&
+      token &&
+      !history.sources.externalOwners.has(token.sourceId)
+    )
+      return;
+    if (!token || !history.sourceError(token)) return;
+    if (kind === 'video') return;
     setOverlays((current) => {
       const overlay = current[kind];
       return overlay
@@ -384,7 +447,28 @@ export default function App() {
     kind: OverlayKind,
     changes: Partial<OverlaySchedule>,
   ) {
-    setStructuralRevision((n) => n + 1);
+    if (kind === 'video') {
+      const pip = history.history.present.pip;
+      if (!pip) return;
+      if ('position' in changes || 'size' in changes)
+        history.commit(
+          'position' in changes ? 'pip-position' : 'pip-size',
+          'Change PIP placement',
+          { ...history.history.present, pip: { ...pip, ...changes } },
+        );
+      else history.rebasePipRange(pip.id, changes);
+      return;
+    }
+    const current = overlays.image;
+    if (
+      !current ||
+      Object.entries(changes).every(
+        ([field, value]) => current[field as keyof OverlaySchedule] === value,
+      )
+    )
+      return;
+    history.excludedUserEdit();
+    history.notifyStructuralChange();
     setOverlays((current) => ({
       ...current,
       [kind]: current[kind] ? { ...current[kind], ...changes } : null,
@@ -392,32 +476,45 @@ export default function App() {
     setJob(null);
   }
   function removeOverlay(kind: OverlayKind) {
-    setStructuralRevision((n) => n + 1);
+    if (kind === 'video') {
+      history.cancelPendingPip();
+      history.commit('pip-remove', 'Remove PIP', {
+        ...history.history.present,
+        pip: null,
+      });
+      return;
+    }
+    history.notifyStructuralChange();
     const overlay = overlays[kind];
     if (!overlay) return;
-    URL.revokeObjectURL(overlay.url);
-    urls.current.delete(overlay.url);
+    externalOwners(null, musicToken);
+    setImageToken(null);
+    history.excludedUserEdit();
     setOverlays((current) => ({ ...current, [kind]: null }));
     setError(null);
     setJob(null);
   }
   function removeClip(id: string) {
     if (active || completed) return;
-    setStructuralRevision((n) => n + 1);
     const clip = clips.find((c) => c.id === id);
     if (!clip) return;
-    URL.revokeObjectURL(clip.url);
-    urls.current.delete(clip.url);
-    setClips((current) => current.filter((c) => c.id !== id));
+    if (
+      !commitClips(
+        'ripple-delete',
+        'Ripple Delete clip',
+        clips.filter((c) => c.id !== id),
+      )
+    )
+      return;
     setError(null);
     setJob(null);
     setAnnouncement(`${clip.file.name} removed.`);
   }
   function reorder(from: number, to: number) {
     if (active || completed) return;
-    setClips((current) => moveClip(current, from, to));
+    if (!commitClips('reorder', 'Reorder clips', moveClip(clips, from, to)))
+      return;
     setJob(null);
-    setStructuralRevision((n) => n + 1);
     setAnnouncement(
       `${clips[from]?.file.name ?? 'Clip'} moved to position ${to + 1}.`,
     );
@@ -434,8 +531,6 @@ export default function App() {
       return;
     }
     const target = clips.find((clip) => clip.id === targetId)!;
-    const url = URL.createObjectURL(target.file);
-    urls.current.add(url);
     const left: Clip = {
       ...target,
       id: crypto.randomUUID(),
@@ -445,17 +540,27 @@ export default function App() {
     const right: Clip = {
       ...target,
       id: crypto.randomUUID(),
-      url,
       trim: plan.rightTrim,
       trimSaved: true,
     };
-    setClips(
-      clips.flatMap((clip) => (clip.id === targetId ? [left, right] : [clip])),
-    );
+    if (
+      !commitClips(
+        'split',
+        'Split clip',
+        clips.flatMap((clip) =>
+          clip.id === targetId ? [left, right] : [clip],
+        ),
+        new Map([
+          [left.id, targetId],
+          [right.id, targetId],
+        ]),
+      )
+    )
+      return;
     setJob(null);
     setError(null);
+    setHistoryError(null);
     setEditingClipId(null);
-    setStructuralRevision((revision) => revision + 1);
     setAnnouncement('Video 1 split at the playhead. Right clip selected.');
     return right.id;
   }
@@ -476,13 +581,10 @@ export default function App() {
       setError(plan.error);
       return;
     }
-    const url = URL.createObjectURL(source.file);
-    urls.current.add(url);
     const left: Clip = { ...target, trim: plan.leftTrim, trimSaved: true };
     const right: Clip = {
       ...source,
       id: crypto.randomUUID(),
-      url,
       trim: plan.rightTrim,
       trimSaved: true,
       speed: target.speed,
@@ -505,15 +607,18 @@ export default function App() {
             nextTimeline.fps!,
         ),
     );
-    if (!nextClips.some((clip) => clip.url === source.url)) {
-      URL.revokeObjectURL(source.url);
-      urls.current.delete(source.url);
-    }
-    setClips(nextClips);
+    if (
+      !commitClips(
+        'version-replace',
+        'Replace version',
+        nextClips,
+        new Map([[right.id, sourceId]]),
+      )
+    )
+      return;
     setJob(null);
     setError(null);
     setEditingClipId(null);
-    setStructuralRevision((revision) => revision + 1);
     setAnnouncement('Video 1 replaced after the playhead.');
     return nextFrame;
   }
@@ -562,22 +667,17 @@ export default function App() {
   function newProject() {
     urls.current.forEach((url) => URL.revokeObjectURL(url));
     urls.current.clear();
-    setClips([]);
+    history.clearProject();
+    setImageToken(null);
+    setMusicToken(null);
     setBackgroundAudio(null);
     setOverlays({ image: null, video: null });
     setEditingClipId(null);
-    setFpsSelection('auto');
-    setAudioSettings({
-      originalVolume: 1,
-      originalMuted: false,
-      musicVolume: 0.3,
-      musicMuted: false,
-    });
     setJob(null);
     setError(null);
     setPollError(false);
     setAnnouncement('New project ready.');
-    setStructuralRevision((n) => n + 1);
+    history.notifyStructuralChange();
   }
   const editingLocked = active || completed;
   useEffect(() => {
@@ -625,6 +725,12 @@ export default function App() {
             : 'Connecting to backend'}
         </span>
       </header>
+      {historyError && (
+        <div role="alert" className="error-banner">
+          <TriangleAlert aria-hidden="true" />
+          <span>{historyError}</span>
+        </div>
+      )}
       {displayedError && (
         <div role="alert" className="error-banner">
           <TriangleAlert aria-hidden="true" />
@@ -659,6 +765,7 @@ export default function App() {
         {announcement}
       </div>
       <EditingWorkspace
+        historyControls={history.controls}
         clips={clips}
         timeline={timeline}
         overlays={overlays}
@@ -670,13 +777,25 @@ export default function App() {
         onPipDrop={(file) => selectOverlay('video', file)}
         onMove={reorder}
         onTrim={saveTrim}
+        onTrimBegin={(id) => history.begin('trim', id)}
+        onTrimPreview={(token, id, trim) =>
+          history.preview(token, {
+            ...history.view,
+            video1: history.view.video1.map((v) =>
+              v.id === id ? { ...v, trim } : v,
+            ),
+          })
+        }
+        onTrimEnd={(token, accept) => history.finish(token, accept)}
         onDeleteClip={removeClip}
         onReplaceAfterPlayhead={replaceAfterPlayhead}
         onSplitAtPlayhead={splitAtPlayhead}
         maxClips={limits.max_clips}
         onFpsSelectionChange={(fps) => {
-          setFpsSelection(fps);
-          setStructuralRevision((n) => n + 1);
+          history.commit('fps', 'Change timeline FPS', {
+            ...history.history.present,
+            fpsSelection: fps,
+          });
         }}
         mediaContent={
           <>
@@ -705,6 +824,20 @@ export default function App() {
         }
         overlayContent={
           <OverlayTrack
+            pipCandidate={
+              history.pendingPip
+                ? {
+                    token: history.pendingPip,
+                    url: history.sources.ensureUrl(history.pendingPip.sourceId),
+                    name: history.sources.get(history.pendingPip.sourceId)?.file
+                      .name,
+                  }
+                : null
+            }
+            onPipCandidateReady={(token, duration) =>
+              history.completePip(token, { duration })
+            }
+            onPipCandidateError={history.failPip}
             overlays={overlays}
             totalProjectFrames={totalProjectFrames}
             imageLimitMb={limits.max_overlay_image_file_size_mb ?? 20}
@@ -724,11 +857,20 @@ export default function App() {
             disabled={editingLocked}
             onSelect={selectBackgroundAudio}
             onMetadata={(duration) =>
+              musicToken &&
+              history.sources.externalOwners.has(musicToken.sourceId) &&
+              history.sourceReady(musicToken, { duration }) &&
               setBackgroundAudio((current) =>
                 current ? { ...current, duration, status: 'ready' } : null,
               )
             }
             onMetadataError={() => {
+              if (
+                !musicToken ||
+                !history.sources.externalOwners.has(musicToken.sourceId) ||
+                !history.sourceError(musicToken)
+              )
+                return;
               setBackgroundAudio((current) =>
                 current ? { ...current, status: 'error' } : null,
               );
@@ -737,7 +879,24 @@ export default function App() {
               );
             }}
             onRemove={removeBackgroundAudio}
-            onSettings={setAudioSettings}
+            onVolumeBegin={(field) => history.begin('audio-volume', field)}
+            onVolumePreview={(token, field, value) =>
+              history.preview(token, {
+                ...history.view,
+                audio: { ...history.view.audio, [field]: value },
+              })
+            }
+            onVolumeEnd={(token, accept) => history.finish(token, accept)}
+            onSettings={(audio: AudioSettings) =>
+              history.commit(
+                audio.originalMuted !== history.view.audio.originalMuted ||
+                  audio.musicMuted !== history.view.audio.musicMuted
+                  ? 'audio-mute'
+                  : 'audio-volume',
+                'Change audio mix',
+                { ...history.history.present, audio },
+              )
+            }
           />
         }
         deliveryContent={
