@@ -6,6 +6,20 @@ import { ClipList } from './components/ClipList';
 import { MergeSummary } from './components/MergeSummary';
 import { JobResult } from './components/JobResult';
 import { TrimEditor } from './components/TrimEditor';
+import { TimelinePlacementDialog } from './components/TimelinePlacementDialog';
+import { buildAdvancedTimeline, placementLength } from './lib/advancedTimeline';
+import type { Video2Occurrence, MusicOccurrence } from './lib/advancedTimeline';
+import {
+  movePositioned,
+  trimPositioned,
+  splitPositioned,
+  rippleDeletePositioned,
+  changeReplacementSourceEdit,
+  validatePositioned,
+} from './lib/positionedEdits';
+import type { PositionedTrack, EditResult } from './lib/positionedEdits';
+import type { PositionedActions } from './components/PositionedTrack';
+import { TimelineSourceProbe } from './components/TimelineSourceProbe';
 import { BackgroundAudioTrack } from './components/BackgroundAudioTrack';
 import { OverlayTrack } from './components/OverlayTrack';
 import { EditingWorkspace } from './components/EditingWorkspace';
@@ -19,14 +33,10 @@ import {
   planVersionReplacement,
 } from './lib/timeline';
 import type { BackgroundAudio } from './components/BackgroundAudioTrack';
-import { ApiError, getHealth, getJob, submitMerge } from './lib/api';
+import { ApiError, getHealth, getJob, submitAdvancedMerge } from './lib/api';
 import type { Health, Job } from './lib/api';
-import {
-  buildMergeManifest,
-  isEditableClip,
-  moveClip,
-  validateSelection,
-} from './lib/clips';
+import { buildAdvancedMergeRequest } from './lib/advancedManifest';
+import { isEditableClip, moveClip, validateSelection } from './lib/clips';
 import type {
   AudioSettings,
   Clip,
@@ -56,14 +66,11 @@ export default function App() {
   const [pollAttempt, setPollAttempt] = useState(0);
   const [announcement, setAnnouncement] = useState('');
   const [editingClipId, setEditingClipId] = useState<string | null>(null);
-  const [backgroundAudio, setBackgroundAudio] =
-    useState<BackgroundAudio | null>(null);
   const [externalOverlays, setOverlays] = useState<OverlayState>({
     image: null,
     video: null,
   });
   const [imageToken, setImageToken] = useState<SourceToken | null>(null);
-  const [musicToken, setMusicToken] = useState<SourceToken | null>(null);
   const urls = useRef(new Set<string>());
   const uploadController = useRef<AbortController | null>(null);
   const active =
@@ -88,24 +95,54 @@ export default function App() {
   });
   // Keep audio-only edits from replacing the current preview geometry.
   const projectionKey = JSON.stringify({
+    sourceRevision: history.sourceRevision,
+    fpsSelection: history.view.fpsSelection,
     video1: history.view.video1,
     pip: history.view.pip,
+    video2: history.view.video2,
+    musicSourceId: history.view.musicSourceId,
+    music: history.view.music,
   });
-  const sourceRevision = history.sourceRevision;
   const sources = history.sources;
   const projected = useMemo(
     () =>
-      materializeSnapshot(
-        JSON.parse(projectionKey) as Pick<EditSnapshot, 'video1' | 'pip'>,
-        sources,
-      ),
-    [projectionKey, sourceRevision, sources],
+      materializeSnapshot(JSON.parse(projectionKey) as EditSnapshot, sources),
+    [projectionKey, sources],
   );
   const clips = projected.clips;
+  const musicToken = history.view.musicSourceId
+    ? (history.sources.get(history.view.musicSourceId)?.token ?? null)
+    : null;
+  const musicSource = musicToken
+    ? history.sources.get(musicToken.sourceId)
+    : null;
+  const backgroundAudio: BackgroundAudio | null = musicSource
+    ? {
+        file: musicSource.file,
+        url: history.sources.ensureUrl(musicSource.token.sourceId),
+        duration: musicSource.duration,
+        status: musicSource.status,
+      }
+    : null;
+  const pendingMusic = history.pendingTimelineSources.find(
+    (v) => v.track === 'music',
+  );
   const overlays = { ...externalOverlays, video: projected.pip };
   const fpsSelection = history.view.fpsSelection;
   const audioSettings = history.view.audio;
   const structuralRevision = history.structuralRevision;
+  const advanced = useMemo(
+    () =>
+      buildAdvancedTimeline(
+        JSON.parse(projectionKey) as EditSnapshot,
+        sources,
+        { ...externalOverlays, video: projected.pip },
+      ),
+    [projectionKey, sources, externalOverlays, projected.pip],
+  );
+  const pendingReplacement = history.pendingTimelineSources.find(
+    (v) => v.track === 'video2',
+  );
   const clipSourceTokens = new Map(
     history.view.video1.map((v) => [
       v.id,
@@ -116,17 +153,8 @@ export default function App() {
     ? history.sources.get(history.view.pip.sourceId)?.token
     : null;
 
-  function externalOwners(
-    image: SourceToken | null,
-    music: SourceToken | null,
-  ) {
-    history.sources.setExternalOwners(
-      new Set(
-        [image?.sourceId, music?.sourceId].filter((id): id is string =>
-          Boolean(id),
-        ),
-      ),
-    );
+  function externalOwners(image: SourceToken | null) {
+    history.sources.setExternalOwners(new Set(image ? [image.sourceId] : []));
   }
   function commitClips(
     action: 'trim' | 'reorder' | 'split' | 'ripple-delete' | 'version-replace',
@@ -135,9 +163,10 @@ export default function App() {
     derivedFrom: ReadonlyMap<string, string> = new Map(),
   ) {
     const occurrences = history.history.present.video1;
-    return history.commit(action, label, {
-      ...history.history.present,
-      video1: next.map((c) => {
+    return history.commitVideo1(
+      action,
+      label,
+      next.map((c) => {
         const original = occurrences.find(
           (v) => v.id === (derivedFrom.get(c.id) ?? c.id),
         )!;
@@ -149,7 +178,7 @@ export default function App() {
           speed: c.speed ?? 1,
         };
       }),
-    });
+    );
   }
   const editableClips = clips.filter(isEditableClip);
   const editsValid =
@@ -173,6 +202,10 @@ export default function App() {
     !active &&
     !completed &&
     !history.gestureActive &&
+    !editingClipId &&
+    !advanced.renderErrors.length &&
+    !history.pendingTimelineSources.length &&
+    !history.pendingImports.length &&
     clips.length >= 1 &&
     health?.ffmpeg_available &&
     health.ffprobe_available &&
@@ -267,9 +300,145 @@ export default function App() {
     };
   }, [jobId, jobStatus, pollAttempt]);
 
+  function commitPositioned(
+    track: PositionedTrack,
+    label: string,
+    edit: EditResult<EditSnapshot>,
+  ): boolean {
+    if ('error' in edit) {
+      setHistoryError(edit.error);
+      return false;
+    }
+    const ok = history.commit(
+      `${track}-${label === 'Split' ? 'split' : label === 'Ripple Delete' ? 'ripple-delete' : label === 'Move' ? 'move' : 'trim'}`,
+      `${label} ${track === 'video2' ? 'Video 2' : 'music'}`,
+      edit.value,
+    );
+    if (ok) {
+      setJob(null);
+      setHistoryError(null);
+    }
+    return ok;
+  }
+  function splitPositionedClip(
+    track: PositionedTrack,
+    id: string,
+    frame: number,
+  ): string | void {
+    if (!outputFps) return;
+    const ids = { left: crypto.randomUUID(), right: crypto.randomUUID() };
+    const edit = splitPositioned(
+      history.history.present,
+      track,
+      id,
+      frame,
+      ids,
+      outputFps,
+    );
+    if (commitPositioned(track, 'Split', edit)) return ids.right;
+  }
+  function savePositionedRange(
+    track: PositionedTrack,
+    item: Video2Occurrence | MusicOccurrence,
+  ): boolean {
+    const current = history.history.present;
+    let next: EditSnapshot;
+    if (track === 'video2' && 'contentInFrame' in item) {
+      next = {
+        ...current,
+        video2: current.video2.map((v) =>
+          v.id === item.id
+            ? {
+                ...v,
+                timelineStartFrame: item.timelineStartFrame,
+                contentInFrame: item.contentInFrame,
+                contentOutFrame: item.contentOutFrame,
+                contentFullSource: false,
+              }
+            : v,
+        ),
+      };
+    } else if (track === 'music' && 'sourceStartSample' in item) {
+      next = {
+        ...current,
+        music: current.music.map((v) =>
+          v.id === item.id
+            ? {
+                ...v,
+                timelineStartFrame: item.timelineStartFrame,
+                sourceStartSample: item.sourceStartSample,
+                durationFrames: item.durationFrames,
+              }
+            : v,
+        ),
+      };
+    } else return false;
+    return commitPositioned(track, 'Trim', { value: next });
+  }
+  const positionedActions: PositionedActions = {
+    onFileDrop: (track, file, start) => {
+      history.stageTimelineSource(file, track, start);
+      setError(null);
+    },
+    onMove: (track, id, start) =>
+      commitPositioned(
+        track,
+        'Move',
+        movePositioned(history.history.present, track, id, start),
+      ),
+    onMoveBegin: (track, id) => history.begin(`${track}-move`, id),
+    onTrimBegin: (track, id) => history.begin(`${track}-trim`, id),
+    onMovePreview: (token, track, id, start) => {
+      const next = movePositioned(history.history.present, track, id, start);
+      if ('error' in next || !outputFps) return false;
+      const error = validatePositioned(next.value, sources, outputFps);
+      if (
+        error ||
+        (track === 'video2' &&
+          next.value.video2.some(
+            (v) =>
+              v.id === id &&
+              v.timelineStartFrame + placementLength(v) > totalProjectFrames,
+          ))
+      )
+        return false;
+      history.preview(token, next.value);
+      return true;
+    },
+    onTrimPreview: (token, track, id, edge, delta) => {
+      if (!outputFps) return false;
+      const next = trimPositioned(
+        history.history.present,
+        track,
+        id,
+        edge,
+        delta,
+        outputFps,
+        sources,
+      );
+      if (
+        'error' in next ||
+        (track === 'video2' &&
+          next.value.video2.some(
+            (v) =>
+              v.id === id &&
+              v.timelineStartFrame + placementLength(v) > totalProjectFrames,
+          ))
+      )
+        return false;
+      history.preview(token, next.value);
+      return true;
+    },
+    onEnd: (token, accept) => history.finish(token, accept),
+    onError: setHistoryError,
+  };
   function selectFiles(files: File[]) {
     if (active || completed || !health || !files.length) return;
-    const validation = validateSelection(files, clips.length, limits);
+    const validation = validateSelection(
+      files,
+      clips.length + history.view.video2.length,
+      limits,
+    );
     if (validation) {
       setError(validation);
       return;
@@ -310,35 +479,16 @@ export default function App() {
     setJob(null);
   }
   function selectBackgroundAudio(file: File) {
-    if (!/\.(mp3|wav|aac|m4a)$/i.test(file.name)) {
-      setError('Choose an MP3, WAV, AAC, or M4A background-audio file.');
-      return;
-    }
-    const maxBytes = (limits.max_audio_file_size_mb ?? 100) * 1024 * 1024;
-    if (!file.size || file.size > maxBytes) {
-      setError(
-        file.size
-          ? `Background audio exceeds the ${limits.max_audio_file_size_mb ?? 100} MB limit.`
-          : 'Background audio is empty.',
-      );
-      return;
-    }
-    const token = history.sources.register(file, 'music');
-    externalOwners(imageToken, token);
-    setMusicToken(token);
-    const url = history.sources.ensureUrl(token.sourceId);
-    history.excludedUserEdit();
-    setBackgroundAudio({ file, url, status: 'loading' });
-    history.notifyStructuralChange();
+    history.stageTimelineSource(file, 'music', 0);
     setError(null);
   }
   function removeBackgroundAudio() {
-    history.notifyStructuralChange();
-    if (!backgroundAudio) return;
-    externalOwners(imageToken, null);
-    setMusicToken(null);
-    history.excludedUserEdit();
-    setBackgroundAudio(null);
+    history.cancelTimelineSources();
+    history.commit('music-remove', 'Remove music', {
+      ...history.history.present,
+      musicSourceId: null,
+      music: [],
+    });
     setJob(null);
   }
   function selectOverlay(kind: OverlayKind, file: File) {
@@ -387,7 +537,7 @@ export default function App() {
           }
         : defaultOverlaySchedule(kind, totalProjectFrames);
     const token = history.sources.register(file, 'image');
-    externalOwners(token, musicToken);
+    externalOwners(token);
     setImageToken(token);
     const url = history.sources.ensureUrl(token.sourceId);
     history.excludedUserEdit();
@@ -487,7 +637,7 @@ export default function App() {
     history.notifyStructuralChange();
     const overlay = overlays[kind];
     if (!overlay) return;
-    externalOwners(null, musicToken);
+    externalOwners(null);
     setImageToken(null);
     history.excludedUserEdit();
     setOverlays((current) => ({ ...current, [kind]: null }));
@@ -521,7 +671,7 @@ export default function App() {
   }
   function splitAtPlayhead(targetId: string, frame: number) {
     if (active || completed) return;
-    if (clips.length >= limits.max_clips) {
+    if (clips.length + history.view.video2.length >= limits.max_clips) {
       setError('Clip limit reached. Remove a clip before splitting.');
       return;
     }
@@ -641,14 +791,13 @@ export default function App() {
     uploadController.current = controller;
     try {
       setJob(
-        await submitMerge(
-          editableClips,
-          buildMergeManifest(editableClips, audioSettings, outputFps, overlays),
-          {
-            backgroundAudio: backgroundAudio?.file,
-            overlayImage: overlays.image?.file,
-            overlayVideo: overlays.video?.file,
-          },
+        await submitAdvancedMerge(
+          buildAdvancedMergeRequest(
+            history.history.present,
+            sources,
+            outputFps,
+            overlays,
+          ),
           controller.signal,
         ),
       );
@@ -669,8 +818,6 @@ export default function App() {
     urls.current.clear();
     history.clearProject();
     setImageToken(null);
-    setMusicToken(null);
-    setBackgroundAudio(null);
     setOverlays({ image: null, video: null });
     setEditingClipId(null);
     setJob(null);
@@ -725,7 +872,7 @@ export default function App() {
             : 'Connecting to backend'}
         </span>
       </header>
-      {historyError && (
+      {historyError && !pendingReplacement && (
         <div role="alert" className="error-banner">
           <TriangleAlert aria-hidden="true" />
           <span>{historyError}</span>
@@ -764,8 +911,68 @@ export default function App() {
       <div className="sr-only" role="status" aria-live="polite">
         {announcement}
       </div>
+      {pendingReplacement && (
+        <>
+          <TimelineSourceProbe
+            token={pendingReplacement.token}
+            file={sources.get(pendingReplacement.token.sourceId)!.file}
+            url={sources.ensureUrl(pendingReplacement.token.sourceId)}
+            track="video2"
+            onReady={history.completeTimelineSource}
+            onError={history.failTimelineSource}
+          />
+          <TimelinePlacementDialog
+            key={pendingReplacement.token.sourceId}
+            name={sources.get(pendingReplacement.token.sourceId)!.file.name}
+            metadata={sources.get(pendingReplacement.token.sourceId)?.metadata}
+            startFrame={pendingReplacement.startFrame}
+            disabled={Boolean(active || completed)}
+            onSave={(draft) =>
+              history.acceptTimelineSource(pendingReplacement.token, draft)
+            }
+            onCancel={history.cancelTimelineSources}
+          />
+        </>
+      )}
       <EditingWorkspace
         historyControls={history.controls}
+        advanced={advanced}
+        gestureActive={history.gestureActive}
+        positionedActions={positionedActions}
+        onAddReplacement={(file, start, target) => {
+          history.stageTimelineSource(file, 'video2', start, target);
+          setError(null);
+        }}
+        onDeletePositioned={(track, id) =>
+          commitPositioned(
+            track,
+            'Ripple Delete',
+            rippleDeletePositioned(history.history.present, track, id),
+          )
+        }
+        onSplitPositioned={splitPositionedClip}
+        onSavePositioned={savePositionedRange}
+        onSourceEditPositioned={(id, trim, speed, kind) => {
+          if (!outputFps) return false;
+          const edit = changeReplacementSourceEdit(
+            history.history.present,
+            id,
+            trim,
+            speed,
+            sources,
+            outputFps,
+            kind,
+          );
+          if ('error' in edit) {
+            setHistoryError(edit.error);
+            return false;
+          }
+          return history.commit(
+            kind === 'speed' ? 'video2-speed' : 'video2-source-trim',
+            'Change replacement source edit',
+            edit.value,
+          );
+        }}
         clips={clips}
         timeline={timeline}
         overlays={overlays}
@@ -804,6 +1011,17 @@ export default function App() {
               limits={limits}
               onSelect={selectFiles}
             />
+            {history.pendingImports.map((token) => (
+              <TimelineSourceProbe
+                key={token.sourceId}
+                token={token}
+                file={history.sources.get(token.sourceId)!.file}
+                url={history.sources.ensureUrl(token.sourceId)}
+                track="video2"
+                onReady={history.sourceReady}
+                onError={history.sourceError}
+              />
+            ))}
             <ClipList
               clips={clips}
               disabled={editingLocked}
@@ -856,28 +1074,36 @@ export default function App() {
             settings={audioSettings}
             disabled={editingLocked}
             onSelect={selectBackgroundAudio}
-            onMetadata={(duration) =>
-              musicToken &&
-              history.sources.externalOwners.has(musicToken.sourceId) &&
-              history.sourceReady(musicToken, { duration }) &&
-              setBackgroundAudio((current) =>
-                current ? { ...current, duration, status: 'ready' } : null,
-              )
-            }
-            onMetadataError={() => {
-              if (
-                !musicToken ||
-                !history.sources.externalOwners.has(musicToken.sourceId) ||
-                !history.sourceError(musicToken)
-              )
-                return;
-              setBackgroundAudio((current) =>
-                current ? { ...current, status: 'error' } : null,
-              );
-              setError(
-                'Could not read the background-audio metadata. Remove it and choose another file.',
-              );
+            onMetadata={(duration) => {
+              if (musicToken) history.sourceReady(musicToken, { duration });
             }}
+            onMetadataError={() => {
+              if (musicToken) history.sourceError(musicToken);
+            }}
+            onReplace={selectBackgroundAudio}
+            candidateName={
+              pendingMusic
+                ? history.sources.get(pendingMusic.token.sourceId)?.file.name
+                : undefined
+            }
+            onCancelCandidate={history.cancelTimelineSources}
+            candidateContent={
+              pendingMusic ? (
+                <TimelineSourceProbe
+                  token={pendingMusic.token}
+                  file={history.sources.get(pendingMusic.token.sourceId)!.file}
+                  url={history.sources.ensureUrl(pendingMusic.token.sourceId)}
+                  track="music"
+                  onReady={(token, metadata) => {
+                    if (history.completeTimelineSource(token, metadata))
+                      history.acceptTimelineSource(token, {
+                        timelineStartFrame: pendingMusic.startFrame,
+                      });
+                  }}
+                  onError={history.failTimelineSource}
+                />
+              ) : null
+            }
             onRemove={removeBackgroundAudio}
             onVolumeBegin={(field) => history.begin('audio-volume', field)}
             onVolumePreview={(token, field, value) =>
@@ -900,13 +1126,23 @@ export default function App() {
           />
         }
         deliveryContent={
-          <MergeSummary
-            clips={clips}
-            timeline={timeline}
-            disabled={!canMerge}
-            busy={active}
-            onMerge={() => void merge()}
-          />
+          <>
+            <p className="render-readiness" role="status">
+              {advanced.renderErrors[0] ??
+                (editingClipId ||
+                history.gestureActive ||
+                history.pendingTimelineSources.length
+                  ? 'Finish or cancel the current edit before rendering.'
+                  : '')}
+            </p>
+            <MergeSummary
+              clips={clips}
+              timeline={timeline}
+              disabled={!canMerge}
+              busy={active}
+              onMerge={() => void merge()}
+            />
+          </>
         }
         resultContent={
           <div ref={resultRegion}>

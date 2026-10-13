@@ -10,6 +10,7 @@ import { projectFrameCount } from './overlays';
 import type { OverlayKind } from './overlays';
 
 export type TimelineSelection =
+  | { kind: 'replacement' | 'music'; id: string }
   | { kind: 'none' }
   | { kind: 'clip'; id: string }
   | { kind: 'overlay'; overlayKind: OverlayKind }

@@ -5,6 +5,7 @@ import type {
   ProjectFpsSelection,
 } from './clips';
 import type { OverlaySchedule } from './overlays';
+import type { Video2Occurrence, MusicOccurrence } from './advancedTimeline';
 export type Video1Occurrence = {
   id: string;
   sourceId: string;
@@ -15,11 +16,16 @@ export type Video1Occurrence = {
 export type PipOccurrence = OverlaySchedule & { id: string; sourceId: string };
 export type EditSnapshot = {
   video1: readonly Video1Occurrence[];
+  video2: readonly Video2Occurrence[];
+  musicSourceId: string | null;
+  music: readonly MusicOccurrence[];
   pip: PipOccurrence | null;
   audio: AudioSettings;
   fpsSelection: ProjectFpsSelection;
 };
 export type HistoryAction =
+  | `video2-${'add' | 'replace' | 'move' | 'source-trim' | 'trim' | 'speed' | 'split' | 'ripple-delete'}`
+  | `music-${'add' | 'replace' | 'move' | 'trim' | 'split' | 'ripple-delete' | 'remove'}`
   | 'reorder'
   | 'trim'
   | 'split'
@@ -54,6 +60,9 @@ export type HistoryControls = {
 };
 function copy(s: EditSnapshot): EditSnapshot {
   return {
+    video2: (s.video2 ?? []).map((v) => ({ ...v, trim: { ...v.trim } })),
+    musicSourceId: s.musicSourceId ?? null,
+    music: (s.music ?? []).map((v) => ({ ...v })),
     video1: s.video1.map((v) => ({
       id: v.id,
       sourceId: v.sourceId,

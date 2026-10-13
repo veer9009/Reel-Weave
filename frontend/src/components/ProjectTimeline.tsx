@@ -13,8 +13,14 @@ import type { BackgroundAudio } from './BackgroundAudioTrack';
 import { TimelineTrimHandle } from './TimelineTrimHandle';
 import type { TrimTransactions } from './TimelineTrimHandle';
 import './ProjectTimeline.css';
+import { PositionedTrack } from './PositionedTrack';
+import type { PositionedActions } from './PositionedTrack';
+import type { AdvancedTimelineProjection } from '../lib/advancedTimeline';
 type Props = TrimTransactions & {
   videoToolbar?: ReactNode;
+  videoToolbarHelp?: ReactNode;
+  advanced?: AdvancedTimelineProjection;
+  positionedActions?: PositionedActions;
   timeline: TimelineProjection;
   overlays: OverlayState;
   backgroundAudio: BackgroundAudio | null;
@@ -32,6 +38,9 @@ type Props = TrimTransactions & {
 };
 export function ProjectTimeline({
   videoToolbar,
+  videoToolbarHelp,
+  advanced,
+  positionedActions,
   timeline,
   overlays,
   backgroundAudio,
@@ -56,7 +65,38 @@ export function ProjectTimeline({
   const [clipDropTarget, setClipDropTarget] = useState<string | null>(null);
   const clipDragType = 'application/x-avstudio-clip';
   const total = timeline.totalFrames;
-  const displayFrames = disabled ? total : (trimScaleFrames ?? total);
+  const displayFrames = trimScaleFrames ?? advanced?.displayFrames ?? total;
+  const projection: AdvancedTimelineProjection = advanced ?? {
+    base: timeline,
+    video2: [],
+    music:
+      backgroundAudio?.duration && timeline.fps
+        ? [
+            {
+              id: 'legacy-music',
+              sourceId: 'legacy-music',
+              file: backgroundAudio.file,
+              url: backgroundAudio.url,
+              sampleCount: Math.round(backgroundAudio.duration * 48000),
+              timelineStartFrame: 0,
+              sourceStartSample: 0,
+              durationFrames: Math.ceil(
+                backgroundAudio.duration * timeline.fps,
+              ),
+            },
+          ]
+        : [],
+    resolved: timeline.items.map((v) => ({
+      startFrame: v.startFrame,
+      endFrameExclusive: v.endFrame + 1,
+      track: 'video1',
+      occurrenceId: v.clip.id,
+      sourceId: v.clip.id,
+      contentStartFrame: 0,
+    })),
+    displayFrames: total,
+    renderErrors: [],
+  };
   const dropDisabled = disabled || total < 1 || !onPipDrop;
   const geometry = (start: number, count: number) => ({
     left: `${displayFrames ? (start / displayFrames) * 100 : 0}%`,
@@ -108,332 +148,403 @@ export function ProjectTimeline({
       {timeline.status === 'unavailable' && (
         <p role="status">Timeline timing unavailable</p>
       )}
-      <div
-        className="timeline-scroll"
-        tabIndex={0}
-        aria-label="Scrollable timeline"
-      >
-        <div className="timeline-inner">
-          <div className="ruler-row">
-            <span className="track-heading">Project frames</span>
-            <div className="frame-ruler">
-              {total > 0 &&
-                [
-                  ...new Set(
-                    Array.from({ length: Math.min(9, total) }, (_, i) =>
-                      Math.floor(
-                        (i * (total - 1)) / Math.max(1, Math.min(9, total) - 1),
+      {videoToolbarHelp && (
+        <div className="timeline-tools-help">{videoToolbarHelp}</div>
+      )}
+      <div className={`timeline-workspace${videoToolbar ? ' has-tools' : ''}`}>
+        {videoToolbar && (
+          <div
+            className="timeline-tools"
+            role="toolbar"
+            aria-label="Timeline Tools"
+            aria-orientation="vertical"
+          >
+            <span className="timeline-tools-title" aria-hidden="true">
+              Tools
+            </span>
+            {videoToolbar}
+          </div>
+        )}
+        <div
+          className="timeline-scroll"
+          tabIndex={0}
+          aria-label="Scrollable timeline"
+        >
+          <div className="timeline-inner">
+            <div className="ruler-row">
+              <span className="track-heading">Project frames</span>
+              <div className="frame-ruler">
+                {total > 0 &&
+                  [
+                    ...new Set(
+                      Array.from({ length: Math.min(9, total) }, (_, i) =>
+                        Math.floor(
+                          (i * (total - 1)) /
+                            Math.max(1, Math.min(9, total) - 1),
+                        ),
                       ),
                     ),
-                  ),
-                ].map((tick) => (
-                  <span
-                    key={tick}
-                    style={{ left: `${(tick / displayFrames) * 100}%` }}
-                  >
-                    {tick} f
-                  </span>
-                ))}
-              <input
-                aria-label="Timeline position"
-                type="range"
-                min={0}
-                max={Math.max(0, total - 1)}
-                step={1}
-                style={{
-                  width: `${displayFrames ? (total / displayFrames) * 100 : 100}%`,
-                }}
-                value={frame ?? 0}
-                disabled={frame === null}
-                aria-valuetext={
-                  frame !== null && timeline.fps
-                    ? `Frame ${frame} of ${total}, ${formatTimestamp(frame / timeline.fps)}, ${timeline.fps} FPS`
-                    : 'No current frame'
-                }
-                onChange={(event) => onSeek(Number(event.target.value))}
-              />
-            </div>
-          </div>
-          <div className="timeline-tracks">
-            <div
-              className="timeline-playhead"
-              aria-hidden="true"
-              style={{
-                left: `calc(120px + (100% - 120px) * ${displayFrames ? (frame ?? 0) / displayFrames : 0})`,
-              }}
-            />
-            <section className="timeline-track" aria-label="VIDEO 2">
-              <h3>Video 2</h3>
-              <div className="track-content overlay-lanes">
-                {(['video', 'image'] as const).map((kind) => {
-                  const overlay = overlays[kind];
-                  const error = overlay
-                    ? validateOverlaySchedule(overlay, total)
-                    : null;
-                  return (
-                    <div
-                      className={`overlay-sublane ${kind === 'video' ? 'pip-drop-target' : ''} ${kind === 'video' && draggingPip && !dropDisabled ? 'dragging' : ''}`}
-                      key={kind}
-                      aria-label={
-                        kind === 'video' ? 'PIP video drop target' : undefined
-                      }
-                      aria-disabled={
-                        kind === 'video' ? dropDisabled : undefined
-                      }
-                      onDragEnter={(event) => {
-                        if (
-                          kind !== 'video' ||
-                          !event.dataTransfer.types.includes('Files')
-                        )
-                          return;
-                        event.preventDefault();
-                        if (!dropDisabled) setDraggingPip(true);
-                      }}
-                      onDragOver={(event) => {
-                        if (
-                          kind !== 'video' ||
-                          !event.dataTransfer.types.includes('Files')
-                        )
-                          return;
-                        event.preventDefault();
-                        event.dataTransfer.dropEffect = dropDisabled
-                          ? 'none'
-                          : 'copy';
-                        if (!dropDisabled) setDraggingPip(true);
-                      }}
-                      onDragLeave={(event) => {
-                        if (
-                          !event.currentTarget.contains(
-                            event.relatedTarget as Node | null,
-                          )
-                        )
-                          setDraggingPip(false);
-                      }}
-                      onDrop={(event) => {
-                        if (
-                          kind !== 'video' ||
-                          !event.dataTransfer.types.includes('Files')
-                        )
-                          return;
-                        event.preventDefault();
-                        event.stopPropagation();
-                        setDraggingPip(false);
-                        if (dropDisabled) return;
-                        const file = event.dataTransfer.files[0];
-                        if (file) onPipDrop?.(file);
-                      }}
+                  ].map((tick) => (
+                    <span
+                      key={tick}
+                      style={{ left: `${(tick / displayFrames) * 100}%` }}
                     >
-                      {overlay && total > 0 ? (
-                        <button
-                          className={`timeline-block ${error ? 'invalid' : ''}`}
-                          style={geometry(
-                            Math.max(0, overlay.startFrame),
-                            overlay.endFrame - overlay.startFrame + 1,
-                          )}
-                          aria-label={`Select ${kind === 'video' ? 'PIP' : 'image'} overlay: ${overlay.file.name}`}
-                          aria-pressed={selected(kind)}
-                          onClick={() =>
-                            choose(
-                              { kind: 'overlay', overlayKind: kind },
-                              overlay.startFrame,
-                            )
-                          }
-                          title={`${overlay.file.name} · Frames ${overlay.startFrame}–${overlay.endFrame}${error ? ` · ${error}` : ''}`}
-                        >
-                          {kind === 'video' ? 'PIP' : 'Image/logo'} ·{' '}
-                          {overlay.file.name}
-                          {error ? ' · Invalid range' : ''}
-                        </button>
-                      ) : (
-                        <span>
-                          {kind === 'video'
-                            ? 'Drop PIP video here'
-                            : 'No image/logo overlay'}
-                        </span>
-                      )}
-                      {kind === 'video' &&
-                        overlay &&
-                        draggingPip &&
-                        !dropDisabled && (
-                          <span className="pip-replace-hint">
-                            Replace PIP video
-                          </span>
-                        )}
-                    </div>
-                  );
-                })}
+                      {tick} f
+                    </span>
+                  ))}
+                <input
+                  aria-label="Timeline position"
+                  type="range"
+                  min={0}
+                  max={Math.max(0, total - 1)}
+                  step={1}
+                  style={{
+                    width: `${displayFrames ? (total / displayFrames) * 100 : 100}%`,
+                  }}
+                  value={frame ?? 0}
+                  disabled={frame === null}
+                  aria-valuetext={
+                    frame !== null && timeline.fps
+                      ? `Frame ${frame} of ${total}, ${formatTimestamp(frame / timeline.fps)}, ${timeline.fps} FPS`
+                      : 'No current frame'
+                  }
+                  onChange={(event) => onSeek(Number(event.target.value))}
+                />
               </div>
-            </section>
-            <div
-              className="timeline-video-toolbar"
-              role="toolbar"
-              aria-label="Video 1 editing controls"
-            >
-              {videoToolbar}
             </div>
-            <section className="timeline-track" aria-label="VIDEO 1">
-              <h3>Video 1</h3>
-              <div className="track-content">
-                {timeline.items.length ? (
-                  timeline.items.map((item, index) => (
-                    <div
-                      key={item.clip.id}
-                      className="timeline-video-card"
-                      style={geometry(item.startFrame, item.frameCount)}
-                    >
-                      <button
-                        className={`timeline-block video-block${clipDropTarget === item.clip.id && !disabled ? ' clip-drop-target' : ''}`}
-                        draggable={!disabled && Boolean(onMove)}
-                        onDragStart={(event) => {
-                          if (disabled || !onMove) {
-                            event.preventDefault();
-                            return;
-                          }
-                          draggedClip.current = item.clip.id;
-                          event.dataTransfer.setData(
-                            clipDragType,
-                            item.clip.id,
-                          );
-                          event.dataTransfer.effectAllowed = 'move';
-                        }}
-                        onDragOver={(event) => {
+            <div className="timeline-tracks">
+              <div
+                className="timeline-playhead"
+                aria-hidden="true"
+                style={{
+                  left: `calc(120px + (100% - 120px) * ${displayFrames ? (frame ?? 0) / displayFrames : 0})`,
+                }}
+              />
+              <section className="timeline-track" aria-label="Overlay/PIP">
+                <h3>Overlay/PIP</h3>
+                <div className="track-content overlay-lanes">
+                  {(['video', 'image'] as const).map((kind) => {
+                    const overlay = overlays[kind];
+                    const error = overlay
+                      ? validateOverlaySchedule(overlay, total)
+                      : null;
+                    return (
+                      <div
+                        className={`overlay-sublane ${kind === 'video' ? 'pip-drop-target' : ''} ${kind === 'video' && draggingPip && !dropDisabled ? 'dragging' : ''}`}
+                        key={kind}
+                        aria-label={
+                          kind === 'video' ? 'PIP video drop target' : undefined
+                        }
+                        aria-disabled={
+                          kind === 'video' ? dropDisabled : undefined
+                        }
+                        onDragEnter={(event) => {
                           if (
-                            disabled ||
-                            !onMove ||
-                            !draggedClip.current ||
-                            !event.dataTransfer.types.includes(clipDragType)
+                            kind !== 'video' ||
+                            !event.dataTransfer.types.includes('Files')
                           )
                             return;
                           event.preventDefault();
-                          event.dataTransfer.dropEffect = 'move';
-                          if (draggedClip.current !== item.clip.id)
-                            setClipDropTarget(item.clip.id);
+                          if (!dropDisabled) setDraggingPip(true);
                         }}
-                        onDragLeave={() => setClipDropTarget(null)}
-                        onDragEnd={() => {
-                          draggedClip.current = null;
-                          setClipDropTarget(null);
+                        onDragOver={(event) => {
+                          if (
+                            kind !== 'video' ||
+                            !event.dataTransfer.types.includes('Files')
+                          )
+                            return;
+                          event.preventDefault();
+                          event.dataTransfer.dropEffect = dropDisabled
+                            ? 'none'
+                            : 'copy';
+                          if (!dropDisabled) setDraggingPip(true);
+                        }}
+                        onDragLeave={(event) => {
+                          if (
+                            !event.currentTarget.contains(
+                              event.relatedTarget as Node | null,
+                            )
+                          )
+                            setDraggingPip(false);
                         }}
                         onDrop={(event) => {
-                          const sourceId = draggedClip.current;
-                          draggedClip.current = null;
-                          setClipDropTarget(null);
                           if (
-                            disabled ||
-                            !onMove ||
-                            !sourceId ||
-                            !event.dataTransfer.types.includes(clipDragType)
+                            kind !== 'video' ||
+                            !event.dataTransfer.types.includes('Files')
                           )
                             return;
                           event.preventDefault();
                           event.stopPropagation();
-                          const from = timeline.items.findIndex(
-                            (entry) => entry.clip.id === sourceId,
-                          );
-                          if (from >= 0 && from !== index) onMove(from, index);
+                          setDraggingPip(false);
+                          if (dropDisabled) return;
+                          if (event.dataTransfer.files.length !== 1) {
+                            positionedActions?.onError(
+                              'Drop one PIP video at a time.',
+                            );
+                            return;
+                          }
+                          const file = event.dataTransfer.files[0];
+                          if (file) onPipDrop?.(file);
                         }}
-                        aria-label={`Preview clip ${index + 1}: ${item.clip.file.name}`}
-                        aria-pressed={
-                          selection.kind === 'clip' &&
-                          selection.id === item.clip.id
-                        }
-                        title={`${item.clip.file.name} · Frames ${item.startFrame}–${item.endFrame} · Source ${item.clip.metadata.fps} FPS`}
-                        onClick={() =>
-                          choose(
-                            { kind: 'clip', id: item.clip.id },
-                            item.startFrame,
-                          )
-                        }
                       >
-                        {item.clip.file.name}
-                        <small>
-                          Frames {item.startFrame}–{item.endFrame}
-                        </small>
-                      </button>
-                      {(['startFrame', 'endFrame'] as const).map((edge) => (
-                        <TimelineTrimHandle
-                          key={edge}
-                          clip={item.clip}
-                          edge={edge}
-                          fps={timeline.fps!}
-                          totalFrames={total}
-                          disabled={disabled}
-                          onTrim={onTrim}
-                          onTrimBegin={onTrimBegin}
-                          onTrimPreview={onTrimPreview}
-                          onTrimEnd={onTrimEnd}
-                          onDragActive={(active) => {
-                            setTrimScaleFrames(active ? total : null);
-                            if (active) {
-                              draggedClip.current = null;
-                              setClipDropTarget(null);
+                        {overlay && total > 0 ? (
+                          <button
+                            className={`timeline-block ${error ? 'invalid' : ''}`}
+                            style={geometry(
+                              Math.max(0, overlay.startFrame),
+                              overlay.endFrame - overlay.startFrame + 1,
+                            )}
+                            aria-label={`Select ${kind === 'video' ? 'PIP' : 'image'} overlay: ${overlay.file.name}`}
+                            aria-pressed={selected(kind)}
+                            onClick={() =>
+                              choose(
+                                { kind: 'overlay', overlayKind: kind },
+                                overlay.startFrame,
+                              )
                             }
+                            title={`${overlay.file.name} · Frames ${overlay.startFrame}–${overlay.endFrame}${error ? ` · ${error}` : ''}`}
+                          >
+                            {kind === 'video' ? 'PIP' : 'Image/logo'} ·{' '}
+                            {overlay.file.name}
+                            {error ? ' · Invalid range' : ''}
+                          </button>
+                        ) : (
+                          <span>
+                            {kind === 'video'
+                              ? 'Drop PIP video here'
+                              : 'No image/logo overlay'}
+                          </span>
+                        )}
+                        {kind === 'video' &&
+                          overlay &&
+                          draggingPip &&
+                          !dropDisabled && (
+                            <span className="pip-replace-hint">
+                              Replace PIP video
+                            </span>
+                          )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+              <PositionedTrack
+                track="video2"
+                projection={{ ...projection, displayFrames }}
+                selection={selection}
+                disabled={disabled}
+                onSelect={onSelect}
+                onSeek={onSeek}
+                onFileDrop={(file, start) =>
+                  positionedActions?.onFileDrop('video2', file, start)
+                }
+                onMove={(id, start) =>
+                  positionedActions?.onMove('video2', id, start)
+                }
+                onMoveBegin={positionedActions?.onMoveBegin}
+                onMovePreview={positionedActions?.onMovePreview}
+                onTrimBegin={positionedActions?.onTrimBegin}
+                onTrimPreview={positionedActions?.onTrimPreview}
+                onEnd={positionedActions?.onEnd}
+                onError={(message) => positionedActions?.onError(message)}
+              />
+              <section className="timeline-track" aria-label="VIDEO 1">
+                <h3>Video 1</h3>
+                <div className="track-content">
+                  {timeline.items.length ? (
+                    timeline.items.map((item, index) => (
+                      <div
+                        key={item.clip.id}
+                        className="timeline-video-card"
+                        style={geometry(item.startFrame, item.frameCount)}
+                      >
+                        <button
+                          className={`timeline-block video-block${clipDropTarget === item.clip.id && !disabled ? ' clip-drop-target' : ''}`}
+                          draggable={!disabled && Boolean(onMove)}
+                          onDragStart={(event) => {
+                            if (disabled || !onMove) {
+                              event.preventDefault();
+                              return;
+                            }
+                            draggedClip.current = item.clip.id;
+                            event.dataTransfer.setData(
+                              clipDragType,
+                              item.clip.id,
+                            );
+                            event.dataTransfer.effectAllowed = 'move';
                           }}
-                        />
-                      ))}
-                    </div>
-                  ))
-                ) : (
-                  <span>Add ready video clips</span>
-                )}
-              </div>
-            </section>
-            <section className="timeline-track" aria-label="AUDIO 1">
-              <h3>
-                Audio 1{audioSettings.originalMuted && <small>Muted</small>}
-              </h3>
-              <div className="track-content">
-                {timeline.items.length ? (
-                  timeline.items.map((item) => (
-                    <button
-                      key={item.clip.id}
-                      className="timeline-block audio-block"
-                      style={geometry(item.startFrame, item.frameCount)}
-                      aria-label={`Original audio: ${item.clip.file.name}`}
-                      aria-pressed={
-                        selection.kind === 'audio' &&
-                        selection.track === 'original'
-                      }
-                      onClick={() =>
-                        choose({ kind: 'audio', track: 'original' })
-                      }
-                    >
-                      Original audio<small>Sound presence unknown</small>
-                    </button>
-                  ))
-                ) : (
-                  <span>Original clip audio</span>
-                )}
-              </div>
-            </section>
-            <section className="timeline-track" aria-label="AUDIO 2">
-              <h3>Audio 2{audioSettings.musicMuted && <small>Muted</small>}</h3>
-              <div className="track-content">
-                {backgroundAudio && total > 0 ? (
+                          onDragOver={(event) => {
+                            if (
+                              disabled ||
+                              !onMove ||
+                              !draggedClip.current ||
+                              !event.dataTransfer.types.includes(clipDragType)
+                            )
+                              return;
+                            event.preventDefault();
+                            event.dataTransfer.dropEffect = 'move';
+                            if (draggedClip.current !== item.clip.id)
+                              setClipDropTarget(item.clip.id);
+                          }}
+                          onDragLeave={() => setClipDropTarget(null)}
+                          onDragEnd={() => {
+                            draggedClip.current = null;
+                            setClipDropTarget(null);
+                          }}
+                          onDrop={(event) => {
+                            const sourceId = draggedClip.current;
+                            draggedClip.current = null;
+                            setClipDropTarget(null);
+                            if (
+                              disabled ||
+                              !onMove ||
+                              !sourceId ||
+                              !event.dataTransfer.types.includes(clipDragType)
+                            )
+                              return;
+                            event.preventDefault();
+                            event.stopPropagation();
+                            const from = timeline.items.findIndex(
+                              (entry) => entry.clip.id === sourceId,
+                            );
+                            if (from >= 0 && from !== index)
+                              onMove(from, index);
+                          }}
+                          aria-label={`Preview clip ${index + 1}: ${item.clip.file.name}`}
+                          aria-pressed={
+                            selection.kind === 'clip' &&
+                            selection.id === item.clip.id
+                          }
+                          title={`${item.clip.file.name} · Frames ${item.startFrame}–${item.endFrame} · Source ${item.clip.metadata.fps} FPS`}
+                          onClick={() =>
+                            choose(
+                              { kind: 'clip', id: item.clip.id },
+                              item.startFrame,
+                            )
+                          }
+                        >
+                          {item.clip.file.name}
+                          <small>
+                            Frames {item.startFrame}–{item.endFrame}
+                          </small>
+                        </button>
+                        {(['startFrame', 'endFrame'] as const).map((edge) => (
+                          <TimelineTrimHandle
+                            key={edge}
+                            clip={item.clip}
+                            edge={edge}
+                            fps={timeline.fps!}
+                            totalFrames={displayFrames}
+                            disabled={disabled}
+                            onTrim={onTrim}
+                            onTrimBegin={onTrimBegin}
+                            onTrimPreview={onTrimPreview}
+                            onTrimEnd={onTrimEnd}
+                            onDragActive={(active) => {
+                              setTrimScaleFrames(active ? displayFrames : null);
+                              if (active) {
+                                draggedClip.current = null;
+                                setClipDropTarget(null);
+                              }
+                            }}
+                          />
+                        ))}
+                      </div>
+                    ))
+                  ) : (
+                    <span>Add ready video clips</span>
+                  )}
+                </div>
+              </section>
+              <section className="timeline-track" aria-label="AUDIO 1">
+                <h3>
+                  Audio 1{audioSettings.originalMuted && <small>Muted</small>}
+                </h3>
+                <div className="track-content">
+                  {projection.resolved.length ? (
+                    projection.resolved.map((range) => {
+                      const source =
+                        range.track === 'video2'
+                          ? projection.video2.find(
+                              (v) => v.id === range.occurrenceId,
+                            )?.clip
+                          : timeline.items.find(
+                              (v) => v.clip.id === range.occurrenceId,
+                            )?.clip;
+                      if (!source) return null;
+                      const item = {
+                        clip: source,
+                        startFrame: range.startFrame,
+                        frameCount: range.endFrameExclusive - range.startFrame,
+                      };
+                      return (
+                        <button
+                          key={`${range.occurrenceId}:${range.startFrame}`}
+                          className="timeline-block audio-block"
+                          style={geometry(item.startFrame, item.frameCount)}
+                          aria-label={`Original audio: ${item.clip.file.name}`}
+                          aria-pressed={
+                            selection.kind === 'audio' &&
+                            selection.track === 'original'
+                          }
+                          onClick={() =>
+                            choose({ kind: 'audio', track: 'original' })
+                          }
+                        >
+                          Original audio<small>Sound presence unknown</small>
+                        </button>
+                      );
+                    })
+                  ) : (
+                    <span>Original clip audio</span>
+                  )}
+                </div>
+              </section>
+              <PositionedTrack
+                track="music"
+                projection={{ ...projection, displayFrames }}
+                selection={selection}
+                disabled={disabled}
+                onSelect={onSelect}
+                onSeek={onSeek}
+                onFileDrop={(file, start) =>
+                  positionedActions?.onFileDrop('music', file, start)
+                }
+                onMove={(id, start) =>
+                  positionedActions?.onMove('music', id, start)
+                }
+                onMoveBegin={positionedActions?.onMoveBegin}
+                onMovePreview={positionedActions?.onMovePreview}
+                onTrimBegin={positionedActions?.onTrimBegin}
+                onTrimPreview={positionedActions?.onTrimPreview}
+                onEnd={positionedActions?.onEnd}
+                onError={(message) => positionedActions?.onError(message)}
+              />
+            </div>
+            <p className="duration-boundary">
+              Export end: {total} f · Duration boundary:{' '}
+              {formatTimestamp(timeline.durationSeconds)} · Final selectable
+              frame: {total ? total - 1 : 'none'}
+            </p>
+            {projection.video2
+              .filter(
+                (v) =>
+                  v.timelineStartFrame + v.contentOutFrame - v.contentInFrame >
+                  total,
+              )
+              .map((v) => (
+                <p key={v.id} className="invalid-range-message">
+                  Video 2 {v.clip.file.name}: range outside Video 1.{' '}
                   <button
-                    className="timeline-block audio-block"
-                    style={geometry(0, total)}
-                    aria-label={`Background music: ${backgroundAudio.file.name}`}
-                    aria-pressed={
-                      selection.kind === 'audio' && selection.track === 'music'
-                    }
-                    onClick={() => choose({ kind: 'audio', track: 'music' })}
+                    type="button"
+                    className="text-button"
+                    onClick={() => onSelect({ kind: 'replacement', id: v.id })}
                   >
-                    {backgroundAudio.file.name}
-                    <small>
-                      Starts at zero · looped/trimmed to project duration
-                    </small>
+                    Review {v.clip.file.name} range
                   </button>
-                ) : (
-                  <span>No background music</span>
-                )}
-              </div>
-            </section>
+                </p>
+              ))}
           </div>
-          <p className="duration-boundary">
-            Duration boundary: {formatTimestamp(timeline.durationSeconds)} ·
-            Final selectable frame: {total ? total - 1 : 'none'}
-          </p>
         </div>
       </div>
     </section>

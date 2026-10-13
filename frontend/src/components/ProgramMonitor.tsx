@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { TimelineProjection } from '../lib/timeline';
 import type { OverlayState } from '../lib/overlays';
+import type { AdvancedTimelineProjection } from '../lib/advancedTimeline';
+import { resolveProgramFrame } from '../lib/advancedTimeline';
 import { formatTimestamp } from '../lib/clips';
 
 type Props = {
   timeline: TimelineProjection;
+  projection?: AdvancedTimelineProjection;
   overlays: OverlayState;
   frame: number | null;
   playing: boolean;
@@ -13,6 +16,7 @@ type Props = {
 };
 export function ProgramMonitor({
   timeline,
+  projection,
   overlays,
   frame,
   playing,
@@ -37,17 +41,56 @@ export function ProgramMonitor({
       (frame !== null && frame < eof.frame))
   )
     setEof(null);
-  const current =
+  const baseItem =
     frame === null
       ? undefined
       : timeline.items.find(
           (item) => frame >= item.startFrame && frame <= item.endFrame,
         );
-  const sourceTime =
-    current && frame !== null && timeline.fps
-      ? current.clip.trim.startFrame / current.clip.metadata.fps +
-        ((frame - current.startFrame) / timeline.fps) * current.clip.speed
-      : 0;
+  const current =
+    projection && frame !== null
+      ? resolveProgramFrame(projection, frame)
+      : baseItem && frame !== null && timeline.fps
+        ? {
+            clip: baseItem.clip,
+            track: 'video1' as const,
+            sourceTime:
+              baseItem.clip.trim.startFrame / baseItem.clip.metadata.fps +
+              ((frame - baseItem.startFrame) / timeline.fps) *
+                baseItem.clip.speed,
+          }
+        : null;
+  const sourceTime = current?.sourceTime ?? 0;
+  const currentClip = current?.clip;
+  const currentTrack = current?.track;
+  const mappingKey =
+    current?.track === 'video2'
+      ? JSON.stringify(projection?.video2.find((v) => v.id === current.clip.id))
+      : JSON.stringify([
+          current?.clip.id,
+          current?.clip.trim,
+          current?.clip.speed,
+        ]);
+  const [replacementFailure, setReplacementFailure] = useState<{
+    url: string;
+    id: string;
+    frame: number;
+    mapping: string;
+  } | null>(null);
+  if (
+    replacementFailure &&
+    (current?.clip.url !== replacementFailure.url ||
+      current.clip.id !== replacementFailure.id ||
+      mappingKey !== replacementFailure.mapping ||
+      (frame !== null && frame < replacementFailure.frame))
+  )
+    setReplacementFailure(null);
+  const replacementUnavailable =
+    current?.track === 'video2' &&
+    replacementFailure?.url === current.clip.url &&
+    replacementFailure.mapping === mappingKey &&
+    frame !== null &&
+    frame >= replacementFailure.frame;
   const pipTime =
     frame !== null && timeline.fps && overlays.video
       ? (frame - overlays.video.startFrame) / timeline.fps
@@ -66,16 +109,26 @@ export function ProgramMonitor({
     !(eof?.url === overlays.video.url && frame !== null && frame >= eof.frame);
   const syncSource = useCallback(() => {
     const element = video.current;
-    if (!element || !current) return;
+    if (!element || !currentClip) return;
     if (Number.isFinite(element.duration)) {
+      if (currentTrack === 'video2' && sourceTime >= element.duration) {
+        element.pause();
+        setReplacementFailure({
+          url: currentClip.url,
+          id: currentClip.id,
+          frame: frame ?? 0,
+          mapping: mappingKey,
+        });
+        return;
+      }
       if (!playing || Math.abs(element.currentTime - sourceTime) > 0.25)
         element.currentTime = Math.min(sourceTime, element.duration);
-      element.playbackRate = current.clip.speed;
+      element.playbackRate = currentClip.speed;
     }
     if (playing)
-      void element.play().catch(() => setFailedSource(current.clip.url));
+      void element.play().catch(() => setFailedSource(currentClip.url));
     else element.pause();
-  }, [current, sourceTime, playing]);
+  }, [currentClip, currentTrack, sourceTime, playing, mappingKey, frame]);
   useEffect(() => syncSource(), [syncSource]);
   useEffect(() => {
     const element = pip.current;
@@ -92,14 +145,20 @@ export function ProgramMonitor({
       source?.pause();
       overlay?.pause();
     };
-  }, [current?.clip.url, pipVisible, overlays.video?.url]);
+  }, [
+    current?.clip.url,
+    current?.clip.id,
+    mappingKey,
+    pipVisible,
+    overlays.video?.url,
+  ]);
   return (
     <section className="program-monitor panel" aria-label="Program preview">
       <h2>Program preview</h2>
       <div className="program-canvas">
-        {current ? (
+        {current && !replacementUnavailable ? (
           <video
-            key={current.clip.id}
+            key={`${current.clip.id}:${mappingKey}`}
             ref={video}
             src={current.clip.url}
             muted
@@ -107,13 +166,33 @@ export function ProgramMonitor({
             preload="metadata"
             aria-label="Uploaded clip preview"
             onLoadedMetadata={syncSource}
-            onError={() => setFailedSource(current.clip.url)}
+            onEnded={() => {
+              if (current.track === 'video2')
+                setReplacementFailure({
+                  url: current.clip.url,
+                  id: current.clip.id,
+                  frame: frame ?? 0,
+                  mapping: mappingKey,
+                });
+            }}
+            onError={() => {
+              if (current.track === 'video2')
+                setReplacementFailure({
+                  url: current.clip.url,
+                  id: current.clip.id,
+                  frame: frame ?? 0,
+                  mapping: mappingKey,
+                });
+              else setFailedSource(current.clip.url);
+            }}
           />
         ) : (
           <p>
-            {timeline.status === 'unavailable'
-              ? 'Timeline timing unavailable'
-              : 'Add video clips to begin'}
+            {replacementUnavailable
+              ? 'Replacement preview is unavailable at source EOF or after a decode error. Re-trim or replace this take.'
+              : timeline.status === 'unavailable'
+                ? 'Timeline timing unavailable'
+                : 'Add video clips to begin'}
           </p>
         )}
         {pipVisible && overlays.video && (

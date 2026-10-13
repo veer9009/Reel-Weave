@@ -19,9 +19,9 @@ it('selection_reveals_section_and_collapsing_preserves_inputs', () => {
       selection={{ kind: 'overlay', overlayKind: 'image' }}
     />,
   );
-  expect(
-    screen.getByText('Video 2 overlays').closest('details'),
-  ).toHaveAttribute('open');
+  expect(screen.getByText('Overlay/PIP').closest('details')).toHaveAttribute(
+    'open',
+  );
   expect(screen.getByLabelText('draft')).toBe(draft);
   expect(draft).toHaveValue('unsaved');
 });
@@ -49,7 +49,7 @@ it('collapsed_metadata_observer_remains_mounted_and_completes', () => {
     );
   }
   render(<Harness />);
-  const details = screen.getByText('Video 2 overlays').closest('details')!;
+  const details = screen.getByText('Overlay/PIP').closest('details')!;
   details.open = false;
   const source = screen.getByLabelText('PIP metadata source');
   Object.defineProperty(source, 'duration', { value: 0.4 });

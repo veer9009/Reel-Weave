@@ -2,6 +2,7 @@ import type { OverlayState } from './overlays';
 
 export type Limits = {
   max_clips: number;
+  max_music_segments?: number;
   max_file_size_mb: number;
   max_audio_file_size_mb?: number;
   max_overlay_image_file_size_mb?: number;
@@ -250,4 +251,36 @@ export function buildMergeManifest(
       video: serializeOverlay(overlays.video),
     },
   };
+}
+export function detectFrameRate(video: HTMLVideoElement): Promise<number> {
+  if (typeof video.requestVideoFrameCallback !== 'function')
+    return Promise.resolve(30);
+  return new Promise((resolve) => {
+    const mediaTimes: number[] = [];
+    const originalRate = video.playbackRate;
+    let callbackId = 0;
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (typeof video.cancelVideoFrameCallback === 'function')
+        video.cancelVideoFrameCallback(callbackId);
+      video.pause();
+      video.currentTime = 0;
+      video.playbackRate = originalRate;
+      resolve(estimateFrameRate(mediaTimes) ?? 30);
+    };
+    const capture: VideoFrameRequestCallback = (_now, metadata) => {
+      if (mediaTimes.at(-1) !== metadata.mediaTime)
+        mediaTimes.push(metadata.mediaTime);
+      if (mediaTimes.length >= 6 || video.ended) finish();
+      else callbackId = video.requestVideoFrameCallback(capture);
+    };
+    const timeout = setTimeout(finish, 2000);
+    video.muted = true;
+    video.playbackRate = 1;
+    callbackId = video.requestVideoFrameCallback(capture);
+    void video.play().catch(finish);
+  });
 }

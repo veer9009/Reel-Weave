@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from '@testing-library/react';
 import App from './App';
 import type { MergeManifest } from './lib/clips';
+import type { AdvancedMergeManifest } from './lib/advancedManifest';
 let submitted: FormData | null;
 let maxClips = 20;
 beforeEach(() => {
@@ -52,6 +53,28 @@ const undo = () =>
 const redo = () =>
   fireEvent.click(screen.getByRole('button', { name: 'Redo' }));
 describe('App edit history', { timeout: 30000 }, () => {
+  it('music_source_addition_is_undoable_and_redo_restores_File', async () => {
+    render(<App />);
+    await ready(['a.mp4']);
+    const file = new File(['song'], 'song.wav');
+    fireEvent.change(screen.getByLabelText('Choose background audio'), {
+      target: { files: [file] },
+    });
+    const audio = document.querySelector('audio')!;
+    Object.defineProperty(audio, 'duration', { value: 1, configurable: true });
+    fireEvent.loadedMetadata(audio);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Undo' })).toBeEnabled(),
+    );
+    undo();
+    expect(
+      screen.getByLabelText('Choose background audio'),
+    ).toBeInTheDocument();
+    redo();
+    expect(
+      screen.getByRole('button', { name: 'Remove song.wav' }),
+    ).toBeInTheDocument();
+  });
   it('split_history restores exact identities and inclusive ranges', async () => {
     render(<App />);
     await ready(['a.mp4']);
@@ -429,9 +452,19 @@ describe('App edit history', { timeout: 30000 }, () => {
       await screen.findByText('Delivery failed');
       const manifest = JSON.parse(
         String(submitted!.get('manifest')),
-      ) as MergeManifest;
+      ) as AdvancedMergeManifest;
       expect(manifest.order).toEqual(ids);
-      expect(manifest.clips).toEqual([
+      expect(manifest.schema_version).toBe(2);
+      expect(manifest.clips[0].source_id).toBe(manifest.clips[1].source_id);
+      expect(manifest.clips[2].source_id).not.toBe(manifest.clips[0].source_id);
+      expect(
+        manifest.clips.map(({ source_id, ...edit }) => {
+          expect(
+            manifest.video_sources.some((v) => v.source_id === source_id),
+          ).toBe(true);
+          return edit;
+        }),
+      ).toEqual([
         {
           client_id: ids[0],
           start_frame: 0,
@@ -455,9 +488,9 @@ describe('App edit history', { timeout: 30000 }, () => {
         },
       ]);
       const uploads = submitted!.getAll('files');
+      expect(uploads).toHaveLength(2);
       expect(uploads[0]).toBe(files[0]);
-      expect(uploads[1]).toBe(files[0]);
-      expect(uploads[2]).toBe(files[1]);
+      expect(uploads[1]).toBe(files[1]);
       expect(manifest.output_fps).toBe(fps);
       expect(manifest.audio).toEqual({
         original_volume: 0.5,

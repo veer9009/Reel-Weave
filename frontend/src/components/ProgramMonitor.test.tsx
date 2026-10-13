@@ -3,6 +3,8 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { buildTimeline } from '../lib/timeline';
 import { clip, overlays } from '../test/fixtures';
 import { ProgramMonitor } from './ProgramMonitor';
+import { advancedFixture } from '../test/historyFixtures';
+import { buildAdvancedTimeline } from '../lib/advancedTimeline';
 const timeline = buildTimeline([clip()], '25');
 const props = {
   timeline,
@@ -15,6 +17,63 @@ const props = {
 beforeEach(() => {
   vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
   vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+});
+it('preview_switches_at_40_and_returns_at_100', () => {
+  vi.spyOn(URL, 'createObjectURL').mockImplementation(
+    (blob) => `blob:${(blob as File).name}`,
+  );
+  const f = advancedFixture(),
+    projection = buildAdvancedTimeline(f.snapshot, f.sources, {
+      image: null,
+      video: null,
+    });
+  const p = {
+    ...props,
+    timeline: projection.base,
+    projection,
+    overlays: { image: null, video: null },
+    frame: 39,
+  };
+  const view = render(<ProgramMonitor {...p} />);
+  expect(screen.getByLabelText('Uploaded clip preview')).toHaveAttribute(
+    'src',
+    'blob:base.mp4',
+  );
+  view.rerender(<ProgramMonitor {...p} frame={40} />);
+  expect(screen.getByLabelText('Uploaded clip preview')).toHaveAttribute(
+    'src',
+    'blob:take.mp4',
+  );
+  view.rerender(<ProgramMonitor {...p} frame={99} />);
+  expect(screen.getByLabelText('Uploaded clip preview')).toHaveAttribute(
+    'src',
+    'blob:take.mp4',
+  );
+  view.rerender(<ProgramMonitor {...p} frame={100} />);
+  const video = screen.getByLabelText('Uploaded clip preview');
+  Object.defineProperty(video, 'duration', { value: 6 });
+  fireEvent.loadedMetadata(video);
+  expect((video as HTMLVideoElement).currentTime).toBe(4);
+});
+it('replacement_eof_shows_error_without_frozen_frame_and_backward_seek_recovers', () => {
+  const f = advancedFixture(),
+    projection = buildAdvancedTimeline(f.snapshot, f.sources, {
+      image: null,
+      video: null,
+    });
+  const p = {
+    ...props,
+    timeline: projection.base,
+    projection,
+    overlays: { image: null, video: null },
+    frame: 99,
+  };
+  const view = render(<ProgramMonitor {...p} />);
+  fireEvent.ended(screen.getByLabelText('Uploaded clip preview'));
+  expect(screen.queryByLabelText('Uploaded clip preview')).toBeNull();
+  expect(screen.getByText(/replacement.*EOF/i)).toBeVisible();
+  view.rerender(<ProgramMonitor {...p} frame={40} />);
+  expect(screen.getByLabelText('Uploaded clip preview')).toBeInTheDocument();
 });
 it('empty_monitor_no_video', () => {
   render(

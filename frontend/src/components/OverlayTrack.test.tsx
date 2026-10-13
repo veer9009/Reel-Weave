@@ -42,6 +42,8 @@ const props = {
 it('renders one labeled image slot and one labeled PIP slot', async () => {
   const user = userEvent.setup();
   render(<OverlayTrack {...props} />);
+  expect(screen.getByText('OVERLAY/PIP')).toBeInTheDocument();
+  expect(screen.queryByText('VIDEO 2')).toBeNull();
   await user.upload(
     screen.getByLabelText('Choose image overlay'),
     new File(['logo'], 'logo.jpg', { type: 'image/jpeg' }),

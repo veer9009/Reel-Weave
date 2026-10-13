@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import type { TimelineSelection } from '../lib/timeline';
 type Props = {
   selection: TimelineSelection;
+  replacementContent?: ReactNode;
   clipContent: ReactNode;
   overlayContent: ReactNode;
   audioContent: ReactNode;
@@ -10,6 +11,7 @@ type Props = {
 };
 export function Inspector({
   selection,
+  replacementContent,
   clipContent,
   overlayContent,
   audioContent,
@@ -18,13 +20,17 @@ export function Inspector({
   const container = useRef<HTMLElement>(null);
   useEffect(() => {
     const section =
-      selection.kind === 'clip'
-        ? 'clip'
-        : selection.kind === 'overlay'
-          ? 'overlay'
-          : selection.kind === 'audio'
-            ? 'audio'
-            : null;
+      selection.kind === 'replacement'
+        ? 'replacement'
+        : selection.kind === 'music'
+          ? 'audio'
+          : selection.kind === 'clip'
+            ? 'clip'
+            : selection.kind === 'overlay'
+              ? 'overlay'
+              : selection.kind === 'audio'
+                ? 'audio'
+                : null;
     const details = section
       ? container.current?.querySelector<HTMLDetailsElement>(
           `[data-section="${section}"]`,
@@ -39,7 +45,8 @@ export function Inspector({
     <aside className="inspector" aria-label="Inspector" ref={container}>
       {[
         ['clip', 'Clip', clipContent],
-        ['overlay', 'Video 2 overlays', overlayContent],
+        ['replacement', 'Video 2 — Replacement', replacementContent],
+        ['overlay', 'Overlay/PIP', overlayContent],
         ['audio', 'Audio', audioContent],
         ['delivery', 'Delivery', deliveryContent],
       ].map(([id, label, content]) => (

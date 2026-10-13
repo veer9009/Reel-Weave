@@ -72,6 +72,7 @@ def test_health_exposes_tool_availability_and_client_limits(client_factory):
         "limits": {
             "max_file_size_mb": 100 / (1024 * 1024),
             "max_clips": 10,
+            "max_music_segments": 100,
             "max_audio_file_size_mb": 100 / (1024 * 1024),
             "max_overlay_image_file_size_mb": 100 / (1024 * 1024),
             "max_overlay_video_file_size_mb": 100 / (1024 * 1024),

@@ -13,16 +13,24 @@ specifications and plans retain their original names under `docs/superpowers`.
 
 ## What it does
 
-- Open directly into a four-track editing workspace: Video 1 sequential clips,
-  Video 2 image/logo and PIP slots, Audio 1 original clip audio, Audio 2 background music.
+- Open directly into a five-lane editing workspace: Video 1 sequential clips,
+  Video 2 full-screen replacement takes, separate Overlay/PIP slots, Audio 1
+  selected original audio, and Audio 2 editable background music.
+- Place multiple non-overlapping replacement takes at project frames. Each takes
+  priority over Video 1 picture and original audio only during its own range;
+  Video 1 resumes at the corresponding sequence time. Trim, move, split, ripple
+  delete, replace a take, and Undo/Redo edits without merging PIP into this lane.
 - Select or drop MP4, MOV, WebM and MKV source files; uploads begin at **Render MP4**.
 - Arrange clips with accessible move-up/move-down buttons; the backend supplies count/size limits.
 - Trim inclusive source frames, step one frame at a time, and use 1x, 0.75x or 0.5x speed.
 - Select Auto FPS from the first clip or explicit 24, 25, 30, 50 or 60 FPS.
 - Configure one PNG/JPG image/logo and one video/PIP overlay with inclusive project-frame
   ranges, five positions and three sizes. Image/logo renders above PIP.
-- Add one MP3, WAV, AAC or M4A background track; adjust and mute original/music audio.
-  Short music loops and long music ends with the project.
+- Add one MP3, WAV, AAC or M4A music source; move/edge-trim its segments, split
+  at the playhead, and ripple-delete a middle section on the music lane only.
+  Undo/Redo restores segment edits and song replacement. Adjust/mute original
+  and music audio independently. Short music stops at EOF, leaving silence;
+  music beyond Video 1's duration is trimmed in the final render.
 - Select timeline items, inspect source details and seek with a shared integer ruler/playhead.
   Empty or incomplete projects have no sample timing or synthetic waveforms.
 - Use a silent, approximate browser preview. PIP disappears at source EOF in both
@@ -50,6 +58,12 @@ The frontend uses React, TypeScript, Vite, and CSS. The backend uses FastAPI and
 Python subprocess argument lists; uploaded names never become storage paths or
 shell commands. Every merge gets a generated UUID and its own files. One worker
 processes queued jobs sequentially to limit CPU use. No database is required.
+
+The editor submits a version 2 manifest with a deduplicated source catalog and
+explicit replacement/music segments. FFprobe validates authoritative source
+ranges before queueing. FFmpeg composes picture and original PCM audio from the
+same priority intervals, places music by 48 kHz samples, then exports H.264/AAC
+MP4. Legacy manifests remain accepted with their historical music-loop behavior.
 
 ## Folder structure
 

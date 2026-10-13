@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { ArrowDown, ArrowUp, Trash2, Play, MoveVertical } from 'lucide-react';
 import {
-  estimateFrameRate,
+  detectFrameRate,
   formatDuration,
   formatSize,
   frameCountFromDuration,
@@ -18,39 +18,6 @@ type Props = {
   onTrim: (id: string) => void;
   onSpeedChange: (id: string, speed: ClipSpeed) => void;
 };
-
-function detectFrameRate(video: HTMLVideoElement): Promise<number> {
-  if (typeof video.requestVideoFrameCallback !== 'function')
-    return Promise.resolve(30);
-  return new Promise((resolve) => {
-    const mediaTimes: number[] = [];
-    const originalRate = video.playbackRate;
-    let callbackId = 0;
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      if (typeof video.cancelVideoFrameCallback === 'function')
-        video.cancelVideoFrameCallback(callbackId);
-      video.pause();
-      video.currentTime = 0;
-      video.playbackRate = originalRate;
-      resolve(estimateFrameRate(mediaTimes) ?? 30);
-    };
-    const capture: VideoFrameRequestCallback = (_now, metadata) => {
-      if (mediaTimes.at(-1) !== metadata.mediaTime)
-        mediaTimes.push(metadata.mediaTime);
-      if (mediaTimes.length >= 6 || video.ended) finish();
-      else callbackId = video.requestVideoFrameCallback(capture);
-    };
-    const timeout = setTimeout(finish, 2000);
-    video.muted = true;
-    video.playbackRate = 1;
-    callbackId = video.requestVideoFrameCallback(capture);
-    void video.play().catch(finish);
-  });
-}
 
 export function ClipList({
   clips,

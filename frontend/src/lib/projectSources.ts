@@ -1,12 +1,17 @@
 import type { ClipMetadata } from './clips';
 import type { EditHistory, EditSnapshot } from './editHistory';
-export type SourceKind = 'video1' | 'pip' | 'image' | 'music';
+export type SourceKind = 'video1' | 'video2' | 'pip' | 'image' | 'music';
 export type SourceToken = {
   session: number;
   sourceId: string;
   requestId: number;
 };
-export type SourceMetadata = { clipMetadata?: ClipMetadata; duration?: number };
+export type SourceMetadata = {
+  clipMetadata?: ClipMetadata;
+  duration?: number;
+  sampleCount?: number;
+  metadataOrigin?: 'browser' | 'backend';
+};
 export type SourceRecord = {
   token: SourceToken;
   kind: SourceKind;
@@ -14,6 +19,7 @@ export type SourceRecord = {
   status: 'loading' | 'ready' | 'error';
   metadata?: ClipMetadata;
   duration?: number;
+  sampleCount?: number;
   url?: string;
 };
 export function createProjectSources() {
@@ -42,7 +48,7 @@ export function createProjectSources() {
       if (!r || r.status === 'error') return false;
       const m = metadata.clipMetadata;
       if (
-        r.kind === 'video1' &&
+        (r.kind === 'video1' || r.kind === 'video2') &&
         (!m ||
           !Number.isFinite(m.duration) ||
           m.duration <= 0 ||
@@ -65,6 +71,11 @@ export function createProjectSources() {
         status: 'ready',
         metadata: m,
         duration: m?.duration ?? metadata.duration,
+        sampleCount:
+          r.kind === 'music'
+            ? (metadata.sampleCount ??
+              Math.floor(metadata.duration! * 48000 + 0.5))
+            : undefined,
       });
       return true;
     },
@@ -110,6 +121,9 @@ export function collectReachableSources(
   const ids = new Set(owners);
   const add = (s: EditSnapshot) => {
     s.video1.forEach((v) => ids.add(v.sourceId));
+    s.video2?.forEach((v) => ids.add(v.sourceId));
+    s.music?.forEach((v) => ids.add(v.sourceId));
+    if (s.musicSourceId) ids.add(s.musicSourceId);
     if (s.pip) ids.add(s.pip.sourceId);
   };
   add(h.present);

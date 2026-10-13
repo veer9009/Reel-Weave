@@ -272,7 +272,7 @@ export function OverlayTrack({
     <section className="overlay-track panel" aria-labelledby="overlay-title">
       <div className="overlay-track-heading">
         <div>
-          <span className="eyebrow">VIDEO 2</span>
+          <span className="eyebrow">OVERLAY/PIP</span>
           <h2 id="overlay-title">Overlays</h2>
         </div>
         <span>Rendered into MP4</span>

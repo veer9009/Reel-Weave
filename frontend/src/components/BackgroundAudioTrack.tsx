@@ -1,5 +1,6 @@
 import { Music, Trash2, Upload } from 'lucide-react';
 import { useEffect, useRef } from 'react';
+import type { ReactNode } from 'react';
 import type { GestureToken } from '../lib/editHistory';
 import { formatDuration } from '../lib/clips';
 import type { AudioSettings } from '../lib/clips';
@@ -12,6 +13,9 @@ export type BackgroundAudio = {
 };
 
 type Props = {
+  candidateContent?: ReactNode;
+  candidateName?: string;
+  onCancelCandidate?: () => void;
   onVolumeBegin?: (
     field: 'originalVolume' | 'musicVolume',
   ) => GestureToken | null;
@@ -25,6 +29,7 @@ type Props = {
   settings: AudioSettings;
   disabled: boolean;
   onSelect: (file: File) => void;
+  onReplace?: (file: File) => void;
   onMetadata: (duration: number) => void;
   onMetadataError: () => void;
   onRemove: () => void;
@@ -36,6 +41,7 @@ export function BackgroundAudioTrack({
   settings,
   disabled,
   onSelect,
+  onReplace,
   onMetadata,
   onMetadataError,
   onRemove,
@@ -43,6 +49,9 @@ export function BackgroundAudioTrack({
   onVolumeBegin,
   onVolumePreview,
   onVolumeEnd,
+  candidateContent,
+  candidateName,
+  onCancelCandidate,
 }: Props) {
   const gesture = useRef<{
     token: GestureToken;
@@ -183,6 +192,16 @@ export function BackgroundAudioTrack({
         </div>
         <Music aria-hidden="true" />
       </div>
+      {candidateName && (
+        <div className="audio-clip">
+          <strong>{candidateName}</strong>
+          <span>Loading candidate metadata…</span>
+          {candidateContent}
+          <button type="button" onClick={onCancelCandidate} disabled={disabled}>
+            Cancel song choice
+          </button>
+        </div>
+      )}
       {!audio ? (
         <label className="audio-upload">
           <Upload aria-hidden="true" />
@@ -235,6 +254,22 @@ export function BackgroundAudioTrack({
         </div>
       )}
       <div className="audio-mix-controls">
+        {audio && onReplace && (
+          <label>
+            Replace song
+            <input
+              aria-label="Replace song"
+              type="file"
+              accept=".mp3,.wav,.aac,.m4a"
+              disabled={disabled}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) onReplace(file);
+                event.target.value = '';
+              }}
+            />
+          </label>
+        )}
         <label>
           Original audio volume{' '}
           <output>{Math.round(settings.originalVolume * 100)}%</output>

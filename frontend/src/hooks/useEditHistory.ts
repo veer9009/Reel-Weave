@@ -1,5 +1,16 @@
 import { useEffect, useState } from 'react';
-import type { ClipSpeed, Limits } from '../lib/clips';
+import type {
+  ClipSpeed,
+  Limits,
+  ProjectFps,
+  ProjectFpsSelection,
+} from '../lib/clips';
+import { resolveProjectFps } from '../lib/clips';
+import { convertPositionedFps } from '../lib/positionedEdits';
+import type { PositionedTrack } from '../lib/positionedEdits';
+import { projectFrameCount } from '../lib/overlays';
+import type { ClipTrim, ClipSpeed as Speed } from '../lib/clips';
+import { placementLength } from '../lib/advancedTimeline';
 import {
   createHistory,
   commitHistory,
@@ -35,6 +46,9 @@ export type HistoryOptions = {
 };
 const defaults = (): EditSnapshot => ({
   video1: [],
+  video2: [],
+  musicSourceId: null,
+  music: [],
   pip: null,
   audio: {
     originalVolume: 1,
@@ -46,7 +60,13 @@ const defaults = (): EditSnapshot => ({
 });
 type Transaction = {
   token: GestureToken;
-  action: 'trim' | 'audio-volume';
+  action:
+    | 'trim'
+    | 'audio-volume'
+    | 'video2-trim'
+    | 'music-trim'
+    | 'video2-move'
+    | 'music-move';
   targetId: string;
   preview: EditSnapshot;
 };
@@ -60,6 +80,14 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
   let revision = 0;
   let sourceRevision = 0;
   let pendingPip: SourceToken | null = null;
+  let lastResolvedFps: ProjectFps | null = null;
+  let pendingImports: EditSnapshot['video1'] = [];
+  let timelineCandidates: {
+    token: SourceToken;
+    track: PositionedTrack;
+    startFrame: number;
+    targetId?: string;
+  }[] = [];
   const sources = createProjectSources();
   const allowed = () =>
     !api.options.editingLocked && !api.options.trimDraftOpen && !transaction;
@@ -68,7 +96,11 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
       collectReachableSources(
         history,
         transaction?.preview ?? null,
-        pendingPip ? [pendingPip] : [],
+        [
+          ...(pendingPip ? [pendingPip] : []),
+          ...pendingImports.map((v) => sources.get(v.sourceId)!.token),
+          ...timelineCandidates.map((v) => v.token),
+        ],
         sources.externalOwners,
       ),
     );
@@ -79,6 +111,11 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
   const apply = (next: typeof history) => {
     if (structural(history.present, next.present)) revision++;
     history = next;
+    lastResolvedFps =
+      resolveProjectFps(
+        history.present.fpsSelection,
+        sources.get(history.present.video1[0]?.sourceId)?.metadata?.fps,
+      ) ?? lastResolvedFps;
     publish();
   };
   const valid = (snapshot: EditSnapshot) => {
@@ -101,6 +138,8 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
       return false;
     }
     pendingPip = null;
+    pendingImports = [];
+    timelineCandidates = [];
     apply(redo ? redoHistory(history) : undoHistory(history));
     api.options.onAnnouncement(`${redo ? 'Redid' : 'Undid'} ${entry.label}.`);
     return true;
@@ -131,6 +170,12 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
     get pendingPip() {
       return pendingPip;
     },
+    get pendingImports() {
+      return pendingImports.map((v) => sources.get(v.sourceId)!.token);
+    },
+    get pendingTimelineSources() {
+      return timelineCandidates;
+    },
     get controls(): HistoryControls {
       return {
         canUndo: allowed() && history.past.length > 0,
@@ -141,6 +186,47 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
       };
     },
     commit(action: HistoryAction, label: string, next: EditSnapshot): boolean {
+      if (api.options.editingLocked || transaction) return false;
+      const oldFps =
+        resolveProjectFps(
+          history.present.fpsSelection,
+          sources.get(history.present.video1[0]?.sourceId)?.metadata?.fps,
+        ) ?? lastResolvedFps;
+      const newFps =
+        resolveProjectFps(
+          next.fpsSelection,
+          sources.get(next.video1[0]?.sourceId)?.metadata?.fps,
+        ) ?? lastResolvedFps;
+      if (oldFps && newFps && oldFps !== newFps) {
+        const converted = convertPositionedFps(next, oldFps, newFps, sources);
+        if ('error' in converted) {
+          api.options.onError(converted.error);
+          return false;
+        }
+        next = converted.value;
+      }
+      if (action.startsWith('video2-')) {
+        const total = buildTimeline(
+          materializeSnapshot(next, sources).clips,
+          next.fpsSelection,
+        ).totalFrames;
+        if (
+          action !== 'video2-ripple-delete' &&
+          next.video2.some(
+            (v) =>
+              v.timelineStartFrame + placementLength(v) > total &&
+              JSON.stringify(v) !==
+                JSON.stringify(
+                  history.present.video2.find((old) => old.id === v.id),
+                ),
+          )
+        ) {
+          api.options.onError(
+            'Video 2 range is outside Video 1. Trim or move it.',
+          );
+          return false;
+        }
+      }
       if (
         api.options.editingLocked ||
         transaction ||
@@ -151,11 +237,33 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
       const result = commitHistory(history, action, label, next);
       if (result === history) return false;
       if (action === 'pip-remove') pendingPip = null;
+      if (
+        action === 'video2-ripple-delete' ||
+        action === 'music-remove' ||
+        action === 'music-ripple-delete'
+      )
+        timelineCandidates = [];
       apply(result);
       return true;
     },
+    setFpsSelection(selection: ProjectFpsSelection): boolean {
+      return api.commit('fps', 'Change FPS', {
+        ...history.present,
+        fpsSelection: selection,
+      });
+    },
+    commitVideo1(
+      action: HistoryAction,
+      label: string,
+      nextVideo1: EditSnapshot['video1'],
+    ): boolean {
+      return api.commit(action, label, {
+        ...history.present,
+        video1: nextVideo1,
+      });
+    },
     begin(
-      action: 'trim' | 'audio-volume',
+      action: Transaction['action'],
       targetId: string,
     ): GestureToken | null {
       if (
@@ -191,14 +299,33 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
                   : v,
               ),
             }
-          : {
-              ...history.present,
-              audio: {
-                ...history.present.audio,
-                [t.targetId]:
-                  next.audio[t.targetId as 'originalVolume' | 'musicVolume'],
-              },
-            };
+          : t.action !== 'audio-volume'
+            ? {
+                ...history.present,
+                ...(t.action.startsWith('video2-')
+                  ? {
+                      video2: history.present.video2.map((v) =>
+                        v.id === t.targetId
+                          ? (next.video2.find((n) => n.id === v.id) ?? v)
+                          : v,
+                      ),
+                    }
+                  : {
+                      music: history.present.music.map((v) =>
+                        v.id === t.targetId
+                          ? (next.music.find((n) => n.id === v.id) ?? v)
+                          : v,
+                      ),
+                    }),
+              }
+            : {
+                ...history.present,
+                audio: {
+                  ...history.present.audio,
+                  [t.targetId]:
+                    next.audio[t.targetId as 'originalVolume' | 'musicVolume'],
+                },
+              };
       changed();
     },
     finish(token: GestureToken, accept: boolean): boolean {
@@ -222,7 +349,19 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
               ),
             }
           : t.preview;
-      if (!valid(next)) {
+      const total = buildTimeline(
+        materializeSnapshot(next, sources).clips,
+        next.fpsSelection,
+      ).totalFrames;
+      if (
+        !valid(next) ||
+        (t.action.startsWith('video2-') &&
+          next.video2.some(
+            (v) =>
+              v.id === t.targetId &&
+              v.timelineStartFrame + placementLength(v) > total,
+          ))
+      ) {
         publish();
         return false;
       }
@@ -230,7 +369,9 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
         commitHistory(
           history,
           t.action,
-          t.action === 'trim' ? 'Trim clip' : 'Change audio volume',
+          t.action === 'audio-volume'
+            ? 'Change audio volume'
+            : 'Edit timeline clip',
           next,
         ),
       );
@@ -240,7 +381,9 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
       if (
         api.options.editingLocked ||
         !files.length ||
-        history.present.video1.length + files.length >
+        history.present.video1.length +
+          history.present.video2.length +
+          files.length >
           api.options.limits.max_clips
       )
         return;
@@ -252,6 +395,20 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
         trimSaved: false,
         speed: 1 as const,
       }));
+      const retained = [
+        history.present,
+        ...history.past.flatMap((e) => [e.before, e.after]),
+        ...history.future.flatMap((e) => [e.before, e.after]),
+      ];
+      if (
+        retained.some(
+          (s) => !s.video1.length && (s.video2.length || s.music.length),
+        )
+      ) {
+        pendingImports = additions;
+        publish();
+        return;
+      }
       apply(
         rebaseHistory(
           history,
@@ -263,6 +420,60 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
     sourceReady(token: SourceToken, metadata: SourceMetadata): boolean {
       if (!sources.markReady(token, metadata)) return false;
       sourceRevision++;
+      if (pendingImports.some((v) => v.sourceId === token.sourceId)) {
+        if (
+          pendingImports.every(
+            (v) => sources.get(v.sourceId)?.status === 'ready',
+          )
+        ) {
+          const additions = pendingImports.map((v) => ({
+            ...v,
+            trim: {
+              startFrame: 0,
+              endFrame: sources.get(v.sourceId)!.metadata!.totalFrames - 1,
+            },
+          }));
+          let failure: string | null = null;
+          const candidate = rebaseHistory(
+            history,
+            (s) => {
+              const oldF =
+                resolveProjectFps(
+                  s.fpsSelection,
+                  sources.get(s.video1[0]?.sourceId)?.metadata?.fps,
+                ) ?? lastResolvedFps;
+              let next: EditSnapshot = {
+                ...s,
+                video1: [...s.video1, ...additions],
+              };
+              const newF = resolveProjectFps(
+                next.fpsSelection,
+                sources.get(next.video1[0]?.sourceId)?.metadata?.fps,
+              );
+              if (oldF && newF && oldF !== newF) {
+                const converted = convertPositionedFps(
+                  next,
+                  oldF,
+                  newF,
+                  sources,
+                );
+                if ('error' in converted) failure = converted.error;
+                else next = converted.value;
+              }
+              failure =
+                validateRestoration(next, sources, api.options.limits) ??
+                failure;
+              return next;
+            },
+            true,
+          );
+          pendingImports = [];
+          if (failure) api.options.onError(failure);
+          else apply(candidate);
+        }
+        publish();
+        return true;
+      }
       const initialize = (s: EditSnapshot): EditSnapshot => ({
         ...s,
         video1: s.video1.map((v) =>
@@ -278,6 +489,11 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
         ),
       });
       history = rebaseHistory(history, initialize, false);
+      lastResolvedFps =
+        resolveProjectFps(
+          history.present.fpsSelection,
+          sources.get(history.present.video1[0]?.sourceId)?.metadata?.fps,
+        ) ?? lastResolvedFps;
       if (transaction) transaction.preview = initialize(transaction.preview);
       publish();
       return true;
@@ -285,6 +501,8 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
     sourceError(token: SourceToken): boolean {
       if (!sources.markError(token)) return false;
       sourceRevision++;
+      if (pendingImports.some((v) => v.sourceId === token.sourceId))
+        pendingImports = [];
       publish();
       return true;
     },
@@ -348,6 +566,177 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
       publish();
       return token;
     },
+    stageTimelineSource(
+      file: File,
+      track: PositionedTrack,
+      startFrame: number,
+      targetId?: string,
+    ): SourceToken | null {
+      if (!allowed()) return null;
+      const total = buildTimeline(
+        materializeSnapshot(history.present, sources).clips,
+        history.present.fpsSelection,
+      ).totalFrames;
+      if (!total || !Number.isSafeInteger(startFrame) || startFrame < 0) {
+        api.options.onError(
+          'Add ready Video 1 clips and choose a valid timeline start.',
+        );
+        return null;
+      }
+      const supported =
+        track === 'music' ? /\.(mp3|wav|aac|m4a)$/i : /\.(mp4|mov|webm|mkv)$/i;
+      const limit =
+        track === 'music'
+          ? (api.options.limits.max_audio_file_size_mb ?? 100)
+          : api.options.limits.max_file_size_mb;
+      if (
+        !supported.test(file.name) ||
+        !file.size ||
+        file.size > limit * 1024 * 1024
+      ) {
+        api.options.onError(
+          `Choose a nonempty supported ${track === 'music' ? 'music' : 'replacement video'} file within the ${limit} MB limit.`,
+        );
+        return null;
+      }
+      const token = sources.register(file, track);
+      timelineCandidates = timelineCandidates.filter((v) => v.track !== track);
+      timelineCandidates.push({ token, track, startFrame, targetId });
+      publish();
+      return token;
+    },
+    completeTimelineSource(
+      token: SourceToken,
+      metadata: SourceMetadata,
+    ): boolean {
+      if (
+        api.options.editingLocked ||
+        !timelineCandidates.some(
+          (v) =>
+            v.token.sourceId === token.sourceId &&
+            v.token.session === token.session &&
+            v.token.requestId === token.requestId,
+        )
+      )
+        return false;
+      const ready = sources.markReady(token, metadata);
+      if (ready) {
+        sourceRevision++;
+        publish();
+      }
+      return ready;
+    },
+    acceptTimelineSource(
+      token: SourceToken,
+      draft: { timelineStartFrame: number; trim?: ClipTrim; speed?: Speed },
+    ): boolean {
+      const candidate = timelineCandidates.find(
+        (v) =>
+          v.token.sourceId === token.sourceId &&
+          v.token.session === token.session &&
+          v.token.requestId === token.requestId,
+      );
+      const source = sources.get(token.sourceId);
+      if (!allowed() || !candidate || source?.status !== 'ready') return false;
+      const fps = resolveProjectFps(
+        history.present.fpsSelection,
+        sources.get(history.present.video1[0]?.sourceId)?.metadata?.fps,
+      );
+      if (!fps) return false;
+      let next: EditSnapshot;
+      let action: HistoryAction;
+      if (candidate.track === 'video2') {
+        const metadata = source.metadata;
+        if (!metadata) return false;
+        if (
+          candidate.targetId &&
+          !history.present.video2.some((v) => v.id === candidate.targetId)
+        ) {
+          api.options.onError('Replacement target no longer exists.');
+          return false;
+        }
+        const trim = draft.trim ?? {
+            startFrame: 0,
+            endFrame: metadata.totalFrames - 1,
+          },
+          speed = draft.speed ?? 1;
+        const replacement = {
+          id: candidate.targetId ?? crypto.randomUUID(),
+          sourceId: token.sourceId,
+          trim,
+          trimSaved: Boolean(draft.trim),
+          speed,
+          timelineStartFrame: draft.timelineStartFrame,
+          contentInFrame: 0,
+          contentOutFrame: projectFrameCount(
+            trim.endFrame - trim.startFrame + 1,
+            metadata.fps,
+            speed,
+            fps,
+          ),
+          contentFullSource: true,
+        };
+        next = {
+          ...history.present,
+          video2: [
+            ...history.present.video2.filter(
+              (v) => v.id !== candidate.targetId,
+            ),
+            replacement,
+          ],
+        };
+        action = candidate.targetId ? 'video2-replace' : 'video2-add';
+      } else {
+        if (!source.sampleCount) return false;
+        const music = {
+          id: crypto.randomUUID(),
+          sourceId: token.sourceId,
+          timelineStartFrame: draft.timelineStartFrame,
+          sourceStartSample: 0,
+          durationFrames: Math.ceil(source.sampleCount / (48000 / fps)),
+        };
+        next = {
+          ...history.present,
+          musicSourceId: token.sourceId,
+          music: [music],
+        };
+        action = history.present.musicSourceId ? 'music-replace' : 'music-add';
+      }
+      if (
+        !api.commit(
+          action,
+          candidate.track === 'video2'
+            ? 'Add/replace Video 2'
+            : 'Add/replace song',
+          next,
+        )
+      )
+        return false;
+      timelineCandidates = timelineCandidates.filter(
+        (v) => v.token.sourceId !== token.sourceId,
+      );
+      publish();
+      return true;
+    },
+    failTimelineSource(token: SourceToken) {
+      const candidate = timelineCandidates.find(
+        (v) => v.token.sourceId === token.sourceId,
+      );
+      if (!candidate || !sources.markError(token)) return;
+      timelineCandidates = timelineCandidates.filter(
+        (v) => v.token.sourceId !== token.sourceId,
+      );
+      publish();
+      api.options.onError(
+        candidate.track === 'music'
+          ? 'Could not read the background-audio metadata. Choose another file.'
+          : 'Could not read replacement metadata. Choose another file.',
+      );
+    },
+    cancelTimelineSources() {
+      timelineCandidates = [];
+      publish();
+    },
     completePip(token: SourceToken, metadata: SourceMetadata): boolean {
       if (
         !pendingPip ||
@@ -407,13 +796,25 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
     clearProject() {
       transaction = null;
       pendingPip = null;
+      pendingImports = [];
+      timelineCandidates = [];
       sources.clear();
       history = createHistory(defaults());
+      lastResolvedFps = null;
       sourceRevision++;
       revision++;
       changed();
     },
     cancelLockedGesture() {
+      if (
+        api.options.editingLocked &&
+        (timelineCandidates.length || pendingPip || pendingImports.length)
+      ) {
+        timelineCandidates = [];
+        pendingPip = null;
+        pendingImports = [];
+        publish();
+      }
       if (api.options.editingLocked && transaction) {
         transaction = null;
         publish();
@@ -422,6 +823,8 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
     dispose() {
       transaction = null;
       pendingPip = null;
+      pendingImports = [];
+      timelineCandidates = [];
       sources.clear();
     },
   };

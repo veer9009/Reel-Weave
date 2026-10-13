@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import subprocess
+import wave
 from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
@@ -237,6 +238,9 @@ class MediaPipeline:
             )
 
     def validate_job(self, job: Job) -> None:
+        if job.advanced_plan is not None:
+            self._validate_advanced_job(job)
+            return
         if len(job.clip_edits) != len(job.input_paths):
             raise InvalidMediaError("Clip edit count does not match uploads")
         job.total_project_frames = 0
@@ -299,7 +303,96 @@ class MediaPipeline:
             if not has_background_audio:
                 raise InvalidMediaError("The background audio file has no audio stream")
 
+    def _validate_advanced_job(self, job: Job) -> None:
+        from .render_plan import VideoSourceInfo, resolve_render_plan
+
+        plan = job.advanced_plan
+        assert plan is not None
+        sources = {}
+        try:
+            for source_id, path in job.video_source_paths.items():
+                metadata = self._probe(path)
+                fps = self._video_fps(metadata)
+                frames = self._total_frames(metadata, fps)
+                stream = next(v for v in metadata["streams"] if v.get("codec_type") == "video")
+                width, height = stream.get("width", 0), stream.get("height", 0)
+                if not fps or not frames or width <= 0 or height <= 0:
+                    raise InvalidMediaError(
+                        "Video source frame metadata or dimensions are unavailable."
+                    )
+                sources[source_id] = VideoSourceInfo(
+                    source_id,
+                    path,
+                    fps,
+                    frames,
+                    width,
+                    height,
+                    any(v.get("codec_type") == "audio" for v in metadata["streams"]),
+                )
+            samples = None
+            if plan.music is not None:
+                if job.background_audio_path is None or not self._probe_audio(
+                    job.background_audio_path
+                ):
+                    raise InvalidMediaError("Missing or unreadable background music.")
+                decoded = job.intermediate_dir / "decoded-music.wav"
+                self._run(
+                    [
+                        self.settings.ffmpeg_path,
+                        "-nostdin",
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-y",
+                        "-protocol_whitelist",
+                        "file,pipe",
+                        "-format_whitelist",
+                        "mov,mp3,wav,aac",
+                        "-i",
+                        str(job.background_audio_path),
+                        "-map",
+                        "0:a:0",
+                        "-af",
+                        "aresample=48000,aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS",
+                        "-c:a",
+                        "pcm_s16le",
+                        "-ar",
+                        "48000",
+                        "-ac",
+                        "2",
+                        str(decoded),
+                    ]
+                )
+                with wave.open(str(decoded), "rb") as audio:
+                    samples = audio.getnframes()
+                job.decoded_music_path = decoded
+            resolved = resolve_render_plan(plan, sources, samples)
+            job.total_project_frames = resolved.total_frames
+            if job.image_overlay_path is not None:
+                metadata = self._probe_image(job.image_overlay_path)
+                self._validate_overlay_dimensions(metadata, "image")
+                self._validate_overlay_range(job, "image")
+                streams = [v for v in metadata.get("streams", []) if v.get("codec_type") == "video"]
+                if len(streams) != 1 or streams[0].get("codec_name") not in {"png", "mjpeg"}:
+                    raise InvalidMediaError("Image overlay must decode as PNG or JPEG.")
+            if job.video_overlay_path is not None:
+                metadata = self._probe(job.video_overlay_path)
+                self._validate_overlay_dimensions(metadata, "video")
+                self._validate_overlay_range(job, "video")
+                if not self._video_fps(metadata) or not self._video_duration(metadata):
+                    raise InvalidMediaError("PIP metadata is unavailable.")
+            job.resolved_plan = resolved
+        except InvalidMediaError:
+            raise
+        except (ProcessingError, ValueError, KeyError, StopIteration, wave.Error) as exc:
+            raise InvalidMediaError("Video or music metadata is unreadable.") from exc
+
     def merge(self, job: Job) -> None:
+        if job.advanced_plan is not None:
+            from .advanced_media import render_advanced
+
+            render_advanced(self, job)
+            return
         normalized: list[Path] = []
         base_video_filter = (
             "scale=w='trunc(ih*dar/2)*2':h='trunc(ih/2)*2',setsar=1,"

@@ -28,6 +28,7 @@ from .errors import (
     validation_error_handler,
 )
 from .jobs import (
+    AdvancedMergePlan,
     AudioMixSettings,
     ClipEdit,
     Job,
@@ -80,7 +81,9 @@ def _parse_overlay_settings(value: object, kind: str) -> OverlaySettings | None:
     return OverlaySettings(start, end, position, size)
 
 
-def _parse_manifest(raw: object, file_count: int) -> MergePlan:
+def _parse_manifest(
+    raw: object, file_count: int, max_clips: int = 10
+) -> MergePlan | AdvancedMergePlan:
     if not isinstance(raw, str):
         raise ApiError(422, "invalid_manifest", "A JSON edit manifest is required.")
     try:
@@ -89,6 +92,13 @@ def _parse_manifest(raw: object, file_count: int) -> MergePlan:
         raise ApiError(422, "invalid_manifest", "The edit manifest is not valid JSON.") from exc
     if not isinstance(value, dict) or not isinstance(value.get("clips"), list):
         raise ApiError(422, "invalid_manifest", "The edit manifest must include a clips array.")
+    version = value.get("schema_version", 1)
+    if type(version) is not int or version not in (1, 2):
+        raise ApiError(422, "invalid_manifest", "Unsupported manifest schema version.")
+    if version == 2:
+        from .manifests import parse_advanced_manifest
+
+        return parse_advanced_manifest(value, file_count, max_clips)
     if len(value["clips"]) != file_count:
         raise ApiError(422, "invalid_manifest", "Manifest clips must match uploaded file order.")
     clips: list[ManifestClip] = []
@@ -248,6 +258,7 @@ def create_app(
             "limits": {
                 "max_file_size_mb": config.max_file_size_mb,
                 "max_clips": config.max_clips,
+                "max_music_segments": 10 * config.max_clips,
                 "max_audio_file_size_mb": config.max_audio_file_size_mb,
                 "max_overlay_image_file_size_mb": config.max_overlay_image_file_size_mb,
                 "max_overlay_video_file_size_mb": config.max_overlay_video_file_size_mb,
@@ -332,7 +343,7 @@ def create_app(
                     "unsupported_media_type",
                     "Supported formats are MP4, MOV, WebM and MKV.",
                 )
-            merge_plan = _parse_manifest(form.get("manifest"), len(files))
+            merge_plan = _parse_manifest(form.get("manifest"), len(files), config.max_clips)
             background_audio_parts = form.getlist("background_audio")
             if len(background_audio_parts) > 1:
                 raise ApiError(
@@ -341,6 +352,14 @@ def create_app(
                     "Upload at most one background-audio file.",
                 )
             background_audio = background_audio_parts[0] if background_audio_parts else None
+            if isinstance(merge_plan, AdvancedMergePlan) and (merge_plan.music is None) != (
+                background_audio is None
+            ):
+                raise ApiError(
+                    422,
+                    "invalid_audio_count",
+                    "Each music plan must have exactly one matching audio file.",
+                )
             if background_audio is not None and not isinstance(background_audio, UploadFile):
                 raise ApiError(422, "invalid_files", "Background audio must contain one file.")
             audio_extension = (
@@ -425,12 +444,19 @@ def create_app(
                 if size == 0:
                     raise ApiError(422, "empty_file", "Clips cannot be empty.")
                 catalog_paths.append(destination)
-            catalog = {
-                clip.client_id: (path, clip.edit)
-                for clip, path in zip(merge_plan.clips, catalog_paths, strict=True)
-            }
-            job.input_paths = [catalog[client_id][0] for client_id in merge_plan.order]
-            job.clip_edits = [catalog[client_id][1] for client_id in merge_plan.order]
+            if isinstance(merge_plan, AdvancedMergePlan):
+                job.advanced_plan = merge_plan
+                job.video_source_paths = {
+                    source.source_id: path
+                    for source, path in zip(merge_plan.video_sources, catalog_paths, strict=True)
+                }
+            else:
+                catalog = {
+                    clip.client_id: (path, clip.edit)
+                    for clip, path in zip(merge_plan.clips, catalog_paths, strict=True)
+                }
+                job.input_paths = [catalog[client_id][0] for client_id in merge_plan.order]
+                job.clip_edits = [catalog[client_id][1] for client_id in merge_plan.order]
             if isinstance(background_audio, UploadFile) and audio_extension is not None:
                 destination = job.upload_dir / f"background{audio_extension}"
                 size = 0

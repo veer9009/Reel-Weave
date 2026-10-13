@@ -342,7 +342,7 @@ describe('AVStudio', { timeout: 15000 }, () => {
     expect(screen.getByRole('button', { name: 'Render MP4' })).toBeEnabled();
   });
   it('Split replaces the selected occurrence in order with unique independent clips and renders that order', async () => {
-    serve('success', ['first.mp4', 'second.mov', 'second.mov']);
+    serve('success', ['first.mp4', 'second.mov']);
     vi.mocked(URL.createObjectURL)
       .mockReturnValueOnce('blob:prefix')
       .mockReturnValueOnce('blob:target');
@@ -397,7 +397,6 @@ describe('AVStudio', { timeout: 15000 }, () => {
     const body = mergeCall?.[1]?.body as FormData;
     expect(body.getAll('files').map((file) => (file as File).name)).toEqual([
       'first.mp4',
-      'second.mov',
       'second.mov',
     ]);
     const manifest = JSON.parse(String(body.get('manifest')));
@@ -1678,7 +1677,7 @@ describe('AVStudio', { timeout: 15000 }, () => {
     });
   });
 
-  it('rejects background audio with unusable duration metadata', async () => {
+  it('rejects background audio with unusable duration metadata and retains the prior renderable project', async () => {
     render(<App />);
     const user = await selectTwo();
     await user.upload(
@@ -1694,6 +1693,6 @@ describe('AVStudio', { timeout: 15000 }, () => {
     expect(screen.getByRole('alert')).toHaveTextContent(
       /background-audio metadata/i,
     );
-    expect(screen.getByRole('button', { name: /render mp4/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /render mp4/i })).toBeEnabled();
   });
 });

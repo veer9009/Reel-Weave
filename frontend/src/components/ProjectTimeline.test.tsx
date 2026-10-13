@@ -24,6 +24,10 @@ const props = {
 it('exact_real_lane_counts_audio_alignment_and_music_presence', () => {
   render(<ProjectTimeline {...props} />);
   expect(
+    screen.getByRole('region', { name: 'Overlay/PIP' }),
+  ).toBeInTheDocument();
+  expect(screen.getByRole('region', { name: 'VIDEO 2' })).toBeInTheDocument();
+  expect(
     within(screen.getByRole('region', { name: 'VIDEO 1' })).getAllByRole(
       'button',
       { name: /Preview clip/ },

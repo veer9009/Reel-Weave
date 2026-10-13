@@ -103,23 +103,43 @@ it.each(['input', 'textarea', 'select'] as const)(
   },
 );
 
-it('Split toolbar always renders one labelled button directly above Video 1 even with the inspector closed', () => {
+it('Timeline Tools keeps all four actions outside uninterrupted tracks even with the inspector closed', () => {
   const props = splitWorkspaceProps([]);
   const view = render(<EditingWorkspace {...props} />);
   const assertVisibleToolbar = () => {
     for (const details of document.querySelectorAll('details'))
       details.open = false;
     const toolbar = screen.getByRole('toolbar', {
-      name: 'Video 1 editing controls',
+      name: 'Timeline Tools',
     });
     const button = within(toolbar).getByRole('button', {
       name: 'Split at playhead',
     });
     expect(button).toBeVisible();
     expect(button).toHaveTextContent('Split at playhead');
-    expect(toolbar.nextElementSibling).toBe(
-      screen.getByRole('region', { name: 'VIDEO 1' }),
-    );
+    expect(toolbar).toHaveAttribute('aria-orientation', 'vertical');
+    expect(toolbar.closest('.timeline-tracks')).toBeNull();
+    expect(toolbar.closest('.timeline-scroll')).toBeNull();
+    expect(within(toolbar).getAllByRole('button')).toHaveLength(4);
+    for (const name of [
+      'Undo',
+      'Redo',
+      'Split at playhead',
+      'Ripple Delete selected',
+    ]) {
+      const tool = within(toolbar).getByRole('button', { name });
+      expect(tool).toHaveAttribute('title');
+      expect(tool.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+    }
+    const tracks = screen.getByRole('region', {
+      name: 'VIDEO 1',
+    }).parentElement!;
+    expect(
+      Array.from(tracks.children)
+        .filter((node) => node.tagName === 'SECTION')
+        .map((node) => node.getAttribute('aria-label')),
+    ).toEqual(['Overlay/PIP', 'VIDEO 2', 'VIDEO 1', 'AUDIO 1', 'AUDIO 2']);
+    expect(tracks.querySelector('[role="toolbar"]')).toBeNull();
     expect(
       screen.getAllByRole('button', {
         name: 'Split at playhead',
@@ -138,14 +158,14 @@ it('Split toolbar disables invalid cuts and exposes the nearby helper without in
   const props = splitWorkspaceProps();
   const view = render(<EditingWorkspace {...props} />);
   const toolbar = screen.getByRole('toolbar', {
-    name: 'Video 1 editing controls',
+    name: 'Timeline Tools',
   });
   const button = within(toolbar).getByRole('button', {
     name: 'Split at playhead',
   });
   const assertDisabled = () => {
     expect(button).toBeDisabled();
-    expect(within(toolbar).getByText(splitHelper)).toBeVisible();
+    expect(screen.getByText(splitHelper)).toBeVisible();
     expect(button).toHaveAccessibleDescription(splitHelper);
     fireEvent.click(button);
     expect(props.onSplitAtPlayhead).not.toHaveBeenCalled();
@@ -185,7 +205,7 @@ it('Split toolbar enables a valid selected-clip playhead and invokes the existin
   const props = splitWorkspaceProps();
   render(<EditingWorkspace {...props} />);
   const toolbar = screen.getByRole('toolbar', {
-    name: 'Video 1 editing controls',
+    name: 'Timeline Tools',
   });
   const button = within(toolbar).getByRole('button', {
     name: 'Split at playhead',
@@ -197,7 +217,7 @@ it('Split toolbar enables a valid selected-clip playhead and invokes the existin
     target: { value: '80' },
   });
   expect(button).toBeEnabled();
-  expect(within(toolbar).queryByText(splitHelper)).not.toBeInTheDocument();
+  expect(screen.queryByText(splitHelper)).not.toBeInTheDocument();
   button.focus();
   await userEvent.setup().keyboard('{Enter}');
   expect(props.onSplitAtPlayhead).toHaveBeenCalledExactlyOnceWith('b', 80);

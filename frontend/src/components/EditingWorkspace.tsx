@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Scissors } from 'lucide-react';
+import { useEffect, useState, useRef } from 'react';
+import { Scissors, Undo2, Redo2, Trash2 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type {
   AudioSettings,
@@ -16,6 +16,15 @@ import { useProjectPlayback } from '../hooks/useProjectPlayback';
 import type { BackgroundAudio } from './BackgroundAudioTrack';
 import { Inspector } from './Inspector';
 import { ProgramMonitor } from './ProgramMonitor';
+import { PositionedClipEditor } from './PositionedClipEditor';
+import type { PositionedActions } from './PositionedTrack';
+import type {
+  AdvancedTimelineProjection,
+  Video2Occurrence,
+  MusicOccurrence,
+} from '../lib/advancedTimeline';
+import { placementLength } from '../lib/advancedTimeline';
+import type { PositionedTrack } from '../lib/positionedEdits';
 import { ProjectTimeline } from './ProjectTimeline';
 import './EditingWorkspace.css';
 import type { HistoryControls } from '../lib/editHistory';
@@ -23,6 +32,30 @@ import type { TrimTransactions } from './TimelineTrimHandle';
 import { useHistoryShortcuts } from '../hooks/useHistoryShortcuts';
 type Props = TrimTransactions & {
   historyControls?: HistoryControls;
+  advanced?: AdvancedTimelineProjection;
+  positionedActions?: PositionedActions;
+  onAddReplacement?: (
+    file: File,
+    startFrame: number,
+    targetId?: string,
+  ) => void;
+  onDeletePositioned?: (track: PositionedTrack, id: string) => void;
+  onSplitPositioned?: (
+    track: PositionedTrack,
+    id: string,
+    frame: number,
+  ) => string | void;
+  onSavePositioned?: (
+    track: PositionedTrack,
+    item: Video2Occurrence | MusicOccurrence,
+  ) => boolean;
+  onSourceEditPositioned?: (
+    id: string,
+    trim: ClipTrim,
+    speed: 1 | 0.75 | 0.5,
+    kind: 'trim' | 'speed',
+  ) => boolean;
+  gestureActive?: boolean;
   clips: Clip[];
   timeline: TimelineProjection;
   overlays: OverlayState;
@@ -81,16 +114,41 @@ export function EditingWorkspace(props: Props) {
     playback.seek(replacementFrame);
     setReplacementFrame(null);
   }
+  const advanced = props.advanced;
+  const selectedTrack: PositionedTrack | null =
+    selection.kind === 'replacement'
+      ? 'video2'
+      : selection.kind === 'music'
+        ? 'music'
+        : null;
+  const selectedPositioned =
+    (selection.kind === 'replacement'
+      ? advanced?.video2.find((v) => v.id === selection.id)
+      : selection.kind === 'music'
+        ? advanced?.music.find((v) => v.id === selection.id)
+        : null) ?? null;
   const invalid =
-    (!clips.length && selection.kind !== 'none') ||
-    (selection.kind === 'clip'
-      ? !clips.some((clip) => clip.id === selection.id)
+    selection.kind === 'clip'
+      ? !clips.some((v) => v.id === selection.id)
       : selection.kind === 'overlay'
         ? !overlays[selection.overlayKind]
-        : selection.kind === 'audio' && selection.track === 'music'
-          ? !backgroundAudio
-          : false);
+        : selectedTrack
+          ? !selectedPositioned
+          : selection.kind === 'audio' && selection.track === 'music'
+            ? !backgroundAudio
+            : false;
   if (invalid) setSelection({ kind: 'none' });
+  const focusAfterDelete = useRef(false);
+  useEffect(() => {
+    if (focusAfterDelete.current) {
+      focusAfterDelete.current = false;
+      document
+        .querySelector<HTMLButtonElement>(
+          'button[title="Undo (Ctrl+Z)"]:not(:disabled)',
+        )
+        ?.focus();
+    }
+  }, [timeline, advanced]);
   const selectedClip =
     selection.kind === 'clip'
       ? clips.find((clip) => clip.id === selection.id)
@@ -101,12 +159,23 @@ export function EditingWorkspace(props: Props) {
   const selectedClipId =
     selectedClip && isEditableClip(selectedClip) ? selectedClip.id : null;
   const onDeleteClip = props.onDeleteClip;
+  const deleteSelected = () => {
+    if (editingLocked || props.gestureActive) return;
+    focusAfterDelete.current = true;
+    if (selectedTrack && selectedPositioned)
+      props.onDeletePositioned?.(selectedTrack, selectedPositioned.id);
+    else if (selectedClipId) onDeleteClip?.(selectedClipId);
+  };
   useEffect(() => {
-    const deleteSelected = (event: KeyboardEvent) => {
+    const deleteKey = (event: KeyboardEvent) => {
       if (
         editingLocked ||
-        !selectedClipId ||
-        !onDeleteClip ||
+        props.gestureActive ||
+        (!selectedClipId && !selectedPositioned) ||
+        event.ctrlKey ||
+        event.altKey ||
+        event.metaKey ||
+        event.shiftKey ||
         (event.key !== 'Delete' && event.key !== 'Backspace') ||
         event.defaultPrevented ||
         event.isComposing ||
@@ -118,24 +187,44 @@ export function EditingWorkspace(props: Props) {
       )
         return;
       event.preventDefault();
-      onDeleteClip(selectedClipId);
+      deleteSelected();
     };
-    document.addEventListener('keydown', deleteSelected);
-    return () => document.removeEventListener('keydown', deleteSelected);
-  }, [editingLocked, selectedClipId, onDeleteClip]);
+    document.addEventListener('keydown', deleteKey);
+    return () => document.removeEventListener('keydown', deleteKey);
+  });
   const splitPlan = planClipSplit(
     timeline,
     selectedClip?.id ?? '',
     playback.frame ?? -1,
   );
-  const splitReason = editingLocked
-    ? 'Split is unavailable while rendering or after completion. Start a New Project to edit again.'
-    : clips.length >= (props.maxClips ?? Infinity)
-      ? 'Clip limit reached. Remove a clip before splitting.'
-      : 'error' in splitPlan
-        ? splitPlan.error
-        : null;
-  const canSplit = Boolean(props.onSplitAtPlayhead && !splitReason);
+  const splitReason =
+    editingLocked || props.gestureActive
+      ? 'Split is unavailable while rendering or after completion. Start a New Project to edit again.'
+      : selectedPositioned
+        ? !playback.frame ||
+          playback.frame <= selectedPositioned.timelineStartFrame ||
+          playback.frame >=
+            selectedPositioned.timelineStartFrame +
+              placementLength(selectedPositioned)
+          ? 'Move the playhead strictly inside the selected clip.'
+          : (selectedTrack === 'music' &&
+                (advanced?.music.length ?? 0) >=
+                  10 * (props.maxClips ?? Infinity)) ||
+              (selectedTrack === 'video2' &&
+                clips.length + (advanced?.video2.length ?? 0) >=
+                  (props.maxClips ?? Infinity))
+            ? 'Clip limit reached.'
+            : null
+        : clips.length + (advanced?.video2.length ?? 0) >=
+            (props.maxClips ?? Infinity)
+          ? 'Clip limit reached. Remove a clip before splitting.'
+          : 'error' in splitPlan
+            ? splitPlan.error
+            : null;
+  const canSplit = Boolean(
+    (selectedPositioned ? props.onSplitPositioned : props.onSplitAtPlayhead) &&
+    !splitReason,
+  );
   const version2Sources = clips.filter(isEditableClip);
   const version2 = version2Sources.find((clip) => clip.id === version2Id);
   const canReplace =
@@ -148,6 +237,117 @@ export function EditingWorkspace(props: Props) {
       playback.frame > selectedItem.startFrame &&
       playback.frame < selectedItem.endFrame,
     );
+  const positionedInspection = (
+    <>
+      <label>
+        Inspect replacement or music
+        <select
+          aria-label="Inspect positioned clip"
+          value={selectedPositioned?.id ?? ''}
+          onChange={(event) => {
+            const id = event.target.value;
+            if (advanced?.video2.some((v) => v.id === id))
+              setSelection({ kind: 'replacement', id });
+            else if (advanced?.music.some((v) => v.id === id))
+              setSelection({ kind: 'music', id });
+            else setSelection({ kind: 'none' });
+          }}
+        >
+          <option value="">Choose a positioned clip</option>
+          {advanced?.video2.map((v) => (
+            <option key={v.id} value={v.id}>
+              Video 2: {v.clip.file.name} · {v.timelineStartFrame} f
+            </option>
+          ))}
+          {advanced?.music.map((v) => (
+            <option key={v.id} value={v.id}>
+              Music: {v.file.name} · {v.timelineStartFrame} f
+            </option>
+          ))}
+        </select>
+      </label>
+      {selectedPositioned && selectedTrack && timeline.fps ? (
+        <>
+          <PositionedClipEditor
+            key={JSON.stringify(selectedPositioned)}
+            track={selectedTrack}
+            item={selectedPositioned}
+            name={
+              'clip' in selectedPositioned
+                ? selectedPositioned.clip.file.name
+                : selectedPositioned.file.name
+            }
+            fps={timeline.fps}
+            disabled={editingLocked || props.gestureActive === true}
+            onSave={(item) =>
+              props.onSavePositioned?.(selectedTrack, item) ?? false
+            }
+            onSourceEdit={(trim, speed, kind) =>
+              props.onSourceEditPositioned?.(
+                selectedPositioned.id,
+                trim,
+                speed,
+                kind,
+              ) ?? false
+            }
+          />
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={
+              editingLocked || selectedPositioned.timelineStartFrame === 0
+            }
+            onClick={() =>
+              props.positionedActions?.onMove(
+                selectedTrack,
+                selectedPositioned.id,
+                selectedPositioned.timelineStartFrame - 1,
+              )
+            }
+          >
+            Move earlier one frame
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={editingLocked}
+            onClick={() =>
+              props.positionedActions?.onMove(
+                selectedTrack,
+                selectedPositioned.id,
+                selectedPositioned.timelineStartFrame + 1,
+              )
+            }
+          >
+            Move later one frame
+          </button>
+          {selectedTrack === 'video2' && (
+            <label>
+              Replace Video 2 source
+              <input
+                aria-label="Replace Video 2 source"
+                type="file"
+                accept=".mp4,.mov,.webm,.mkv"
+                disabled={editingLocked || timeline.status !== 'ready'}
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file)
+                    props.onAddReplacement?.(
+                      file,
+                      selectedPositioned.timelineStartFrame,
+                      selectedPositioned.id,
+                    );
+                  event.target.value = '';
+                }}
+              />
+            </label>
+          )}
+        </>
+      ) : (
+        <p>Select a Video 2 or music segment to edit its range.</p>
+      )}
+    </>
+  );
   return (
     <main className="editing-workspace" aria-label="Editing workspace">
       <h1>Sequence 01</h1>
@@ -173,9 +373,26 @@ export function EditingWorkspace(props: Props) {
       <div className="workspace-panels">
         <section className="media-panel" aria-label="Media">
           {props.mediaContent}
+          {props.onAddReplacement && (
+            <label className="replacement-upload">
+              Add replacement video
+              <input
+                aria-label="Choose replacement video"
+                type="file"
+                accept=".mp4,.mov,.webm,.mkv"
+                disabled={editingLocked || timeline.status !== 'ready'}
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) props.onAddReplacement?.(file, playback.frame ?? 0);
+                  event.target.value = '';
+                }}
+              />
+            </label>
+          )}
         </section>
         <ProgramMonitor
           timeline={timeline}
+          projection={props.advanced}
           overlays={overlays}
           frame={playback.frame}
           playing={playback.playing}
@@ -184,6 +401,13 @@ export function EditingWorkspace(props: Props) {
         />
         <Inspector
           selection={selection}
+          replacementContent={
+            selectedTrack === 'music' ? (
+              <p>Select a Video 2 replacement to edit it.</p>
+            ) : (
+              positionedInspection
+            )
+          }
           clipContent={
             <>
               <label>
@@ -274,15 +498,20 @@ export function EditingWorkspace(props: Props) {
                 </button>
                 <p>
                   Select a Video 1 clip and place the playhead strictly inside
-                  it. V1 keeps the cut frame; V2 continues at the matching
-                  source time. The selected V2 occurrence is consumed; other
-                  clips keep their order.
+                  it. The target keeps the cut frame and the donor Video 1
+                  occurrence supplies the matching source time. The donor is
+                  consumed; other Video 1 clips keep their order.
                 </p>
               </div>
             </>
           }
           overlayContent={props.overlayContent}
-          audioContent={props.audioContent}
+          audioContent={
+            <>
+              {selectedTrack === 'music' && positionedInspection}
+              {props.audioContent}
+            </>
+          }
           deliveryContent={props.deliveryContent}
         />
       </div>
@@ -297,7 +526,8 @@ export function EditingWorkspace(props: Props) {
               disabled={!props.historyControls?.canUndo}
               onClick={() => props.historyControls?.undo()}
             >
-              Undo
+              <Undo2 size={16} aria-hidden="true" />
+              <span className="sr-only">Undo</span>
             </button>
             <button
               type="button"
@@ -307,18 +537,32 @@ export function EditingWorkspace(props: Props) {
               disabled={!props.historyControls?.canRedo}
               onClick={() => props.historyControls?.redo()}
             >
-              Redo
+              <Redo2 size={16} aria-hidden="true" />
+              <span className="sr-only">Redo</span>
             </button>
-            <small>Ctrl+Z · Ctrl+Y / Ctrl+Shift+Z</small>
             <button
               type="button"
               className="secondary-button"
               disabled={!canSplit}
-              title={splitReason ?? undefined}
+              title={splitReason ?? 'Split at playhead'}
               aria-describedby={!canSplit ? 'split-reason' : undefined}
               onClick={() => {
-                if (!canSplit || !selectedClip || playback.frame === null)
+                if (!canSplit || playback.frame === null) return;
+                if (selectedPositioned && selectedTrack) {
+                  const right = props.onSplitPositioned?.(
+                    selectedTrack,
+                    selectedPositioned.id,
+                    playback.frame,
+                  );
+                  if (right)
+                    setSelection({
+                      kind:
+                        selectedTrack === 'video2' ? 'replacement' : 'music',
+                      id: right,
+                    });
                   return;
+                }
+                if (!selectedClip) return;
                 const rightId = props.onSplitAtPlayhead?.(
                   selectedClip.id,
                   playback.frame,
@@ -330,8 +574,27 @@ export function EditingWorkspace(props: Props) {
               }}
             >
               <Scissors size={16} aria-hidden="true" />
-              Split at playhead
+              <span className="sr-only">Split at playhead</span>
             </button>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={
+                editingLocked ||
+                props.gestureActive ||
+                (!selectedClipId && !selectedPositioned)
+              }
+              onClick={deleteSelected}
+              title="Ripple Delete selected (Delete or Backspace)"
+            >
+              <Trash2 size={16} aria-hidden="true" />
+              <span className="sr-only">Ripple Delete selected</span>
+            </button>
+          </>
+        }
+        videoToolbarHelp={
+          <>
+            <small>Ctrl+Z · Ctrl+Y / Ctrl+Shift+Z</small>
             {!canSplit && (
               <p id="split-reason">
                 Select a Video 1 clip, then click inside it to choose the cut
@@ -341,6 +604,22 @@ export function EditingWorkspace(props: Props) {
           </>
         }
         timeline={timeline}
+        advanced={props.advanced}
+        positionedActions={
+          props.positionedActions
+            ? {
+                ...props.positionedActions,
+                onMoveBegin: (track, id) => {
+                  playback.pause();
+                  return props.positionedActions!.onMoveBegin(track, id);
+                },
+                onTrimBegin: (track, id) => {
+                  playback.pause();
+                  return props.positionedActions!.onTrimBegin(track, id);
+                },
+              }
+            : undefined
+        }
         overlays={overlays}
         backgroundAudio={backgroundAudio}
         audioSettings={audioSettings}

@@ -1,4 +1,5 @@
 import type { ClipEdit, Limits, MergeManifest } from './clips';
+import type { buildAdvancedMergeRequest } from './advancedManifest';
 
 export type Job = {
   job_id: string;
@@ -76,5 +77,20 @@ export function submitMerge(
     body.append('background_audio', uploads.backgroundAudio);
   if (uploads.overlayImage) body.append('overlay_image', uploads.overlayImage);
   if (uploads.overlayVideo) body.append('overlay_video', uploads.overlayVideo);
+  return request<Job>('/api/merge', { method: 'POST', body, signal });
+}
+export function submitAdvancedMerge(
+  render: ReturnType<typeof buildAdvancedMergeRequest>,
+  signal?: AbortSignal,
+): Promise<Job> {
+  const body = new FormData();
+  render.videoFiles.forEach((file) => body.append('files', file));
+  body.append('manifest', JSON.stringify(render.manifest));
+  if (render.uploads.backgroundAudio)
+    body.append('background_audio', render.uploads.backgroundAudio);
+  if (render.uploads.overlayImage)
+    body.append('overlay_image', render.uploads.overlayImage);
+  if (render.uploads.overlayVideo)
+    body.append('overlay_video', render.uploads.overlayVideo);
   return request<Job>('/api/merge', { method: 'POST', body, signal });
 }

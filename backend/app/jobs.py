@@ -7,7 +7,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from .render_plan import ResolvedRenderPlan
 
 from .config import Settings
 from .storage import Storage, UnsafePathError
@@ -57,6 +60,54 @@ class MergePlan:
     video_overlay: OverlaySettings | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class VideoSourceDescriptor:
+    source_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class VideoOccurrence:
+    client_id: str
+    source_id: str
+    edit: ClipEdit
+
+
+@dataclass(frozen=True, slots=True)
+class ReplacementOccurrence(VideoOccurrence):
+    timeline_start_frame: int
+    content_in_frame: int
+    content_out_frame: int
+    content_full_source: bool
+
+
+@dataclass(frozen=True, slots=True)
+class MusicSegment:
+    client_id: str
+    source_id: str
+    timeline_start_frame: int
+    source_start_sample: int
+    duration_frames: int
+
+
+@dataclass(frozen=True, slots=True)
+class MusicPlan:
+    source_id: str
+    segments: tuple[MusicSegment, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AdvancedMergePlan:
+    video_sources: tuple[VideoSourceDescriptor, ...]
+    clips: tuple[VideoOccurrence, ...]
+    order: tuple[str, ...]
+    video2: tuple[ReplacementOccurrence, ...]
+    output_fps: int
+    audio_mix: AudioMixSettings
+    music: MusicPlan | None
+    image_overlay: OverlaySettings | None
+    video_overlay: OverlaySettings | None
+
+
 @dataclass(slots=True)
 class Job:
     id: str
@@ -64,6 +115,10 @@ class Job:
     intermediate_dir: Path
     output_dir: Path
     result_path: Path
+    advanced_plan: AdvancedMergePlan | None = None
+    video_source_paths: dict[str, Path] = field(default_factory=dict)
+    resolved_plan: ResolvedRenderPlan | None = None
+    decoded_music_path: Path | None = None
     input_paths: list[Path] = field(default_factory=list)
     clip_edits: list[ClipEdit] = field(default_factory=list)
     background_audio_path: Path | None = None

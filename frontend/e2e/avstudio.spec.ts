@@ -3,6 +3,92 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+test('Timeline Tools stay left of uninterrupted tracks on desktop and narrow screens', async ({
+  page,
+}, info) => {
+  const file = info.outputPath('toolbar-source.mp4');
+  mkdirSync(resolve(file, '..'), { recursive: true });
+  const result = spawnSync(
+    process.env.REELWEAVE_FFMPEG_PATH || 'ffmpeg',
+    [
+      '-v',
+      'error',
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'color=c=blue:s=320x180:r=30:d=1',
+      '-c:v',
+      'libx264',
+      '-pix_fmt',
+      'yuv420p',
+      file,
+    ],
+    { timeout: 30_000, encoding: 'utf8', windowsHide: true },
+  );
+  expect(result.status, result.stderr).toBe(0);
+  await page.goto('/');
+  await expect(page.getByText('Backend ready', { exact: true })).toBeVisible();
+  await page.getByLabel('Choose video clips').setInputFiles(file);
+  await expect(
+    page.getByRole('button', { name: 'Render MP4', exact: true }),
+  ).toBeEnabled();
+  const toolbar = page.getByRole('toolbar', {
+    name: 'Timeline Tools',
+    exact: true,
+  });
+  await expect(toolbar).toBeVisible();
+  for (const [width, height] of [
+    [1440, 900],
+    [899, 768],
+    [390, 844],
+    [320, 640],
+  ]) {
+    await page.setViewportSize({ width, height });
+    await toolbar.scrollIntoViewIfNeeded();
+    await expect(toolbar).toBeVisible();
+    await expect(toolbar.getByRole('button')).toHaveCount(4);
+    const bounds = (await toolbar.boundingBox())!;
+    const scroll = (await page
+      .getByLabel('Scrollable timeline', { exact: true })
+      .boundingBox())!;
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(scroll.x);
+    const buttons = await toolbar.getByRole('button').all();
+    let previousBottom = bounds.y;
+    for (const button of buttons) {
+      const tool = (await button.boundingBox())!;
+      expect(tool.width).toBeGreaterThanOrEqual(44);
+      expect(tool.height).toBeGreaterThanOrEqual(44);
+      expect(tool.y).toBeGreaterThanOrEqual(previousBottom);
+      previousBottom = tool.y + tool.height;
+    }
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    await expect(page.locator('.timeline-tracks > section')).toHaveCount(5);
+    await expect(
+      page.locator('.timeline-tracks').getByRole('button', {
+        name: /^(Undo|Redo|Split at playhead|Ripple Delete selected)$/,
+      }),
+    ).toHaveCount(0);
+    const clip = (await page
+      .getByRole('button', {
+        name: 'Preview clip 1: toolbar-source.mp4',
+        exact: true,
+      })
+      .boundingBox())!;
+    expect(clip.x).toBeGreaterThanOrEqual(scroll.x);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(clip.x);
+    if (width === 1440 || width === 320) {
+      await page
+        .getByRole('region', { name: 'Sequence timeline', exact: true })
+        .screenshot({ path: info.outputPath(`timeline-tools-${width}.png`) });
+    }
+  }
+});
+
 function contrast(a: string, b: string) {
   const luminance = (color: string) => {
     const values = color
@@ -86,9 +172,7 @@ test('responsive workspace and keyboard access', async ({ page }) => {
   const chooser = page.waitForEvent('filechooser');
   await page.keyboard.press('Enter');
   await chooser;
-  const disclosure = page
-    .locator('summary')
-    .filter({ hasText: 'Video 2 overlays' });
+  const disclosure = page.locator('summary').filter({ hasText: 'Overlay/PIP' });
   await disclosure.focus();
   await page.keyboard.press('Enter');
   await expect(disclosure.locator('..')).not.toHaveAttribute('open');
@@ -360,11 +444,15 @@ test('desktop and mobile: edit, render, play, download and New project', async (
   ).toBeVisible();
   await page.getByLabel('Image overlay start frame').fill('2');
   await page.getByLabel('Image overlay end frame').fill('9999');
-  await expect(page.getByText(/outside the project timeline/i)).toBeVisible();
+  await expect(
+    page
+      .getByRole('article', { name: 'Image / logo overlay slot' })
+      .getByText(/outside the project timeline/i),
+  ).toBeVisible();
   await expect(
     page.getByLabel('Image overlay end frame'),
   ).toHaveAccessibleDescription(/outside the project timeline/i);
-  await page.locator('summary').filter({ hasText: 'Video 2 overlays' }).click();
+  await page.locator('summary').filter({ hasText: 'Overlay/PIP' }).click();
   await expect(page.getByText('Image overlay needs attention.')).toBeVisible();
   await page.getByRole('button', { name: 'Review image overlay' }).click();
   await expect(page.getByLabel('Image overlay end frame')).toBeVisible();
@@ -599,8 +687,8 @@ test('desktop and mobile: edit, render, play, download and New project', async (
     return {
       actual: block.getBoundingClientRect().width,
       expected:
-        (block.parentElement!.getBoundingClientRect().width *
-          parseFloat(block.style.width)) /
+        (block.parentElement!.parentElement!.getBoundingClientRect().width *
+          parseFloat(block.parentElement!.style.width)) /
         100,
     };
   });
@@ -728,8 +816,8 @@ test('one-frame intervals preserve physical frame geometry', async ({
       return {
         actual: block.getBoundingClientRect().width,
         expected:
-          (block.parentElement!.getBoundingClientRect().width *
-            parseFloat(block.style.width)) /
+          (block.parentElement!.parentElement!.getBoundingClientRect().width *
+            parseFloat(block.parentElement!.style.width)) /
           100,
       };
     });
