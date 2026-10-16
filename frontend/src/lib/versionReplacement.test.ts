@@ -1,6 +1,38 @@
 import { expect, it } from 'vitest';
 import * as timeline from './timeline';
 import { clip } from '../test/fixtures';
+it('windowed_version_replacement_matches_visible_source_interval_and_never_hidden_tail', () => {
+  const target = {
+    ...clip('fragment', 25),
+    outputWindow: { outputInFrame: 40, outputOutFrame: 55 },
+    originalAudio: 'detached' as const,
+  };
+  const donor = clip('donor', 25);
+  const result = timeline.planVersionReplacement(
+    timeline.buildTimeline([target, donor], '25'),
+    'fragment',
+    donor,
+    6,
+  );
+  expect(result).toMatchObject({
+    leftWindow: { outputInFrame: 40, outputOutFrame: 47 },
+    rightTrim: { startFrame: 47, endFrame: 54 },
+    rightWindow: { outputInFrame: 0, outputOutFrame: 8 },
+  });
+  const short = {
+    ...donor,
+    metadata: { ...donor.metadata!, totalFrames: 50 },
+    trim: { startFrame: 0, endFrame: 49 },
+  };
+  expect(
+    timeline.planVersionReplacement(
+      timeline.buildTimeline([target, short], '25'),
+      'fragment',
+      short,
+      6,
+    ),
+  ).toHaveProperty('error');
+});
 
 it('version replacement maps the boundary after the inclusive cut by source time across different FPS', () => {
   expect(timeline.planVersionReplacement).toBeTypeOf('function');

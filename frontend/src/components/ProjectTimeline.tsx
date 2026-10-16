@@ -16,7 +16,15 @@ import './ProjectTimeline.css';
 import { PositionedTrack } from './PositionedTrack';
 import type { PositionedActions } from './PositionedTrack';
 import type { AdvancedTimelineProjection } from '../lib/advancedTimeline';
+import { TimelineDropZone } from './MediaBin';
+import type { SourcePlacementActions } from './MediaBin';
+import { IndependentAudioTrack } from './IndependentAudioTrack';
+import type { IndependentAudioActions } from './IndependentAudioTrack';
+import type { AudioTarget } from '../lib/audioTimeline';
 type Props = TrimTransactions & {
+  audioActions?: IndependentAudioActions;
+  onVideoContextMenu?: (target: AudioTarget, x: number, y: number) => void;
+  placement?: SourcePlacementActions;
   videoToolbar?: ReactNode;
   videoToolbarHelp?: ReactNode;
   advanced?: AdvancedTimelineProjection;
@@ -41,6 +49,9 @@ export function ProjectTimeline({
   videoToolbarHelp,
   advanced,
   positionedActions,
+  placement,
+  audioActions,
+  onVideoContextMenu,
   timeline,
   overlays,
   backgroundAudio,
@@ -329,6 +340,8 @@ export function ProjectTimeline({
                 </div>
               </section>
               <PositionedTrack
+                placement={placement}
+                onVideoContextMenu={onVideoContextMenu}
                 track="video2"
                 projection={{ ...projection, displayFrames }}
                 selection={selection}
@@ -349,8 +362,16 @@ export function ProjectTimeline({
                 onError={(message) => positionedActions?.onError(message)}
               />
               <section className="timeline-track" aria-label="VIDEO 1">
-                <h3>Video 1</h3>
-                <div className="track-content">
+                <h3 id="video1-header" tabIndex={-1}>
+                  Video 1
+                </h3>
+                <TimelineDropZone
+                  placement={placement}
+                  track="video1"
+                  displayFrames={displayFrames}
+                  disabled={disabled}
+                  label="Video 1 source drop target"
+                >
                   {timeline.items.length ? (
                     timeline.items.map((item, index) => (
                       <div
@@ -359,6 +380,30 @@ export function ProjectTimeline({
                         style={geometry(item.startFrame, item.frameCount)}
                       >
                         <button
+                          id={`timeline-segment-${item.clip.id}`}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            onVideoContextMenu?.(
+                              { track: 'video1', id: item.clip.id },
+                              event.clientX,
+                              event.clientY,
+                            );
+                          }}
+                          onKeyDown={(event) => {
+                            if (
+                              event.key === 'ContextMenu' ||
+                              (event.shiftKey && event.key === 'F10')
+                            ) {
+                              event.preventDefault();
+                              const r =
+                                event.currentTarget.getBoundingClientRect();
+                              onVideoContextMenu?.(
+                                { track: 'video1', id: item.clip.id },
+                                r.left,
+                                r.bottom,
+                              );
+                            }
+                          }}
                           className={`timeline-block video-block${clipDropTarget === item.clip.id && !disabled ? ' clip-drop-target' : ''}`}
                           draggable={!disabled && Boolean(onMove)}
                           onDragStart={(event) => {
@@ -424,6 +469,9 @@ export function ProjectTimeline({
                           }
                         >
                           {item.clip.file.name}
+                          {item.clip.originalAudio === 'detached' && (
+                            <small>Detached audio</small>
+                          )}
                           <small>
                             Frames {item.startFrame}–{item.endFrame}
                           </small>
@@ -454,54 +502,70 @@ export function ProjectTimeline({
                   ) : (
                     <span>Add ready video clips</span>
                   )}
-                </div>
+                </TimelineDropZone>
               </section>
-              <section className="timeline-track" aria-label="AUDIO 1">
-                <h3>
-                  Audio 1{audioSettings.originalMuted && <small>Muted</small>}
-                </h3>
-                <div className="track-content">
-                  {projection.resolved.length ? (
-                    projection.resolved.map((range) => {
-                      const source =
-                        range.track === 'video2'
-                          ? projection.video2.find(
-                              (v) => v.id === range.occurrenceId,
-                            )?.clip
-                          : timeline.items.find(
-                              (v) => v.clip.id === range.occurrenceId,
-                            )?.clip;
-                      if (!source) return null;
-                      const item = {
-                        clip: source,
-                        startFrame: range.startFrame,
-                        frameCount: range.endFrameExclusive - range.startFrame,
-                      };
-                      return (
-                        <button
-                          key={`${range.occurrenceId}:${range.startFrame}`}
-                          className="timeline-block audio-block"
-                          style={geometry(item.startFrame, item.frameCount)}
-                          aria-label={`Original audio: ${item.clip.file.name}`}
-                          aria-pressed={
-                            selection.kind === 'audio' &&
-                            selection.track === 'original'
-                          }
-                          onClick={() =>
-                            choose({ kind: 'audio', track: 'original' })
-                          }
-                        >
-                          Original audio<small>Sound presence unknown</small>
-                        </button>
-                      );
-                    })
-                  ) : (
-                    <span>Original clip audio</span>
-                  )}
-                </div>
-              </section>
+              {audioActions ? (
+                <IndependentAudioTrack
+                  snapshot={audioActions.snapshot}
+                  sources={audioActions.sources}
+                  projection={{ ...projection, displayFrames }}
+                  selection={selection}
+                  disabled={disabled}
+                  onSelect={onSelect}
+                  onEdit={audioActions.onEdit}
+                  actions={audioActions}
+                  placement={placement}
+                />
+              ) : (
+                <section className="timeline-track" aria-label="AUDIO 1">
+                  <h3>
+                    Audio 1{audioSettings.originalMuted && <small>Muted</small>}
+                  </h3>
+                  <div className="track-content">
+                    {projection.resolved.length ? (
+                      projection.resolved.map((range) => {
+                        const source =
+                          range.track === 'video2'
+                            ? projection.video2.find(
+                                (v) => v.id === range.occurrenceId,
+                              )?.clip
+                            : timeline.items.find(
+                                (v) => v.clip.id === range.occurrenceId,
+                              )?.clip;
+                        if (!source) return null;
+                        const item = {
+                          clip: source,
+                          startFrame: range.startFrame,
+                          frameCount:
+                            range.endFrameExclusive - range.startFrame,
+                        };
+                        return (
+                          <button
+                            key={`${range.occurrenceId}:${range.startFrame}`}
+                            className="timeline-block audio-block"
+                            style={geometry(item.startFrame, item.frameCount)}
+                            aria-label={`Original audio: ${item.clip.file.name}`}
+                            aria-pressed={
+                              selection.kind === 'audio' &&
+                              selection.track === 'original'
+                            }
+                            onClick={() =>
+                              choose({ kind: 'audio', track: 'original' })
+                            }
+                          >
+                            Original audio<small>Sound presence unknown</small>
+                          </button>
+                        );
+                      })
+                    ) : (
+                      <span>Original clip audio</span>
+                    )}
+                  </div>
+                </section>
+              )}
               <PositionedTrack
                 track="music"
+                placement={placement}
                 projection={{ ...projection, displayFrames }}
                 selection={selection}
                 disabled={disabled}

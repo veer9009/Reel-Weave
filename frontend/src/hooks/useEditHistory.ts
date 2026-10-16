@@ -33,11 +33,24 @@ import type { SourceMetadata, SourceToken } from '../lib/projectSources';
 import { validateRestoration } from '../lib/historyProjection';
 import { materializeSnapshot } from '../lib/historyProjection';
 import { buildTimeline } from '../lib/timeline';
+import { changeBaseSourceEdit } from '../lib/overwriteEdits';
+import { buildAdvancedTimeline } from '../lib/advancedTimeline';
+import { detachAudio, editIndependentAudio } from '../lib/audioTimeline';
+import type { AudioTarget, AudioSegmentEdit } from '../lib/audioTimeline';
+import type { PlacementDraft } from '../lib/placement';
+import { validatePlacement } from '../lib/placement';
+import type { TransportAnchor, TransportEdit } from '../lib/transportMapping';
+export type TransportListener = {
+  capture: () => TransportAnchor;
+  apply: (anchor: TransportAnchor, edit: TransportEdit) => void;
+  cancel: () => void;
+};
 import {
   defaultOverlaySchedule,
   validateOverlaySchedule,
 } from '../lib/overlays';
 export type HistoryOptions = {
+  onPlaced?: (track: PlacementDraft['track'], id: string) => void;
   limits: Limits;
   editingLocked: boolean;
   trimDraftOpen: boolean;
@@ -45,6 +58,8 @@ export type HistoryOptions = {
   onAnnouncement: (message: string) => void;
 };
 const defaults = (): EditSnapshot => ({
+  binSourceIds: [],
+  independentAudio: [],
   video1: [],
   video2: [],
   musicSourceId: null,
@@ -66,7 +81,9 @@ type Transaction = {
     | 'video2-trim'
     | 'music-trim'
     | 'video2-move'
-    | 'music-move';
+    | 'music-move'
+    | 'independent-move'
+    | 'independent-trim';
   targetId: string;
   preview: EditSnapshot;
 };
@@ -79,9 +96,17 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
   let transaction: Transaction | null = null;
   let revision = 0;
   let sourceRevision = 0;
+  let transport: TransportListener | null = null,
+    transportToken = 0;
   let pendingPip: SourceToken | null = null;
   let lastResolvedFps: ProjectFps | null = null;
   let pendingImports: EditSnapshot['video1'] = [];
+  let pendingBinImports: {
+    token: SourceToken;
+    mediaType: 'video' | 'audio';
+    placement?: PlacementDraft;
+    replaceId?: string;
+  }[] = [];
   let timelineCandidates: {
     token: SourceToken;
     track: PositionedTrack;
@@ -89,6 +114,7 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
     targetId?: string;
   }[] = [];
   const sources = createProjectSources();
+  sources.onBeforeClear(() => transport?.cancel());
   const allowed = () =>
     !api.options.editingLocked && !api.options.trimDraftOpen && !transaction;
   const reconcile = () =>
@@ -100,17 +126,41 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
           ...(pendingPip ? [pendingPip] : []),
           ...pendingImports.map((v) => sources.get(v.sourceId)!.token),
           ...timelineCandidates.map((v) => v.token),
+          ...pendingBinImports.map((v) => v.token),
         ],
-        sources.externalOwners,
+        new Set(),
       ),
     );
   const publish = () => {
     reconcile();
     changed();
   };
-  const apply = (next: typeof history) => {
+  const apply = (
+    next: typeof history,
+    action: TransportEdit['action'] = 'trim',
+    lineage: ReadonlyMap<string, string> = new Map(),
+  ) => {
+    const anchor = transport?.capture();
+    const projection = (snapshot: EditSnapshot) => {
+      const m = materializeSnapshot(snapshot, sources);
+      return buildAdvancedTimeline(snapshot, sources, {
+        image: null,
+        video: m.pip,
+      });
+    };
+    const edit =
+      transport && anchor
+        ? {
+            token: ++transportToken,
+            before: projection(history.present),
+            after: projection(next.present),
+            action,
+            lineage,
+          }
+        : null;
     if (structural(history.present, next.present)) revision++;
     history = next;
+    if (edit && anchor) transport?.apply(anchor, edit);
     lastResolvedFps =
       resolveProjectFps(
         history.present.fpsSelection,
@@ -139,12 +189,22 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
     }
     pendingPip = null;
     pendingImports = [];
+    pendingBinImports = [];
     timelineCandidates = [];
-    apply(redo ? redoHistory(history) : undoHistory(history));
+    apply(
+      redo ? redoHistory(history) : undoHistory(history),
+      redo ? 'redo' : 'undo',
+    );
     api.options.onAnnouncement(`${redo ? 'Redid' : 'Undid'} ${entry.label}.`);
     return true;
   };
   const api = {
+    bindTransport(listener: TransportListener) {
+      transport = listener;
+      return () => {
+        if (transport === listener) transport = null;
+      };
+    },
     get options() {
       return options;
     },
@@ -173,6 +233,9 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
     get pendingImports() {
       return pendingImports.map((v) => sources.get(v.sourceId)!.token);
     },
+    get pendingBinImports() {
+      return pendingBinImports;
+    },
     get pendingTimelineSources() {
       return timelineCandidates;
     },
@@ -185,7 +248,12 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
         redo: () => navigate(true),
       };
     },
-    commit(action: HistoryAction, label: string, next: EditSnapshot): boolean {
+    commit(
+      action: HistoryAction,
+      label: string,
+      next: EditSnapshot,
+      lineage: ReadonlyMap<string, string> = new Map(),
+    ): boolean {
       if (api.options.editingLocked || transaction) return false;
       const oldFps =
         resolveProjectFps(
@@ -200,7 +268,7 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
       if (oldFps && newFps && oldFps !== newFps) {
         const converted = convertPositionedFps(next, oldFps, newFps, sources);
         if ('error' in converted) {
-          api.options.onError(converted.error);
+          api.options.onError(converted.error.message);
           return false;
         }
         next = converted.value;
@@ -221,9 +289,7 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
                 ),
           )
         ) {
-          api.options.onError(
-            'Video 2 range is outside Video 1. Trim or move it.',
-          );
+          api.options.onError('Replacement clips must fit within Video 1.');
           return false;
         }
       }
@@ -243,7 +309,7 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
         action === 'music-ripple-delete'
       )
         timelineCandidates = [];
-      apply(result);
+      apply(result, action, lineage);
       return true;
     },
     setFpsSelection(selection: ProjectFpsSelection): boolean {
@@ -256,11 +322,160 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
       action: HistoryAction,
       label: string,
       nextVideo1: EditSnapshot['video1'],
+      lineage: ReadonlyMap<string, string> = new Map(),
     ): boolean {
-      return api.commit(action, label, {
+      return api.commit(
+        action,
+        label,
+        {
+          ...history.present,
+          video1: nextVideo1,
+        },
+        lineage,
+      );
+    },
+    importToBin(
+      file: File,
+      mediaType: 'video' | 'audio',
+      placement?: Omit<PlacementDraft, 'token'>,
+      replaceId?: string,
+    ): SourceToken | null {
+      if (!allowed()) return null;
+      const pattern =
+        mediaType === 'video'
+          ? /\.(mp4|mov|webm|mkv)$/i
+          : /\.(mp3|wav|aac|m4a)$/i;
+      const limit =
+        mediaType === 'video'
+          ? api.options.limits.max_file_size_mb
+          : (api.options.limits.max_audio_file_size_mb ?? 100);
+      if (
+        !pattern.test(file.name) ||
+        !file.size ||
+        file.size > limit * 1024 * 1024
+      ) {
+        api.options.onError(
+          'Choose a nonempty supported media file within its size limit.',
+        );
+        return null;
+      }
+      const token = sources.register(file, mediaType);
+      pendingBinImports = [
+        ...pendingBinImports,
+        {
+          token,
+          mediaType,
+          placement: placement ? { ...placement, token } : undefined,
+          replaceId,
+        },
+      ];
+      publish();
+      return token;
+    },
+    removeBinSource(sourceId: string): boolean {
+      if (!allowed() || !history.present.binSourceIds.includes(sourceId))
+        return false;
+      return api.commit('bin-remove', 'Remove bin entry', {
         ...history.present,
-        video1: nextVideo1,
+        binSourceIds: history.present.binSourceIds.filter(
+          (v) => v !== sourceId,
+        ),
       });
+    },
+    cancelBinImport(token: SourceToken) {
+      pendingBinImports = pendingBinImports.filter(
+        (v) => v.token.sourceId !== token.sourceId,
+      );
+      publish();
+    },
+    commitDetach(target: AudioTarget): boolean {
+      if (!allowed()) return false;
+      const m = materializeSnapshot(history.present, sources);
+      const projection = buildAdvancedTimeline(history.present, sources, {
+        image: null,
+        video: m.pip,
+      });
+      const next = detachAudio(
+        history.present,
+        sources,
+        projection,
+        target,
+        () => crypto.randomUUID(),
+      );
+      if ('error' in next) {
+        api.options.onError(next.error.message);
+        return false;
+      }
+      return api.commit('detach-audio', 'Detach Audio', next.value);
+    },
+    commitAudioEdit(edit: AudioSegmentEdit): boolean {
+      if (!allowed()) return false;
+      const fps =
+        resolveProjectFps(
+          history.present.fpsSelection,
+          sources.get(history.present.video1[0]?.sourceId)?.metadata?.fps,
+        ) ?? lastResolvedFps;
+      if (!fps) return false;
+      const next = editIndependentAudio(
+        history.present,
+        edit,
+        fps,
+        sources,
+        () => crypto.randomUUID(),
+      );
+      if ('error' in next) {
+        api.options.onError(next.error.message);
+        return false;
+      }
+      return api.commit(
+        `independent-${edit.action}`,
+        'Edit independent audio',
+        next.value,
+      );
+    },
+    commitPlacement(draft: PlacementDraft): boolean {
+      if (!allowed()) return false;
+      const result = validatePlacement(
+        history.present,
+        sources,
+        draft,
+        api.options.limits,
+      );
+      if ('error' in result) {
+        api.options.onError(result.error.message);
+        return false;
+      }
+      const action = {
+        video1: 'overwrite',
+        video2: 'video2-add',
+        independent: 'independent-place',
+        music: 'music-add',
+      } as const;
+      const before = history.present;
+      if (!api.commit(action[draft.track], 'Place media', result.value))
+        return false;
+      const next = history.present;
+      const id =
+        draft.track === 'video1'
+          ? buildTimeline(
+              materializeSnapshot(next, sources).clips,
+              next.fpsSelection,
+            ).items.find((v) => v.startFrame === draft.timelineStartFrame)?.clip
+              .id
+          : draft.track === 'video2'
+            ? next.video2.find(
+                (v) => !before.video2.some((old) => old.id === v.id),
+              )?.id
+            : draft.track === 'music'
+              ? next.music.find(
+                  (v) => !before.music.some((old) => old.id === v.id),
+                )?.id
+              : next.independentAudio.find(
+                  (v) =>
+                    !before.independentAudio.some((old) => old.id === v.id),
+                )?.id;
+      if (id) api.options.onPlaced?.(draft.track, id);
+      return true;
     },
     begin(
       action: Transaction['action'],
@@ -273,6 +488,11 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
       )
         return null;
       const token = crypto.randomUUID();
+      if (
+        action.startsWith('independent-') &&
+        !history.present.independentAudio.some((v) => v.id === targetId)
+      )
+        return null;
       transaction = { token, action, targetId, preview: history.present };
       publish();
       return token;
@@ -295,37 +515,49 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
                       ...v,
                       trim:
                         next.video1.find((n) => n.id === v.id)?.trim ?? v.trim,
+                      outputWindow: undefined,
                     }
                   : v,
               ),
             }
-          : t.action !== 'audio-volume'
+          : t.action.startsWith('independent-')
             ? {
                 ...history.present,
-                ...(t.action.startsWith('video2-')
-                  ? {
-                      video2: history.present.video2.map((v) =>
-                        v.id === t.targetId
-                          ? (next.video2.find((n) => n.id === v.id) ?? v)
-                          : v,
-                      ),
-                    }
-                  : {
-                      music: history.present.music.map((v) =>
-                        v.id === t.targetId
-                          ? (next.music.find((n) => n.id === v.id) ?? v)
-                          : v,
-                      ),
-                    }),
+                independentAudio: history.present.independentAudio.map((v) =>
+                  v.id === t.targetId
+                    ? (next.independentAudio.find((n) => n.id === v.id) ?? v)
+                    : v,
+                ),
               }
-            : {
-                ...history.present,
-                audio: {
-                  ...history.present.audio,
-                  [t.targetId]:
-                    next.audio[t.targetId as 'originalVolume' | 'musicVolume'],
-                },
-              };
+            : t.action !== 'audio-volume'
+              ? {
+                  ...history.present,
+                  ...(t.action.startsWith('video2-')
+                    ? {
+                        video2: history.present.video2.map((v) =>
+                          v.id === t.targetId
+                            ? (next.video2.find((n) => n.id === v.id) ?? v)
+                            : v,
+                        ),
+                      }
+                    : {
+                        music: history.present.music.map((v) =>
+                          v.id === t.targetId
+                            ? (next.music.find((n) => n.id === v.id) ?? v)
+                            : v,
+                        ),
+                      }),
+                }
+              : {
+                  ...history.present,
+                  audio: {
+                    ...history.present.audio,
+                    [t.targetId]:
+                      next.audio[
+                        t.targetId as 'originalVolume' | 'musicVolume'
+                      ],
+                  },
+                };
       changed();
     },
     finish(token: GestureToken, accept: boolean): boolean {
@@ -374,6 +606,7 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
             : 'Edit timeline clip',
           next,
         ),
+        t.action,
       );
       return true;
     },
@@ -402,7 +635,9 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
       ];
       if (
         retained.some(
-          (s) => !s.video1.length && (s.video2.length || s.music.length),
+          (s) =>
+            !s.video1.length &&
+            (s.video2.length || s.music.length || s.independentAudio.length),
         )
       ) {
         pendingImports = additions;
@@ -420,6 +655,11 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
     sourceReady(token: SourceToken, metadata: SourceMetadata): boolean {
       if (!sources.markReady(token, metadata)) return false;
       sourceRevision++;
+      if (pendingBinImports.some((v) => v.token.sourceId === token.sourceId)) {
+        api.resumeBinImports();
+        publish();
+        return true;
+      }
       if (pendingImports.some((v) => v.sourceId === token.sourceId)) {
         if (
           pendingImports.every(
@@ -457,7 +697,7 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
                   newF,
                   sources,
                 );
-                if ('error' in converted) failure = converted.error;
+                if ('error' in converted) failure = converted.error.message;
                 else next = converted.value;
               }
               failure =
@@ -498,9 +738,37 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
       publish();
       return true;
     },
+    resumeBinImports() {
+      if (!allowed()) return;
+      const ready = pendingBinImports.filter(
+        (v) => sources.get(v.token.sourceId)?.status === 'ready',
+      );
+      pendingBinImports = pendingBinImports.filter((v) => !ready.includes(v));
+      for (const item of ready) {
+        if (item.replaceId)
+          api.commitAudioEdit({
+            action: 'replace',
+            id: item.replaceId,
+            source: { kind: 'audio-file', sourceId: item.token.sourceId },
+            sourceStartSample: 0,
+          });
+        else if (item.placement) api.commitPlacement(item.placement);
+        else
+          api.commit('bin-import', 'Import media to bin', {
+            ...history.present,
+            binSourceIds: [
+              ...history.present.binSourceIds,
+              item.token.sourceId,
+            ],
+          });
+      }
+    },
     sourceError(token: SourceToken): boolean {
       if (!sources.markError(token)) return false;
       sourceRevision++;
+      pendingBinImports = pendingBinImports.filter(
+        (v) => v.token.sourceId !== token.sourceId,
+      );
       if (pendingImports.some((v) => v.sourceId === token.sourceId))
         pendingImports = [];
       publish();
@@ -513,16 +781,39 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
         !history.present.video1.some((v) => v.id === id)
       )
         return;
-      apply(
-        rebaseHistory(
-          history,
-          (s) => ({
-            ...s,
-            video1: s.video1.map((v) => (v.id === id ? { ...v, speed } : v)),
-          }),
-          true,
-        ),
+      let failure: string | null = null;
+      const next = rebaseHistory(
+        history,
+        (s) => {
+          const target = s.video1.find((v) => v.id === id);
+          if (!target?.trim) return s;
+          const fps = resolveProjectFps(
+            s.fpsSelection,
+            sources.get(s.video1[0]?.sourceId)?.metadata?.fps,
+          );
+          if (!fps) {
+            failure = 'Video 1 timing is unavailable.';
+            return s;
+          }
+          const result = changeBaseSourceEdit(
+            s,
+            id,
+            target.trim,
+            speed,
+            'speed',
+            sources,
+            fps,
+          );
+          if ('error' in result) {
+            failure = result.error.message;
+            return s;
+          }
+          return result.value;
+        },
+        true,
       );
+      if (failure) api.options.onError(failure);
+      else apply(next);
     },
     rebasePipRange(
       id: string,
@@ -798,6 +1089,7 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
       pendingPip = null;
       pendingImports = [];
       timelineCandidates = [];
+      pendingBinImports = [];
       sources.clear();
       history = createHistory(defaults());
       lastResolvedFps = null;
@@ -806,6 +1098,10 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
       changed();
     },
     cancelLockedGesture() {
+      if (api.options.editingLocked && pendingBinImports.length) {
+        pendingBinImports = [];
+        publish();
+      }
       if (
         api.options.editingLocked &&
         (timelineCandidates.length || pendingPip || pendingImports.length)
@@ -825,6 +1121,7 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
       pendingPip = null;
       pendingImports = [];
       timelineCandidates = [];
+      pendingBinImports = [];
       sources.clear();
     },
   };
@@ -843,6 +1140,7 @@ export function useEditHistory(options: HistoryOptions) {
   const pendingPip = controller.pendingPip;
   useEffect(() => {
     controller.resumePip();
+    controller.resumeBinImports();
   }, [
     controller,
     options.editingLocked,

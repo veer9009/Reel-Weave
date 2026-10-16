@@ -5,14 +5,46 @@ import type { ProjectSources } from './projectSources';
 import { placementLength } from './advancedTimeline';
 import type { Video2Occurrence, MusicOccurrence } from './advancedTimeline';
 import { projectFrameCount } from './overlays';
+import { validateIndependentAudio } from './audioTimeline';
 export type PositionedTrack = 'video2' | 'music';
-export type EditResult<T> = { value: T } | { error: string };
+export type EditIssue = {
+  code: string;
+  message: string;
+  lane?: 'video1' | 'video2' | 'independent' | 'music';
+  segmentId?: string;
+  sourceId?: string;
+};
+export type EditResult<T> = { value: T } | { error: EditIssue };
+export function editIssue(message: string, code = 'invalid_range'): EditIssue {
+  return { code, message };
+}
 const integer = (n: number) => Number.isSafeInteger(n) && n >= 0;
 export function validatePositioned(
   s: EditSnapshot,
   sources?: ProjectSources,
   fps?: ProjectFps,
 ): string | null {
+  if (sources && fps)
+    for (const v of s.video1) {
+      const w = v.outputWindow,
+        m = sources.get(v.sourceId)?.metadata;
+      if (
+        w &&
+        (!m ||
+          !v.trim ||
+          !integer(w.outputInFrame) ||
+          !integer(w.outputOutFrame) ||
+          w.outputOutFrame <= w.outputInFrame ||
+          w.outputOutFrame >
+            projectFrameCount(
+              v.trim.endFrame - v.trim.startFrame + 1,
+              m.fps,
+              v.speed,
+              fps,
+            ))
+      )
+        return 'Invalid normalized Video 1 window.';
+    }
   for (const track of ['video2', 'music'] as const) {
     const lane = [...s[track]].sort(
       (a, b) => a.timelineStartFrame - b.timelineStartFrame,
@@ -27,7 +59,7 @@ export function validatePositioned(
         lane[i - 1].timelineStartFrame + placementLength(lane[i - 1]) >
           v.timelineStartFrame
       )
-        return `${track}: clips cannot overlap.`;
+        return `This range overlaps another clip on ${track === 'video2' ? 'Video 2' : 'Background Music'}. Move it to a free range.`;
       if ('contentInFrame' in v) {
         if (
           !integer(v.contentInFrame) ||
@@ -41,7 +73,7 @@ export function validatePositioned(
           sources &&
           (!source?.metadata ||
             source.status !== 'ready' ||
-            !['video1', 'video2'].includes(source.kind))
+            source.mediaType !== 'video')
         )
           return 'Missing or unready replacement media.';
         if (
@@ -64,7 +96,7 @@ export function validatePositioned(
         if (
           sources &&
           (!source ||
-            source.kind !== 'music' ||
+            source.mediaType !== 'audio' ||
             source.status !== 'ready' ||
             !source.sampleCount)
         )
@@ -84,6 +116,8 @@ export function validatePositioned(
   }
   if (Boolean(s.musicSourceId) !== Boolean(s.music.length))
     return 'Music source and segments must match.';
+  if (sources && fps)
+    return validateIndependentAudio(s, sources, fps)?.message ?? null;
   return null;
 }
 const result = (
@@ -91,8 +125,19 @@ const result = (
   sources?: ProjectSources,
   fps?: ProjectFps,
 ): EditResult<EditSnapshot> => {
+  if (sources && fps) {
+    const issue = validateIndependentAudio(s, sources, fps);
+    if (issue) return { error: issue };
+  }
   const error = validatePositioned(s, sources, fps);
-  return error ? { error } : { value: s };
+  return error
+    ? {
+        error: editIssue(
+          error,
+          error.includes('overlap') ? 'invalid_overlap' : 'invalid_range',
+        ),
+      }
+    : { value: s };
 };
 export function movePositioned(
   s: EditSnapshot,
@@ -101,7 +146,7 @@ export function movePositioned(
   start: number,
 ): EditResult<EditSnapshot> {
   if (!s[track].some((v) => v.id === id))
-    return { error: 'Missing timeline clip.' };
+    return { error: editIssue('Missing timeline clip.', 'missing_source') };
   return result({
     ...s,
     [track]: s[track].map((v) =>
@@ -119,7 +164,7 @@ export function trimPositioned(
   sources: ProjectSources,
 ): EditResult<EditSnapshot> {
   if (!Number.isSafeInteger(delta) || !s[track].some((v) => v.id === id))
-    return { error: 'Invalid trim target.' };
+    return { error: editIssue('Invalid trim target.') };
   const next = s[track].map((v) => {
     if (v.id !== id) return v;
     if ('contentInFrame' in v)
@@ -157,7 +202,9 @@ export function splitPositioned(
     frame >= v.timelineStartFrame + placementLength(v) ||
     ids.left === ids.right
   )
-    return { error: 'Move the playhead strictly inside a clip to split.' };
+    return {
+      error: editIssue('Move the playhead strictly inside a clip to split.'),
+    };
   const length = frame - v.timelineStartFrame;
   let halves: (Video2Occurrence | MusicOccurrence)[];
   if ('contentInFrame' in v)
@@ -198,7 +245,8 @@ export function rippleDeletePositioned(
   id: string,
 ): EditResult<EditSnapshot> {
   const target = s[track].find((v) => v.id === id);
-  if (!target) return { error: 'Missing timeline clip.' };
+  if (!target)
+    return { error: editIssue('Missing timeline clip.', 'missing_source') };
   const next = s[track]
     .filter((v) => v.id !== id)
     .map((v) =>
@@ -227,7 +275,7 @@ export function changeReplacementSourceEdit(
   const target = s.video2.find((v) => v.id === id),
     meta = target && sources.get(target.sourceId)?.metadata;
   if (!target || !meta || validateTrim(trim, meta.totalFrames))
-    return { error: 'Invalid replacement source trim.' };
+    return { error: editIssue('Invalid replacement source trim.') };
   const full = kind === 'trim' || target.contentFullSource,
     length = projectFrameCount(
       trim.endFrame - trim.startFrame + 1,
@@ -288,6 +336,22 @@ export function convertPositionedFps(
     {
       ...s,
       video2,
+      video1: s.video1.map((v) => ({
+        ...v,
+        ...(v.outputWindow
+          ? {
+              outputWindow: {
+                outputInFrame: round(v.outputWindow.outputInFrame),
+                outputOutFrame: round(v.outputWindow.outputOutFrame),
+              },
+            }
+          : {}),
+      })),
+      independentAudio: s.independentAudio.map((v) => ({
+        ...v,
+        timelineStartFrame: round(v.timelineStartFrame),
+        durationFrames: round(v.durationFrames),
+      })),
       music: s.music.map((v) => ({
         ...v,
         timelineStartFrame: round(v.timelineStartFrame),

@@ -238,6 +238,9 @@ class MediaPipeline:
             )
 
     def validate_job(self, job: Job) -> None:
+        if job.v3_plan is not None:
+            self._validate_v3_job(job)
+            return
         if job.advanced_plan is not None:
             self._validate_advanced_job(job)
             return
@@ -387,7 +390,109 @@ class MediaPipeline:
         except (ProcessingError, ValueError, KeyError, StopIteration, wave.Error) as exc:
             raise InvalidMediaError("Video or music metadata is unreadable.") from exc
 
+    def _validate_v3_job(self, job: Job) -> None:
+        from .advanced_media import command, media_input, normalize_video_recipe
+        from .jobs import VideoEditRecipe
+        from .render_plan import VideoSourceInfo, resolve_v3_render_plan
+
+        plan = job.v3_plan
+        assert plan is not None
+        sources, counts, recipe_counts = {}, {}, {}
+        try:
+            for source_id, path in job.video_source_paths.items():
+                metadata = self._probe(path)
+                fps = self._video_fps(metadata)
+                stream = self._validate_overlay_dimensions(metadata, "video source")
+                try:
+                    frames = int(stream.get("nb_read_frames"))
+                except (TypeError, ValueError):
+                    frames = 0
+                if not fps or frames < 1:
+                    raise InvalidMediaError("Video source frame metadata is unavailable.")
+                sources[source_id] = VideoSourceInfo(
+                    source_id,
+                    path,
+                    fps,
+                    frames,
+                    stream["width"],
+                    stream["height"],
+                    any(v.get("codec_type") == "audio" for v in metadata["streams"]),
+                )
+            for source_id, path in job.audio_source_paths.items():
+                if not self._probe_audio(path):
+                    raise InvalidMediaError("External audio source has no audio stream.")
+                decoded = job.intermediate_dir / f"decoded-audio-{len(counts):03d}.wav"
+                self._run(
+                    command(self)
+                    + media_input(path, "mov,mp3,wav,aac")
+                    + [
+                        "-map",
+                        "0:a:0",
+                        "-af",
+                        "aresample=48000,aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS",
+                        "-c:a",
+                        "pcm_s16le",
+                        "-ar",
+                        "48000",
+                        "-ac",
+                        "2",
+                        str(decoded),
+                    ]
+                )
+                with wave.open(str(decoded), "rb") as audio:
+                    counts[source_id] = audio.getnframes()
+                job.decoded_audio_paths[source_id] = decoded
+            recipes = {
+                s.source for s in plan.independent_audio if isinstance(s.source, VideoEditRecipe)
+            }
+            recipes.update(
+                VideoEditRecipe(
+                    v.source_id, v.edit.start_frame, v.edit.end_frame, v.edit.speed, plan.output_fps
+                )
+                for v in (*plan.clips, *plan.video2)
+                if v.original_audio == "linked"
+            )
+            for recipe in recipes:
+                source = sources.get(recipe.source_id)
+                if source is None or recipe.source_end_frame >= source.total_frames:
+                    from .errors import ApiError
+
+                    raise ApiError(
+                        422,
+                        "invalid_range",
+                        "Frozen audio source trim is unavailable.",
+                        source_id=recipe.source_id,
+                    )
+                decoded = normalize_video_recipe(self, job, recipe, source)
+                with wave.open(str(decoded), "rb") as audio:
+                    recipe_counts[recipe] = audio.getnframes()
+            resolved = resolve_v3_render_plan(plan, sources, counts, recipe_counts)
+            job.total_project_frames = resolved.total_frames
+            if job.image_overlay_path is not None:
+                metadata = self._probe_image(job.image_overlay_path)
+                self._validate_overlay_dimensions(metadata, "image")
+                self._validate_overlay_range(job, "image")
+                streams = [v for v in metadata.get("streams", []) if v.get("codec_type") == "video"]
+                if len(streams) != 1 or streams[0].get("codec_name") not in {"png", "mjpeg"}:
+                    raise InvalidMediaError("Image overlay must decode as PNG or JPEG.")
+            if job.video_overlay_path is not None:
+                metadata = self._probe(job.video_overlay_path)
+                self._validate_overlay_dimensions(metadata, "video")
+                self._validate_overlay_range(job, "video")
+                if not self._video_fps(metadata) or not self._video_duration(metadata):
+                    raise InvalidMediaError("PIP metadata is unavailable.")
+            job.resolved_plan = resolved
+        except InvalidMediaError:
+            raise
+        except (ProcessingError, ValueError, KeyError, StopIteration, wave.Error) as exc:
+            raise InvalidMediaError("Video or audio metadata is unreadable.") from exc
+
     def merge(self, job: Job) -> None:
+        if job.v3_plan is not None:
+            from .advanced_media import render_v3
+
+            render_v3(self, job)
+            return
         if job.advanced_plan is not None:
             from .advanced_media import render_advanced
 

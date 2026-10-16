@@ -99,6 +99,39 @@ export function generateAdvancedMedia(folder: string) {
     music,
   };
 }
+export function generateContinuityVideo(folder: string, chirp = false) {
+  mkdirSync(folder, { recursive: true });
+  const path = join(folder, 'base60.mp4');
+  run('ffmpeg', [
+    '-v',
+    'error',
+    '-y',
+    '-f',
+    'lavfi',
+    '-i',
+    'testsrc2=s=320x180:r=60',
+    '-f',
+    'lavfi',
+    '-i',
+    chirp
+      ? 'aevalsrc=0.125*sin(2*PI*(440*t+200*t*t)):s=48000'
+      : 'sine=frequency=440:sample_rate=48000',
+    '-frames:v',
+    '360',
+    '-t',
+    '6',
+    '-c:v',
+    'libx264',
+    '-threads',
+    '2',
+    '-pix_fmt',
+    'yuv420p',
+    '-c:a',
+    'aac',
+    path,
+  ]);
+  return path;
+}
 
 export function probeDownloadedMp4(path: string) {
   const result = JSON.parse(

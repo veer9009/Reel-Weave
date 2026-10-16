@@ -3,10 +3,15 @@ import type {
   ClipSpeed,
   ClipTrim,
   ProjectFpsSelection,
+  OriginalAudioMode,
+  OutputWindow,
 } from './clips';
+import type { IndependentAudioSegment } from './audioTimeline';
 import type { OverlaySchedule } from './overlays';
 import type { Video2Occurrence, MusicOccurrence } from './advancedTimeline';
 export type Video1Occurrence = {
+  outputWindow?: OutputWindow;
+  originalAudio?: OriginalAudioMode;
   id: string;
   sourceId: string;
   trim: ClipTrim | null;
@@ -15,6 +20,8 @@ export type Video1Occurrence = {
 };
 export type PipOccurrence = OverlaySchedule & { id: string; sourceId: string };
 export type EditSnapshot = {
+  binSourceIds: readonly string[];
+  independentAudio: readonly IndependentAudioSegment[];
   video1: readonly Video1Occurrence[];
   video2: readonly Video2Occurrence[];
   musicSourceId: string | null;
@@ -23,7 +30,17 @@ export type EditSnapshot = {
   audio: AudioSettings;
   fpsSelection: ProjectFpsSelection;
 };
+export type LegacyEditSnapshot = Omit<
+  EditSnapshot,
+  'binSourceIds' | 'independentAudio'
+> &
+  Partial<Pick<EditSnapshot, 'binSourceIds' | 'independentAudio'>>;
 export type HistoryAction =
+  | 'bin-import'
+  | 'bin-remove'
+  | 'overwrite'
+  | 'detach-audio'
+  | `independent-${'place' | 'move' | 'trim' | 'split' | 'lift' | 'ripple-delete' | 'replace'}`
   | `video2-${'add' | 'replace' | 'move' | 'source-trim' | 'trim' | 'speed' | 'split' | 'ripple-delete'}`
   | `music-${'add' | 'replace' | 'move' | 'trim' | 'split' | 'ripple-delete' | 'remove'}`
   | 'reorder'
@@ -58,9 +75,21 @@ export type HistoryControls = {
   undo: () => boolean;
   redo: () => boolean;
 };
-function copy(s: EditSnapshot): EditSnapshot {
+export function normalizeSnapshot(
+  s: EditSnapshot | LegacyEditSnapshot,
+): EditSnapshot {
   return {
-    video2: (s.video2 ?? []).map((v) => ({ ...v, trim: { ...v.trim } })),
+    binSourceIds: [...(s.binSourceIds ?? [])],
+    independentAudio: (s.independentAudio ?? []).map((v) => ({
+      ...v,
+      source: { ...v.source },
+      ...(v.detachedFrom ? { detachedFrom: { ...v.detachedFrom } } : {}),
+    })),
+    video2: (s.video2 ?? []).map((v) => ({
+      ...v,
+      originalAudio: v.originalAudio ?? 'linked',
+      trim: { ...v.trim },
+    })),
     musicSourceId: s.musicSourceId ?? null,
     music: (s.music ?? []).map((v) => ({ ...v })),
     video1: s.video1.map((v) => ({
@@ -71,6 +100,8 @@ function copy(s: EditSnapshot): EditSnapshot {
         : null,
       trimSaved: v.trimSaved,
       speed: v.speed,
+      originalAudio: v.originalAudio ?? 'linked',
+      ...(v.outputWindow ? { outputWindow: { ...v.outputWindow } } : {}),
     })),
     pip: s.pip
       ? {
@@ -91,10 +122,13 @@ function copy(s: EditSnapshot): EditSnapshot {
     fpsSelection: s.fpsSelection,
   };
 }
+const copy = normalizeSnapshot;
 export function snapshotsEqual(a: EditSnapshot, b: EditSnapshot): boolean {
   return JSON.stringify(copy(a)) === JSON.stringify(copy(b));
 }
-export function createHistory(initial: EditSnapshot): EditHistory {
+export function createHistory(
+  initial: EditSnapshot | LegacyEditSnapshot,
+): EditHistory {
   return { past: [], present: copy(initial), future: [] };
 }
 export function commitHistory(

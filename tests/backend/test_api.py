@@ -69,6 +69,7 @@ def test_health_exposes_tool_availability_and_client_limits(client_factory):
         "status": "ok",
         "ffmpeg_available": False,
         "ffprobe_available": False,
+        "export_capabilities": {"mp4": False, "mov": False, "wav": False, "mp3": False},
         "limits": {
             "max_file_size_mb": 100 / (1024 * 1024),
             "max_clips": 10,

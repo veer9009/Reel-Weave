@@ -1,4 +1,4 @@
-import type { ClipEdit, ClipTrim, ClipSpeed } from './clips';
+import type { ClipEdit, ClipTrim, ClipSpeed, OriginalAudioMode } from './clips';
 import type { EditSnapshot } from './editHistory';
 import type { ProjectSources } from './projectSources';
 import type { OverlayState } from './overlays';
@@ -6,8 +6,10 @@ import { validateOverlaySchedule } from './overlays';
 import { materializeSnapshot } from './historyProjection';
 import { buildTimeline } from './timeline';
 import type { TimelineProjection } from './timeline';
+import { validateIndependentAudio } from './audioTimeline';
 
 export type Video2Occurrence = {
+  originalAudio?: OriginalAudioMode;
   id: string;
   sourceId: string;
   trim: ClipTrim;
@@ -59,6 +61,10 @@ export function buildAdvancedTimeline(
   const m = materializeSnapshot(s, sources),
     base = buildTimeline(m.clips, s.fpsSelection);
   const errors: string[] = [];
+  if (base.fps) {
+    const issue = validateIndependentAudio(s, sources, base.fps);
+    if (issue) errors.push(issue.message);
+  }
   if (base.status !== 'ready') errors.push('Video 1 timing unavailable.');
   const video2 = [...m.video2].sort(
     (a, b) => a.timelineStartFrame - b.timelineStartFrame,
@@ -123,7 +129,10 @@ export function buildAdvancedTimeline(
         track: 'video1',
         occurrenceId: original.clip.id,
         sourceId: s.video1.find((v) => v.id === original.clip.id)!.sourceId,
-        contentStartFrame: a - original.startFrame,
+        contentStartFrame:
+          (original.clip.outputWindow?.outputInFrame ?? 0) +
+          a -
+          original.startFrame,
       });
   }
   return {
@@ -136,6 +145,7 @@ export function buildAdvancedTimeline(
       base.totalFrames,
       ...video2.map((v) => v.timelineStartFrame + placementLength(v)),
       ...m.music.map((v) => v.timelineStartFrame + v.durationFrames),
+      ...s.independentAudio.map((v) => v.timelineStartFrame + v.durationFrames),
       ...[overlays.image, overlays.video].map((v) => (v ? v.endFrame + 1 : 0)),
     ),
   };

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .composition import build_overlay_graph
-from .jobs import Job
+from .jobs import Job, VideoEditRecipe
 from .media import MediaPipeline, ProcessingError
 from .render_plan import ResolvedRenderPlan, ResolvedSlice, ResolvedVideoEdit
 
@@ -66,7 +66,12 @@ def slice_filters(item: ResolvedSlice, fps: int) -> tuple[str, str]:
 
 
 def _normalize_video_edit(
-    pipeline: MediaPipeline, job: Job, edit: ResolvedVideoEdit, ordinal: int = 0
+    pipeline: MediaPipeline,
+    job: Job,
+    edit: ResolvedVideoEdit,
+    ordinal: int = 0,
+    *,
+    audio_required=True,
 ) -> tuple[Path, Path]:
     video = job.intermediate_dir / f"advanced-normal-{ordinal:03d}.mp4"
     audio = job.intermediate_dir / f"advanced-normal-{ordinal:03d}.wav"
@@ -90,6 +95,8 @@ def _normalize_video_edit(
     metadata = pipeline._probe(video)
     if pipeline._total_frames(metadata, pipeline._video_fps(metadata)) != edit.output_frames:
         raise ProcessingError("Normalized video does not contain the requested frames.")
+    if not audio_required:
+        return video, audio
     if source.has_audio:
         args = media_input(source.path)
         audio_filter = (
@@ -128,10 +135,14 @@ def _join_selected_slices(
     job: Job,
     plan: ResolvedRenderPlan,
     normalized: dict[str, tuple[Path, Path]],
+    *,
+    audio_required=True,
 ) -> tuple[Path, Path]:
     video = job.intermediate_dir / "selected-video.mp4"
     audio = job.intermediate_dir / "selected-original.wav"
     for audio_only, destination in [(False, video), (True, audio)]:
+        if audio_only and not audio_required:
+            continue
         args = command(pipeline)
         filters = []
         labels = []
@@ -158,16 +169,20 @@ def _join_selected_slices(
 
 
 def render_advanced_video(
-    pipeline: MediaPipeline, job: Job, plan: ResolvedRenderPlan
+    pipeline: MediaPipeline, job: Job, plan: ResolvedRenderPlan, *, audio_required=True
 ) -> tuple[Path, Path]:
     normalized = {}
     cache = {}
     for edit in plan.video_edits:
         key = (edit.source_id, edit.edit, edit.output_frames)
         if key not in cache:
-            cache[key] = _normalize_video_edit(pipeline, job, edit, len(cache))
+            cache[key] = _normalize_video_edit(
+                pipeline, job, edit, len(cache), audio_required=audio_required
+            )
         normalized[edit.occurrence_id] = cache[key]
-    video, audio = _join_selected_slices(pipeline, job, plan, normalized)
+    video, audio = _join_selected_slices(
+        pipeline, job, plan, normalized, audio_required=audio_required
+    )
     if job.video_overlay_path or job.image_overlay_path:
         args = command(pipeline) + media_input(video)
         index = 1
@@ -252,3 +267,147 @@ def render_advanced(pipeline: MediaPipeline, job: Job) -> None:
         + video_output(plan.output_fps, plan.total_frames, destination)
     )
     destination.replace(job.result_path)
+
+
+def normalize_video_recipe(pipeline, job: Job, recipe: VideoEditRecipe, source) -> Path:
+    from .timeline import project_frame_count
+
+    if recipe in job.recipe_audio_paths:
+        return job.recipe_audio_paths[recipe]
+    length = project_frame_count(
+        recipe.source_end_frame - recipe.source_start_frame + 1,
+        source.fps,
+        recipe.speed,
+        recipe.normalization_fps,
+    )
+    count = length * (48000 // recipe.normalization_fps)
+    audio = job.intermediate_dir / f"recipe-{len(job.recipe_audio_paths):03d}.wav"
+    if source.has_audio:
+        args = media_input(source.path)
+        filters = (
+            f"atrim=start={recipe.source_start_frame / source.fps:.9f}:"
+            f"end={(recipe.source_end_frame + 1) / source.fps:.9f},asetpts=PTS-STARTPTS,"
+            f"atempo={recipe.speed:g},aresample=48000,aformat=channel_layouts=stereo,"
+        )
+    else:
+        args = [
+            "-f",
+            "lavfi",
+            "-i",
+            f"anullsrc=channel_layout=stereo:sample_rate=48000:d={count / 48000:.9f}",
+        ]
+        filters = ""
+    pipeline._run(
+        command(pipeline)
+        + args
+        + [
+            "-map",
+            "0:a:0",
+            "-af",
+            filters + f"apad=whole_len={count},atrim=end_sample={count},asetpts=PTS-STARTPTS",
+            "-c:a",
+            "pcm_s16le",
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            str(audio),
+        ]
+    )
+    job.recipe_audio_paths[recipe] = audio
+    return audio
+
+
+def render_v3_picture(pipeline, job, plan) -> Path:
+    return render_advanced_video(pipeline, job, plan, audio_required=False)[0]
+
+
+def render_audio_master(pipeline, job, plan) -> Path:
+    from .audio_composition import build_music_graph, build_original_graph
+    from .jobs import AudioFileRecipe
+
+    args = command(pipeline)
+    indexes = {}
+    for s in plan.audio_slices:
+        if s.source is not None and s.source not in indexes:
+            indexes[s.source] = len(indexes)
+            path = (
+                job.decoded_audio_paths[s.source.source_id]
+                if isinstance(s.source, AudioFileRecipe)
+                else job.recipe_audio_paths[s.source]
+            )
+            args += media_input(path)
+    original = build_original_graph(plan.audio_slices, indexes, plan.output_fps, plan.total_frames)
+    filters = [original.filter_complex]
+    original_gain = 0 if job.audio_mix.original_muted else job.audio_mix.original_volume
+    music_gain = 0 if job.audio_mix.music_muted else job.audio_mix.music_volume
+    filters.append(f"{original.output_label}volume={original_gain:g}[originalgain]")
+    k = 48000 // plan.output_fps
+    total = plan.total_frames * k
+    if plan.music:
+        music_index = len(indexes)
+        args += media_input(job.decoded_audio_paths[plan.music.source_id])
+        music = build_music_graph(
+            plan.music.segments, plan.output_fps, plan.total_frames, music_index
+        )
+        filters.append(music.filter_complex)
+        filters.append(f"{music.output_label}volume={music_gain:g}[musicgain]")
+        filters.append(
+            "[originalgain][musicgain]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
+            f"atrim=end_sample={total}[master]"
+        )
+    else:
+        filters.append(f"[originalgain]atrim=end_sample={total}[master]")
+    destination = job.intermediate_dir / "audio-master.wav"
+    pipeline._run(
+        args
+        + [
+            "-filter_complex",
+            ";".join(filters),
+            "-map",
+            "[master]",
+            "-c:a",
+            "pcm_s16le",
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            str(destination),
+        ]
+    )
+    job.audio_master_path = destination
+    return destination
+
+
+def render_v3(pipeline, job) -> None:
+    from . import exports
+    from .jobs import ExportState
+
+    plan = job.resolved_plan
+    if plan is None:
+        raise ProcessingError("Validated timeline is missing.")
+    job.exports["mp4"] = ExportState("processing")
+    try:
+        picture = render_v3_picture(pipeline, job, plan)
+        master = render_audio_master(pipeline, job, plan)
+        primary = exports.publish_artifact(
+            job, exports.render_primary_mp4(pipeline, job, picture, master, plan), "mp4"
+        )
+        job.exports["mp4"] = ExportState("ready", path=primary)
+    except Exception:
+        for name in job.exports:
+            job.exports[name] = ExportState("failed", f"{name.upper()} export failed.")
+        raise
+    for name in plan.exports:
+        if name == "mp4":
+            continue
+        job.exports[name] = ExportState("processing")
+        try:
+            staged = exports.render_optional_export(pipeline, job, name, primary, master, plan)
+            path = exports.publish_artifact(job, staged, name)
+        except Exception:
+            job.exports[name] = ExportState(
+                "failed", f"{name.upper()} export failed. Submit a new render to retry."
+            )
+        else:
+            job.exports[name] = ExportState("ready", path=path)

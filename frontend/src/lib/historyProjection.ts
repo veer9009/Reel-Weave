@@ -5,6 +5,7 @@ import type { OverlayState } from './overlays';
 import type { MaterializedVideo2, MaterializedMusic } from './advancedTimeline';
 import { validatePositioned } from './positionedEdits';
 import { resolveProjectFps } from './clips';
+import { projectFrameCount } from './overlays';
 export function materializeSnapshot(
   s: Pick<EditSnapshot, 'video1' | 'pip'> &
     Partial<Pick<EditSnapshot, 'video2' | 'music'>>,
@@ -31,6 +32,7 @@ export function materializeSnapshot(
           trim: v.trim,
           trimSaved: v.trimSaved,
           speed: v.speed,
+          originalAudio: v.originalAudio ?? 'linked',
         },
       };
     }),
@@ -58,6 +60,8 @@ export function materializeSnapshot(
         trim: v.trim ?? undefined,
         trimSaved: v.trimSaved,
         speed: v.speed,
+        originalAudio: v.originalAudio ?? 'linked',
+        outputWindow: v.outputWindow,
       };
     }),
     pip: s.pip
@@ -86,10 +90,24 @@ export function validateRestoration(
 ): string | null {
   if (
     s.video1.length + s.video2.length > limits.max_clips ||
-    s.music.length > 10 * limits.max_clips
+    s.music.length + (s.independentAudio?.length ?? 0) > 10 * limits.max_clips
   )
     return 'Clip limit prevents restoring this edit.';
   const ids = new Set<string>();
+  for (const id of s.binSourceIds ?? [])
+    if (!sources.get(id)) return 'Missing bin source.';
+  for (const segment of s.independentAudio ?? []) {
+    const record = sources.get(segment.source.sourceId);
+    if (
+      !record ||
+      (segment.source.kind === 'audio-file'
+        ? record.mediaType !== 'audio'
+        : record.mediaType !== 'video')
+    )
+      return 'Missing or incompatible audio source.';
+    if (ids.has(segment.id)) return 'Conflicting occurrence identity.';
+    ids.add(segment.id);
+  }
   for (const v of [
     ...s.video1,
     ...s.video2,
@@ -102,9 +120,9 @@ export function validateRestoration(
     if (
       !r ||
       ('trim' in v
-        ? !['video1', 'video2'].includes(r.kind)
+        ? r.mediaType !== 'video'
         : 'sourceStartSample' in v
-          ? r.kind !== 'music'
+          ? r.mediaType !== 'audio'
           : r.kind !== 'pip')
     )
       return 'Missing or incompatible project source.';
@@ -124,5 +142,27 @@ export function validateRestoration(
     s.fpsSelection,
     sources.get(s.video1[0]?.sourceId)?.metadata?.fps,
   );
+  for (const occurrence of s.video1) {
+    const window = occurrence.outputWindow;
+    if (!window) continue;
+    const metadata = sources.get(occurrence.sourceId)?.metadata;
+    if (
+      !metadata ||
+      !occurrence.trim ||
+      !fps ||
+      !Number.isSafeInteger(window.outputInFrame) ||
+      !Number.isSafeInteger(window.outputOutFrame) ||
+      window.outputInFrame < 0 ||
+      window.outputOutFrame <= window.outputInFrame ||
+      window.outputOutFrame >
+        projectFrameCount(
+          occurrence.trim.endFrame - occurrence.trim.startFrame + 1,
+          metadata.fps,
+          occurrence.speed,
+          fps,
+        )
+    )
+      return 'Invalid normalized source window.';
+  }
   return validatePositioned(s, sources, fps ?? undefined);
 }

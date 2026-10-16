@@ -5,6 +5,92 @@ import { expect, it, vi } from 'vitest';
 import { buildTimeline } from '../lib/timeline';
 import { clip, overlays } from '../test/fixtures';
 import { EditingWorkspace } from './EditingWorkspace';
+import { advancedFixture } from '../test/historyFixtures';
+import { buildAdvancedTimeline } from '../lib/advancedTimeline';
+import type { IndependentAudioActions } from './IndependentAudioTrack';
+
+it('detach_shortcut_guards_typing_repeat_IME_modal_and_locks_and_context_menu_restores_focus', () => {
+  const f = advancedFixture(),
+    projection = buildAdvancedTimeline(f.snapshot, f.sources, {
+      image: null,
+      video: null,
+    }),
+    detach = vi.fn(() => true);
+  const audioActions: IndependentAudioActions = {
+    snapshot: f.snapshot,
+    sources: f.sources,
+    onEdit: () => false,
+    onSave: () => false,
+    onDetach: detach,
+    onReplaceFile: () => {},
+    onBegin: () => null,
+    onPreview: () => false,
+    onEnd: () => {},
+    onError: () => {},
+  };
+  const props = {
+    ...splitWorkspaceProps(projection.base.items.map((v) => v.clip)),
+    timeline: projection.base,
+    advanced: projection,
+    audioActions,
+  };
+  const view = render(<EditingWorkspace {...props} />);
+  const selected = screen.getByRole('button', {
+    name: 'Preview clip 1: base.mp4',
+  });
+  fireEvent.click(selected);
+  for (const modifiers of [
+    { repeat: true },
+    { isComposing: true },
+    { shiftKey: true },
+    { metaKey: true },
+  ]) {
+    const event = new KeyboardEvent('keydown', {
+      key: 'l',
+      ctrlKey: true,
+      altKey: true,
+      cancelable: true,
+      bubbles: true,
+      ...modifiers,
+    });
+    document.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+  }
+  const field = document.createElement('input');
+  document.body.append(field);
+  const typing = new KeyboardEvent('keydown', {
+    key: 'l',
+    ctrlKey: true,
+    altKey: true,
+    cancelable: true,
+    bubbles: true,
+  });
+  field.dispatchEvent(typing);
+  expect(typing.defaultPrevented).toBe(false);
+  field.remove();
+  const modal = document.createElement('div');
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  document.body.append(modal);
+  fireEvent.keyDown(document, { key: 'l', ctrlKey: true, altKey: true });
+  modal.remove();
+  view.rerender(<EditingWorkspace {...props} editingLocked />);
+  fireEvent.keyDown(document, { key: 'l', ctrlKey: true, altKey: true });
+  expect(detach).not.toHaveBeenCalled();
+  view.rerender(<EditingWorkspace {...props} />);
+  fireEvent.keyDown(selected, { key: 'F10', shiftKey: true });
+  expect(
+    screen.getByRole('menu', { name: 'Video clip actions' }),
+  ).toBeInTheDocument();
+  fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+  expect(screen.queryByRole('menu')).toBeNull();
+  expect(document.activeElement).toBe(selected);
+  fireEvent.keyDown(document, { key: 'l', ctrlKey: true, altKey: true });
+  expect(detach).toHaveBeenCalledExactlyOnceWith({
+    track: 'video1',
+    id: 'base',
+  });
+});
 
 const splitHelper =
   'Select a Video 1 clip, then click inside it to choose the cut point.';

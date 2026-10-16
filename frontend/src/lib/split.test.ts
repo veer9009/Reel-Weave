@@ -1,6 +1,31 @@
 import { expect, it } from 'vitest';
 import * as timeline from './timeline';
 import { clip } from '../test/fixtures';
+it('windowed_split_divides_exact_project_window_without_resurrecting_hidden_frames', () => {
+  const source = {
+    ...clip('fragment', 25),
+    outputWindow: { outputInFrame: 40, outputOutFrame: 60 },
+  };
+  const projection = timeline.buildTimeline([source], '25');
+  expect(timeline.planWindowedSplit(projection, 'fragment', 7)).toEqual({
+    value: {
+      leftWindow: { outputInFrame: 40, outputOutFrame: 47 },
+      rightWindow: { outputInFrame: 47, outputOutFrame: 60 },
+    },
+  });
+  expect(timeline.planWindowedSplit(projection, 'fragment', 19)).toEqual({
+    value: {
+      leftWindow: { outputInFrame: 40, outputOutFrame: 59 },
+      rightWindow: { outputInFrame: 59, outputOutFrame: 60 },
+    },
+  });
+  expect(timeline.planWindowedSplit(projection, 'fragment', 0)).toHaveProperty(
+    'error',
+  );
+  expect(timeline.planWindowedSplit(projection, 'fragment', 20)).toHaveProperty(
+    'error',
+  );
+});
 
 it('Split produces contiguous inclusive source ranges with no lost or duplicated frame', () => {
   expect(timeline.planClipSplit).toBeTypeOf('function');

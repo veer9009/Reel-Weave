@@ -1150,7 +1150,7 @@ describe('AVStudio', { timeout: 15000 }, () => {
     },
   );
   it(
-    'structural overlay edits pause the shared preview without changing schedules',
+    'structural overlay edits preserve preview intent without changing schedules',
     { timeout: 15000 },
     async () => {
       render(<App />);
@@ -1169,16 +1169,15 @@ describe('AVStudio', { timeout: 15000 }, () => {
         target: { value: '20' },
       });
       expect(
-        screen.getByRole('button', { name: 'Play preview' }),
+        screen.getByRole('button', { name: 'Pause preview' }),
       ).toBeVisible();
       expect(screen.getByLabelText('Image overlay end frame')).toHaveValue(20);
-      await user.click(screen.getByRole('button', { name: 'Play preview' }));
       await user.upload(
         screen.getByLabelText('Replace image overlay'),
         new File(['replacement'], 'new-logo.png', { type: 'image/png' }),
       );
       expect(
-        screen.getByRole('button', { name: 'Play preview' }),
+        screen.getByRole('button', { name: 'Pause preview' }),
       ).toBeVisible();
     },
   );

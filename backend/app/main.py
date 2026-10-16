@@ -31,6 +31,7 @@ from .jobs import (
     AdvancedMergePlan,
     AudioMixSettings,
     ClipEdit,
+    ExportState,
     Job,
     JobManager,
     JobRegistry,
@@ -38,6 +39,7 @@ from .jobs import (
     MergePlan,
     OverlaySettings,
     QueueIsFullError,
+    V3MergePlan,
 )
 from .media import InvalidMediaError, MediaPipeline
 from .storage import Storage, UnsafePathError
@@ -83,18 +85,38 @@ def _parse_overlay_settings(value: object, kind: str) -> OverlaySettings | None:
 
 def _parse_manifest(
     raw: object, file_count: int, max_clips: int = 10
-) -> MergePlan | AdvancedMergePlan:
+) -> MergePlan | AdvancedMergePlan | V3MergePlan:
     if not isinstance(raw, str):
         raise ApiError(422, "invalid_manifest", "A JSON edit manifest is required.")
+    duplicate_keys = False
+    saw_v3 = False
+
+    def collect_object(pairs):
+        nonlocal duplicate_keys, saw_v3
+        # JSON constructs the outer object last; only its version selects the contract.
+        saw_v3 = False
+        result = {}
+        for key, item in pairs:
+            duplicate_keys = duplicate_keys or key in result
+            saw_v3 = saw_v3 or (key == "schema_version" and type(item) is int and item == 3)
+            result[key] = item
+        return result
+
     try:
-        value = json.loads(raw)
+        value = json.loads(raw, object_pairs_hook=collect_object)
     except (json.JSONDecodeError, TypeError) as exc:
         raise ApiError(422, "invalid_manifest", "The edit manifest is not valid JSON.") from exc
     if not isinstance(value, dict) or not isinstance(value.get("clips"), list):
         raise ApiError(422, "invalid_manifest", "The edit manifest must include a clips array.")
     version = value.get("schema_version", 1)
-    if type(version) is not int or version not in (1, 2):
+    if saw_v3 and duplicate_keys:
+        raise ApiError(422, "invalid_manifest", "Duplicate manifest fields are invalid.")
+    if type(version) is not int or version not in (1, 2, 3):
         raise ApiError(422, "invalid_manifest", "Unsupported manifest schema version.")
+    if version == 3:
+        from .manifests import parse_v3_manifest
+
+        return parse_v3_manifest(value, file_count, max_clips)
     if version == 2:
         from .manifests import parse_advanced_manifest
 
@@ -220,6 +242,14 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        from .capabilities import probe_export_capabilities
+
+        try:
+            app.state.export_capabilities = await asyncio.to_thread(
+                probe_export_capabilities, config
+            )
+        except ApiError:
+            app.state.export_capabilities = dict.fromkeys(("mp4", "mov", "wav", "mp3"), False)
         await manager.start()
         try:
             yield
@@ -255,6 +285,7 @@ def create_app(
             "status": "ok",
             "ffmpeg_available": _tool_available(config.ffmpeg_path),
             "ffprobe_available": _tool_available(config.ffprobe_path),
+            "export_capabilities": app.state.export_capabilities,
             "limits": {
                 "max_file_size_mb": config.max_file_size_mb,
                 "max_clips": config.max_clips,
@@ -282,6 +313,11 @@ def create_app(
                             },
                             "manifest": {"type": "string"},
                             "background_audio": {"type": "string", "format": "binary"},
+                            "audio_files": {
+                                "type": "array",
+                                "maxItems": config.max_clips,
+                                "items": {"type": "string", "format": "binary"},
+                            },
                             "overlay_image": {"type": "string", "format": "binary"},
                             "overlay_video": {"type": "string", "format": "binary"},
                         },
@@ -292,7 +328,7 @@ def create_app(
     }
 
     @app.post("/api/merge", status_code=202, openapi_extra=merge_openapi)
-    async def create_merge(request: Request) -> dict[str, str | None]:
+    async def create_merge(request: Request) -> dict:
         form = None
         job_id: str | None = None
 
@@ -314,7 +350,7 @@ def create_app(
                 )
             try:
                 form = await request.form(
-                    max_files=config.max_clips + 3,
+                    max_files=2 * config.max_clips + 3,
                     max_fields=10,
                     max_part_size=64 * 1024,
                 )
@@ -323,6 +359,10 @@ def create_app(
                     413, "request_too_large", "The upload request is too large."
                 ) from exc
             except StarletteHTTPException as exc:
+                if "Part exceeded maximum size" in str(exc.detail):
+                    raise ApiError(
+                        422, "invalid_manifest", "Timeline description exceeds the render limit"
+                    ) from exc
                 raise ApiError(
                     400, "invalid_multipart", "The multipart upload is invalid."
                 ) from exc
@@ -343,7 +383,39 @@ def create_app(
                     "unsupported_media_type",
                     "Supported formats are MP4, MOV, WebM and MKV.",
                 )
-            merge_plan = _parse_manifest(form.get("manifest"), len(files), config.max_clips)
+            raw_manifest = form.get("manifest")
+            if isinstance(raw_manifest, str) and len(raw_manifest.encode("utf-8")) > 65536:
+                raise ApiError(
+                    422, "invalid_manifest", "Timeline description exceeds the render limit"
+                )
+            merge_plan = _parse_manifest(raw_manifest, len(files), config.max_clips)
+            audio_files = form.getlist("audio_files")
+            if isinstance(merge_plan, V3MergePlan):
+                if uses_builtin_pipeline:
+                    from .capabilities import require_export_capabilities
+
+                    require_export_capabilities(merge_plan.exports, app.state.export_capabilities)
+                if (
+                    form.getlist("background_audio")
+                    or len(audio_files) != len(merge_plan.audio_sources)
+                    or not all(isinstance(v, UploadFile) for v in audio_files)
+                ):
+                    raise ApiError(
+                        422,
+                        "invalid_audio_count",
+                        "Audio uploads must match the V3 catalog; background_audio is unavailable.",
+                    )
+                if any(
+                    Path(v.filename or "").suffix.lower() not in ALLOWED_AUDIO_EXTENSIONS
+                    for v in audio_files
+                ):
+                    raise ApiError(
+                        415,
+                        "unsupported_audio_type",
+                        "Supported audio formats are MP3, WAV, AAC and M4A.",
+                    )
+            elif audio_files:
+                raise ApiError(422, "invalid_audio_count", "audio_files requires Version 3.")
             background_audio_parts = form.getlist("background_audio")
             if len(background_audio_parts) > 1:
                 raise ApiError(
@@ -444,8 +516,12 @@ def create_app(
                 if size == 0:
                     raise ApiError(422, "empty_file", "Clips cannot be empty.")
                 catalog_paths.append(destination)
-            if isinstance(merge_plan, AdvancedMergePlan):
-                job.advanced_plan = merge_plan
+            if isinstance(merge_plan, (AdvancedMergePlan, V3MergePlan)):
+                if isinstance(merge_plan, V3MergePlan):
+                    job.v3_plan = merge_plan
+                    job.exports = {name: ExportState() for name in merge_plan.exports}
+                else:
+                    job.advanced_plan = merge_plan
                 job.video_source_paths = {
                     source.source_id: path
                     for source, path in zip(merge_plan.video_sources, catalog_paths, strict=True)
@@ -457,6 +533,27 @@ def create_app(
                 }
                 job.input_paths = [catalog[client_id][0] for client_id in merge_plan.order]
                 job.clip_edits = [catalog[client_id][1] for client_id in merge_plan.order]
+            external_audio_bytes = 0
+            for index, upload in enumerate(audio_files):
+                destination = (
+                    job.upload_dir
+                    / f"audio-{index:03d}{Path(upload.filename or '').suffix.lower()}"
+                )
+                size = 0
+                with destination.open("xb") as target:
+                    while chunk := await upload.read(1024 * 1024):
+                        size += len(chunk)
+                        external_audio_bytes += len(chunk)
+                        if external_audio_bytes > config.max_audio_file_size_bytes:
+                            raise ApiError(
+                                413,
+                                "audio_too_large",
+                                "Combined audio uploads exceed the audio file limit.",
+                            )
+                        target.write(chunk)
+                if not size:
+                    raise ApiError(422, "empty_audio", "Audio files cannot be empty.")
+                job.audio_source_paths[merge_plan.audio_sources[index].source_id] = destination
             if isinstance(background_audio, UploadFile) and audio_extension is not None:
                 destination = job.upload_dir / f"background{audio_extension}"
                 size = 0
@@ -533,14 +630,47 @@ def create_app(
                     await form.close()
 
     @app.get("/api/jobs/{job_id}")
-    async def get_job(job_id: str) -> dict[str, str | None]:
+    async def get_job(job_id: str) -> dict:
         return find_job(job_id).response()
 
     def completed_result(job_id: str) -> Job:
         job = find_job(job_id)
-        if job.status != "completed" or not job.result_path.is_file():
+        primary_ready = (
+            job.v3_plan is not None
+            and job.exports.get("mp4") is not None
+            and job.exports["mp4"].status == "ready"
+        )
+        if (not primary_ready and job.status != "completed") or not job.result_path.is_file():
             raise ApiError(409, "job_not_completed", "The merged video is not ready.")
         return job
+
+    @app.get("/api/jobs/{job_id}/exports/{format}")
+    async def download_export(job_id: str, format: str) -> FileResponse:
+        from .exports import _fixed_path
+
+        if format not in ("mp4", "mov", "wav", "mp3"):
+            raise ApiError(422, "unsupported_format", "Unknown export format.")
+        job = find_job(job_id)
+        state = job.exports.get(format)
+        if state is None:
+            raise ApiError(404, "export_not_found", "That export was not requested.")
+        if state.status == "failed":
+            raise ApiError(409, "export_failed", state.error or "The export failed.")
+        if state.status != "ready":
+            raise ApiError(409, "export_not_ready", "The requested export is not ready.")
+        try:
+            path = _fixed_path(job, format, staged=False)
+        except Exception as exc:
+            raise ApiError(404, "export_not_found", "The export is unavailable.") from exc
+        if state.path != path or not path.is_file():
+            raise ApiError(404, "export_not_found", "The export is unavailable.")
+        mime = {
+            "mp4": "video/mp4",
+            "mov": "video/quicktime",
+            "wav": "audio/wav",
+            "mp3": "audio/mpeg",
+        }[format]
+        return FileResponse(path, media_type=mime, filename=f"reelweave-merged.{format}")
 
     @app.get("/api/jobs/{job_id}/video")
     async def stream_video(job_id: str) -> FileResponse:

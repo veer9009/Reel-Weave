@@ -9,23 +9,39 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
 class ApiError(Exception):
-    def __init__(self, status_code: int, code: str, message: str) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        code: str,
+        message: str,
+        *,
+        track: str | None = None,
+        segment_id: str | None = None,
+        source_id: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
         self.message = message
+        self.details = {
+            k: v
+            for k, v in {"track": track, "segment_id": segment_id, "source_id": source_id}.items()
+            if v is not None
+        }
 
 
 class RequestBodyTooLarge(Exception):
     pass
 
 
-def error_payload(code: str, message: str) -> dict[str, dict[str, str]]:
-    return {"error": {"code": code, "message": message}}
+def error_payload(code: str, message: str, **details) -> dict[str, dict[str, str]]:
+    return {"error": {"code": code, "message": message, **details}}
 
 
 async def api_error_handler(_request: Request, exc: ApiError) -> JSONResponse:
-    return JSONResponse(content=error_payload(exc.code, exc.message), status_code=exc.status_code)
+    return JSONResponse(
+        content=error_payload(exc.code, exc.message, **exc.details), status_code=exc.status_code
+    )
 
 
 async def http_error_handler(_request: Request, exc: StarletteHTTPException) -> JSONResponse:

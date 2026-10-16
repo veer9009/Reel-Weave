@@ -9,6 +9,8 @@ export type Limits = {
   max_overlay_video_file_size_mb?: number;
 };
 export type ClipSpeed = 1 | 0.75 | 0.5;
+export type OriginalAudioMode = 'linked' | 'detached';
+export type OutputWindow = { outputInFrame: number; outputOutFrame: number };
 export const SUPPORTED_PROJECT_FPS = [24, 25, 30, 50, 60] as const;
 export type ProjectFps = (typeof SUPPORTED_PROJECT_FPS)[number];
 export type ProjectFpsSelection = 'auto' | `${ProjectFps}`;
@@ -22,6 +24,8 @@ export type ClipMetadata = {
 };
 export type ClipTrim = { startFrame: number; endFrame: number };
 export type Clip = {
+  outputWindow?: OutputWindow;
+  originalAudio?: OriginalAudioMode;
   id: string;
   file: File;
   url: string;

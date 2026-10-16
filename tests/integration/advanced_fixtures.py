@@ -65,6 +65,53 @@ def make_video(ffmpeg, path, color, frames=150, fps=25, tone=440):
     run_media(args)
 
 
+def make_marked_video(ffmpeg, path, frames, fps, phase=0):
+    """Lossless per-frame luminance markers, independent of final H.264 bytes."""
+    run_media(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-nostdin",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=black:s=160x90:r={fps}",
+            "-vf",
+            f"geq=lum='32+mod(N*17+{phase},180)':cb=128:cr=128",
+            "-frames:v",
+            str(frames),
+            "-an",
+            "-c:v",
+            "ffv1",
+            str(path),
+        ]
+    )
+
+
+def frame_markers(ffmpeg, path):
+    raw = run_media(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-i",
+            str(path),
+            "-map",
+            "0:v:0",
+            "-vf",
+            "scale=1:1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "pipe:1",
+        ]
+    )
+    return [tuple(raw[i : i + 3]) for i in range(0, len(raw), 3)]
+
+
 def probe(ffprobe, path):
     return json.loads(
         run_media(

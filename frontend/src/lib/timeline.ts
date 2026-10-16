@@ -5,11 +5,14 @@ import type {
   ClipTrim,
   ProjectFps,
   ProjectFpsSelection,
+  OutputWindow,
 } from './clips';
+import type { EditResult } from './positionedEdits';
 import { projectFrameCount } from './overlays';
 import type { OverlayKind } from './overlays';
 
 export type TimelineSelection =
+  | { kind: 'independent'; id: string }
   | { kind: 'replacement' | 'music'; id: string }
   | { kind: 'none' }
   | { kind: 'clip'; id: string }
@@ -28,6 +31,38 @@ export type TimelineProjection = {
   totalFrames: number;
   durationSeconds: number;
 };
+
+export function planWindowedSplit(
+  timeline: TimelineProjection,
+  targetId: string,
+  frame: number,
+): EditResult<{ leftWindow: OutputWindow; rightWindow: OutputWindow }> {
+  const item = timeline.items.find((v) => v.clip.id === targetId);
+  const window = item?.clip.outputWindow;
+  if (
+    timeline.status !== 'ready' ||
+    !item ||
+    !window ||
+    !Number.isSafeInteger(frame) ||
+    frame <= item.startFrame ||
+    frame > item.endFrame
+  )
+    return {
+      error: {
+        code: 'invalid_range',
+        message: 'Move the playhead strictly inside the visible clip window.',
+        lane: 'video1',
+        segmentId: targetId,
+      },
+    };
+  const cut = window.outputInFrame + frame - item.startFrame;
+  return {
+    value: {
+      leftWindow: { ...window, outputOutFrame: cut },
+      rightWindow: { ...window, outputInFrame: cut },
+    },
+  };
+}
 
 export function planClipSplit(
   timeline: TimelineProjection,
@@ -78,7 +113,14 @@ export function planVersionReplacement(
   targetId: string,
   version2: Clip,
   frame: number,
-): { leftTrim: ClipTrim; rightTrim: ClipTrim } | { error: string } {
+):
+  | {
+      leftTrim: ClipTrim;
+      rightTrim: ClipTrim;
+      leftWindow?: OutputWindow;
+      rightWindow?: OutputWindow;
+    }
+  | { error: string } {
   const item = timeline.items.find(({ clip }) => clip.id === targetId);
   if (version2.id === targetId)
     return {
@@ -106,6 +148,42 @@ export function planVersionReplacement(
     return { error: 'Choose another ready Video 1 source as Version 2.' };
   const target = item.clip;
   const sourceFps = target.metadata.fps;
+  if (target.outputWindow) {
+    const window = target.outputWindow;
+    const cut = window.outputInFrame + frame - item.startFrame + 1;
+    const startTime =
+      target.trim.startFrame / sourceFps + (cut / timeline.fps) * target.speed;
+    const endTime =
+      target.trim.startFrame / sourceFps +
+      (window.outputOutFrame / timeline.fps) * target.speed;
+    const donorFps = version2.metadata.fps;
+    const rightTrim = {
+      startFrame: Math.round(startTime * donorFps),
+      endFrame: Math.round(endTime * donorFps) - 1,
+    };
+    const required = window.outputOutFrame - cut;
+    if (
+      required < 1 ||
+      rightTrim.startFrame > rightTrim.endFrame ||
+      version2.metadata.totalFrames < Math.ceil(endTime * donorFps - 1e-9) ||
+      projectFrameCount(
+        rightTrim.endFrame - rightTrim.startFrame + 1,
+        donorFps,
+        target.speed,
+        timeline.fps,
+      ) < required
+    )
+      return {
+        error:
+          'Version 2 cannot represent the visible source range. Choose a matching longer source.',
+      };
+    return {
+      leftTrim: target.trim,
+      rightTrim,
+      leftWindow: { ...window, outputOutFrame: cut },
+      rightWindow: { outputInFrame: 0, outputOutFrame: required },
+    };
+  }
   const cutFrame =
     target.trim.startFrame +
     Math.floor(
@@ -156,14 +234,36 @@ export function buildTimeline(
   };
   if (!clips.length || fps === null || !clips.every(isEditableClip))
     return empty;
+  if (
+    clips.some((clip) => {
+      const window = clip.outputWindow;
+      const length = projectFrameCount(
+        clip.trim.endFrame - clip.trim.startFrame + 1,
+        clip.metadata.fps,
+        clip.speed,
+        fps,
+      );
+      return (
+        window &&
+        (!Number.isSafeInteger(window.outputInFrame) ||
+          !Number.isSafeInteger(window.outputOutFrame) ||
+          window.outputInFrame < 0 ||
+          window.outputOutFrame <= window.outputInFrame ||
+          window.outputOutFrame > length)
+      );
+    })
+  )
+    return empty;
   let totalFrames = 0;
   const items = clips.map((clip) => {
-    const frameCount = projectFrameCount(
-      clip.trim.endFrame - clip.trim.startFrame + 1,
-      clip.metadata.fps,
-      clip.speed,
-      fps,
-    );
+    const frameCount = clip.outputWindow
+      ? clip.outputWindow.outputOutFrame - clip.outputWindow.outputInFrame
+      : projectFrameCount(
+          clip.trim.endFrame - clip.trim.startFrame + 1,
+          clip.metadata.fps,
+          clip.speed,
+          fps,
+        );
     const startFrame = totalFrames;
     totalFrames += frameCount;
     return { clip, frameCount, startFrame, endFrame: totalFrames - 1 };

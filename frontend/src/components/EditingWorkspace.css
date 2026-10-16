@@ -66,6 +66,9 @@
   height: 100%;
   object-fit: contain;
 }
+.program-canvas > video[hidden] {
+  display: none;
+}
 .program-canvas > p {
   color: var(--muted);
   padding: 16px;

@@ -33,7 +33,7 @@ def build_music_graph(
         filters.append(
             f"[source{i}]atrim=start_sample={v.source_start_sample}:"
             f"end_sample={v.source_start_sample + length},asetpts=PTS-STARTPTS,"
-            f"apad,atrim=end_sample={length},"
+            f"apad=whole_len={length},atrim=end_sample={length},"
             f"adelay=delays={v.timeline_start_frame * k}S:all=1[music{i}]"
         )
         labels.append(f"[music{i}]")
@@ -60,3 +60,39 @@ def build_final_mix_graph(
     else:
         filters.append(f"[original]atrim=end_sample={total_samples},asetpts=PTS-STARTPTS[mixed]")
     return AudioGraph(";".join(filters), "[mixed]")
+
+
+def build_original_graph(
+    audio_slices, input_indexes, output_fps: int, total_frames: int
+) -> AudioGraph:
+    """Place the selected original bus once; silent intervals never reveal a lower owner."""
+    k = 48000 // output_fps
+    total = total_frames * k
+    filters = [
+        f"anullsrc=channel_layout=stereo:sample_rate=48000,atrim=end_sample={total},asetpts=PTS-STARTPTS[originalbed]"
+    ]
+    active = [v for v in audio_slices if v.source is not None]
+    grouped = {}
+    for i, v in enumerate(active):
+        grouped.setdefault(v.source, []).append(i)
+    for recipe, indexes in grouped.items():
+        filters.append(
+            f"[{input_indexes[recipe]}:a:0]asplit={len(indexes)}"
+            + "".join(f"[origsource{i}]" for i in indexes)
+        )
+    labels = ["[originalbed]"]
+    for i, v in enumerate(active):
+        length = (v.end_frame_exclusive - v.start_frame) * k
+        filters.append(
+            f"[origsource{i}]atrim=start_sample={v.source_start_sample}:"
+            f"end_sample={v.source_start_sample + length},"
+            f"asetpts=PTS-STARTPTS,apad=whole_len={length},atrim=end_sample={length},"
+            f"adelay=delays={v.start_frame * k}S:all=1[originalslice{i}]"
+        )
+        labels.append(f"[originalslice{i}]")
+    filters.append(
+        "".join(labels)
+        + f"amix=inputs={len(labels)}:duration=first:dropout_transition=0:normalize=0,"
+        f"atrim=end_sample={total},asetpts=PTS-STARTPTS[outoriginal]"
+    )
+    return AudioGraph(";".join(filters), "[outoriginal]")

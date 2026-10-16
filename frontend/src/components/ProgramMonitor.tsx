@@ -1,4 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { usePreviewMedia } from '../hooks/usePreviewMedia';
+import type { ProjectPlayback } from '../hooks/useProjectPlayback';
+import type { ProjectSources } from '../lib/projectSources';
 import type { TimelineProjection } from '../lib/timeline';
 import type { OverlayState } from '../lib/overlays';
 import type { AdvancedTimelineProjection } from '../lib/advancedTimeline';
@@ -6,6 +9,13 @@ import { resolveProgramFrame } from '../lib/advancedTimeline';
 import { formatTimestamp } from '../lib/clips';
 
 type Props = {
+  audioPreview?: {
+    status: string;
+    message: string | null;
+    resumeAudio: () => Promise<boolean>;
+  };
+  transport?: ProjectPlayback;
+  sources?: ProjectSources;
   timeline: TimelineProjection;
   projection?: AdvancedTimelineProjection;
   overlays: OverlayState;
@@ -21,8 +31,10 @@ export function ProgramMonitor({
   frame,
   playing,
   onToggle,
+  transport,
+  sources,
+  audioPreview,
 }: Props) {
-  const video = useRef<HTMLVideoElement>(null);
   const pip = useRef<HTMLVideoElement>(null);
   const [failedSource, setFailedSource] = useState<string | null>(null);
   const [eof, setEof] = useState<{
@@ -41,28 +53,36 @@ export function ProgramMonitor({
       (frame !== null && frame < eof.frame))
   )
     setEof(null);
+  const sourceFrame =
+    frame !== null && transport && timeline.fps
+      ? Math.min(
+          timeline.totalFrames - 1,
+          transport.captureAnchor().projectSeconds * timeline.fps,
+        )
+      : frame;
   const baseItem =
-    frame === null
+    sourceFrame === null
       ? undefined
       : timeline.items.find(
-          (item) => frame >= item.startFrame && frame <= item.endFrame,
+          (item) =>
+            sourceFrame >= item.startFrame && sourceFrame < item.endFrame + 1,
         );
   const current =
-    projection && frame !== null
-      ? resolveProgramFrame(projection, frame)
-      : baseItem && frame !== null && timeline.fps
+    projection && sourceFrame !== null
+      ? resolveProgramFrame(projection, sourceFrame)
+      : baseItem && sourceFrame !== null && timeline.fps
         ? {
             clip: baseItem.clip,
             track: 'video1' as const,
             sourceTime:
               baseItem.clip.trim.startFrame / baseItem.clip.metadata.fps +
-              ((frame - baseItem.startFrame) / timeline.fps) *
+              ((sourceFrame -
+                baseItem.startFrame +
+                (baseItem.clip.outputWindow?.outputInFrame ?? 0)) /
+                timeline.fps) *
                 baseItem.clip.speed,
           }
         : null;
-  const sourceTime = current?.sourceTime ?? 0;
-  const currentClip = current?.clip;
-  const currentTrack = current?.track;
   const mappingKey =
     current?.track === 'video2'
       ? JSON.stringify(projection?.video2.find((v) => v.id === current.clip.id))
@@ -107,29 +127,34 @@ export function ProgramMonitor({
     pipTime >= 0 &&
     pipTime < (overlays.video.duration ?? 0) &&
     !(eof?.url === overlays.video.url && frame !== null && frame >= eof.frame);
-  const syncSource = useCallback(() => {
-    const element = video.current;
-    if (!element || !currentClip) return;
-    if (Number.isFinite(element.duration)) {
-      if (currentTrack === 'video2' && sourceTime >= element.duration) {
-        element.pause();
+  const media = usePreviewMedia({
+    current: replacementUnavailable ? null : current,
+    projection,
+    frame,
+    projectSeconds:
+      sourceFrame !== null && timeline.fps
+        ? sourceFrame / timeline.fps
+        : undefined,
+    playing,
+    generation: transport?.generation,
+    positionRevision: transport?.positionRevision,
+    sources,
+    onPresented: transport?.observePicture,
+    onSuspend: transport?.suspend,
+    onReady: transport?.ready,
+    onFailure: () => {
+      if (!current) return;
+      if (current.track === 'video2')
         setReplacementFailure({
-          url: currentClip.url,
-          id: currentClip.id,
+          url: current.clip.url,
+          id: current.clip.id,
           frame: frame ?? 0,
           mapping: mappingKey,
         });
-        return;
-      }
-      if (!playing || Math.abs(element.currentTime - sourceTime) > 0.25)
-        element.currentTime = Math.min(sourceTime, element.duration);
-      element.playbackRate = currentClip.speed;
-    }
-    if (playing)
-      void element.play().catch(() => setFailedSource(currentClip.url));
-    else element.pause();
-  }, [currentClip, currentTrack, sourceTime, playing, mappingKey, frame]);
-  useEffect(() => syncSource(), [syncSource]);
+      else setFailedSource(current.clip.url);
+      transport?.fail();
+    },
+  });
   useEffect(() => {
     const element = pip.current;
     if (!element || !pipVisible) return;
@@ -139,54 +164,43 @@ export function ProgramMonitor({
     else element.pause();
   }, [pipTime, pipVisible, playing]);
   useEffect(() => {
-    const source = video.current;
     const overlay = pip.current;
     return () => {
-      source?.pause();
       overlay?.pause();
     };
-  }, [
-    current?.clip.url,
-    current?.clip.id,
-    mappingKey,
-    pipVisible,
-    overlays.video?.url,
-  ]);
+  }, [pipVisible, overlays.video?.url]);
   return (
     <section className="program-monitor panel" aria-label="Program preview">
       <h2>Program preview</h2>
+      {transport?.status === 'preparing' && (
+        <p role="status">Preparing Preview</p>
+      )}
+      {transport?.status === 'failed' && (
+        <p role="status">Picture preview stopped. Check the source media.</p>
+      )}
       <div className="program-canvas">
-        {current && !replacementUnavailable ? (
+        {media.slots.map((slot, index) => (
           <video
-            key={`${current.clip.id}:${mappingKey}`}
-            ref={video}
-            src={current.clip.url}
+            key={index}
+            ref={media.bind[index]}
+            src={slot.url}
             muted
             playsInline
-            preload="metadata"
-            aria-label="Uploaded clip preview"
-            onLoadedMetadata={syncSource}
-            onEnded={() => {
-              if (current.track === 'video2')
-                setReplacementFailure({
-                  url: current.clip.url,
-                  id: current.clip.id,
-                  frame: frame ?? 0,
-                  mapping: mappingKey,
-                });
-            }}
-            onError={() => {
-              if (current.track === 'video2')
-                setReplacementFailure({
-                  url: current.clip.url,
-                  id: current.clip.id,
-                  frame: frame ?? 0,
-                  mapping: mappingKey,
-                });
-              else setFailedSource(current.clip.url);
-            }}
+            preload="auto"
+            hidden={
+              !current ||
+              Boolean(replacementUnavailable) ||
+              media.active !== index
+            }
+            aria-label={
+              current && !replacementUnavailable && media.active === index
+                ? 'Uploaded clip preview'
+                : `Upcoming picture ${index + 1}`
+            }
+            {...media.events[index]}
           />
-        ) : (
+        ))}
+        {(!current || replacementUnavailable) && (
           <p>
             {replacementUnavailable
               ? 'Replacement preview is unavailable at source EOF or after a decode error. Re-trim or replace this take.'
@@ -238,7 +252,11 @@ export function ProgramMonitor({
           type="button"
           onClick={onToggle}
           disabled={frame === null}
-          aria-label={playing ? 'Pause preview' : 'Play preview'}
+          aria-label={
+            transport?.playingIntent || playing
+              ? 'Pause preview'
+              : 'Play preview'
+          }
         >
           {playing ? 'Pause' : 'Play'}
         </button>
@@ -248,7 +266,23 @@ export function ProgramMonitor({
             : 'No current frame'}
         </output>
       </div>
-      <p className="preview-note">Silent browser preview · approximate</p>
+      <p className="preview-note">
+        {audioPreview
+          ? audioPreview.status === 'ready'
+            ? 'Browser picture and sound preview · approximate'
+            : (audioPreview.message ?? 'Preparing sound preview')
+          : 'Browser picture preview · approximate'}
+      </p>
+      {(audioPreview?.status === 'resume-required' ||
+        audioPreview?.status === 'unsupported' ||
+        audioPreview?.status === 'failed') && (
+        <div role="status">
+          <p>{audioPreview.message}</p>
+          <button type="button" onClick={onToggle}>
+            Resume Audio
+          </button>
+        </div>
+      )}
     </section>
   );
 }

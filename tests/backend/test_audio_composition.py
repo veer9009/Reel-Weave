@@ -25,3 +25,19 @@ def test_music_outside_export_is_silent_and_gain_applies_once():
     mix = build_final_mix_graph(1, 2, AudioMixSettings(1, True, 0.3, False), 288000)
     assert "volume=0[" in mix.filter_complex
     assert mix.filter_complex.count("volume=0.3") == 1
+
+
+def test_original_graph_independent_sample_offsets_and_exact_bed():
+    from backend.app.audio_composition import build_original_graph
+    from backend.app.jobs import AudioFileRecipe
+    from backend.app.render_plan import ResolvedAudioSlice
+
+    recipe = AudioFileRecipe("voice")
+    graph = build_original_graph(
+        (ResolvedAudioSlice(100, 150, recipe, 192000, "sound"),), {recipe: 0}, 25, 150
+    )
+    assert "start_sample=192000:end_sample=288000" in graph.filter_complex
+    assert "adelay=delays=192000S" in graph.filter_complex
+    assert "end_sample=288000" in graph.filter_complex
+    assert "normalize=0" in graph.filter_complex
+    assert "aloop" not in graph.filter_complex

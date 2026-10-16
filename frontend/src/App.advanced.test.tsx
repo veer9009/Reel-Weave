@@ -17,6 +17,7 @@ beforeEach(() =>
           JSON.stringify({
             ffmpeg_available: true,
             ffprobe_available: true,
+            export_capabilities: { mp4: true, mov: true, wav: true, mp3: true },
             limits: {
               max_clips: 10,
               max_file_size_mb: 200,
@@ -49,6 +50,57 @@ async function readyBase() {
     target: { value: '25' },
   });
 }
+it('detached_v3_submission_freezes_formats_and_New_Project_restores_defaults', async () => {
+  await readyBase();
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Preview clip 1: base.mp4' }),
+  );
+  fireEvent.keyDown(document, { key: 'l', ctrlKey: true, altKey: true });
+  fireEvent.click(screen.getByLabelText('WAV'));
+  fireEvent.click(screen.getByLabelText('MP3'));
+  let body: FormData | undefined,
+    resolve: (response: Response) => void = () => {};
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (_input, init) => {
+      body = init.body;
+      return new Promise<Response>((done) => {
+        resolve = done;
+      });
+    }),
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Render MP4' }));
+  await waitFor(() => expect(body).toBeDefined());
+  const manifest = JSON.parse(body!.get('manifest') as string);
+  expect(manifest.schema_version).toBe(3);
+  expect(manifest.exports).toEqual(['mp4', 'wav', 'mp3']);
+  expect(manifest.clips[0].original_audio).toBe('detached');
+  expect(manifest.independent_audio).toHaveLength(1);
+  expect(body!.getAll('files')).toHaveLength(1);
+  expect(body!.has('background_audio')).toBe(false);
+  expect(screen.getByLabelText('WAV')).toBeDisabled();
+  resolve(
+    new Response(
+      JSON.stringify({
+        job_id: 'v3',
+        status: 'completed',
+        error: null,
+        exports: {
+          mp4: { status: 'ready', error: null },
+          wav: { status: 'ready', error: null },
+          mp3: { status: 'failed', error: 'MP3 encoding failed.' },
+        },
+      }),
+    ),
+  );
+  await screen.findByRole('link', { name: 'Download WAV' });
+  expect(screen.getByText(/MP3 encoding failed/)).toBeVisible();
+  expect(screen.queryByRole('link', { name: 'Download MP3' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'New project' }));
+  expect(screen.getByLabelText('WAV')).not.toBeChecked();
+  expect(screen.getByLabelText('MP3')).not.toBeChecked();
+  expect(screen.getByRole('button', { name: 'Render MP4' })).toBeDisabled();
+}, 30000);
 it('replacement_pointer_move_commits_through_history_and_undo_restores_position', async () => {
   await readyBase();
   vi.stubGlobal('PointerEvent', MouseEvent);

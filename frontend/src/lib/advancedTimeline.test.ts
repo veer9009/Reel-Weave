@@ -9,6 +9,23 @@ import {
 } from './editHistory';
 
 const overlays = { image: null, video: null };
+it('windowed_base_maps_output_offset_without_revealing_hidden_frames', () => {
+  const f = advancedFixture();
+  const snapshot = {
+    ...f.snapshot,
+    video2: [],
+    video1: [
+      {
+        ...f.snapshot.video1[0],
+        outputWindow: { outputInFrame: 100, outputOutFrame: 150 },
+      },
+    ],
+  };
+  const projection = buildAdvancedTimeline(snapshot, f.sources, overlays);
+  expect(projection.base.totalFrames).toBe(50);
+  expect(resolveProgramFrame(projection, 0)?.sourceTime).toBe(4);
+  expect(resolveProgramFrame(projection, 49)?.sourceTime).toBe(149 / 25);
+});
 it('replacement_owns_start_and_excludes_end', () => {
   const f = advancedFixture();
   const p = buildAdvancedTimeline(f.snapshot, f.sources, overlays);

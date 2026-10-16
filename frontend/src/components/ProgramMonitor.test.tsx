@@ -18,6 +18,40 @@ beforeEach(() => {
   vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
   vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
 });
+it('same_source_split_retains_element_and_does_not_pause_or_seek', () => {
+  const a = clip(),
+    p = {
+      ...props,
+      overlays: { image: null, video: null },
+      timeline: buildTimeline([a], '25'),
+      frame: 19,
+      playing: true,
+    };
+  const view = render(<ProgramMonitor {...p} />);
+  const video = screen.getByLabelText(
+    'Uploaded clip preview',
+  ) as HTMLVideoElement;
+  Object.defineProperty(video, 'duration', { value: 2, configurable: true });
+  video.currentTime = 19 / 25;
+  fireEvent.loadedMetadata(video);
+  vi.mocked(HTMLMediaElement.prototype.pause).mockClear();
+  const time = vi.spyOn(video, 'currentTime', 'set');
+  view.rerender(
+    <ProgramMonitor
+      {...p}
+      timeline={buildTimeline(
+        [
+          { ...a, id: 'left', trim: { startFrame: 0, endFrame: 19 } },
+          { ...a, id: 'right', trim: { startFrame: 20, endFrame: 59 } },
+        ],
+        '25',
+      )}
+    />,
+  );
+  expect(screen.getByLabelText('Uploaded clip preview')).toBe(video);
+  expect(HTMLMediaElement.prototype.pause).not.toHaveBeenCalled();
+  expect(time).not.toHaveBeenCalled();
+});
 it('preview_switches_at_40_and_returns_at_100', () => {
   vi.spyOn(URL, 'createObjectURL').mockImplementation(
     (blob) => `blob:${(blob as File).name}`,

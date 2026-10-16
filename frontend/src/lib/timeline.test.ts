@@ -22,6 +22,37 @@ export function readyClip(id = 'a', fps = 30, speed: 1 | 0.5 | 0.75 = 1): Clip {
   };
 }
 describe('real timeline projection', () => {
+  it('windowed_base_keeps_visible_normalized_offset_and_duration', () => {
+    const base = readyClip('window', 25);
+    const source = {
+      ...base,
+      metadata: { ...base.metadata!, totalFrames: 60, duration: 2.4 },
+      trim: { startFrame: 0, endFrame: 59 },
+      outputWindow: { outputInFrame: 40, outputOutFrame: 60 },
+    };
+    expect(buildTimeline([source], '25').totalFrames).toBe(20);
+  });
+  it.each([
+    [0, 0],
+    [-1, 20],
+    [20, 31],
+    [0.5, 20],
+  ])(
+    'invalid normalized window %s..%s cannot create timing',
+    (outputInFrame, outputOutFrame) => {
+      expect(
+        buildTimeline(
+          [
+            {
+              ...readyClip('bad', 25),
+              outputWindow: { outputInFrame, outputOutFrame },
+            },
+          ],
+          '25',
+        ).status,
+      ).toBe('unavailable');
+    },
+  );
   it('empty_has_no_sample_timing', () => {
     expect(buildTimeline([], 'auto')).toEqual({
       status: 'empty',

@@ -4,6 +4,7 @@ import { act } from '@testing-library/react';
 import App from './App';
 import type { MergeManifest } from './lib/clips';
 import type { AdvancedMergeManifest } from './lib/advancedManifest';
+import * as sourceModule from './lib/projectSources';
 let submitted: FormData | null;
 let maxClips = 20;
 beforeEach(() => {
@@ -53,6 +54,139 @@ const undo = () =>
 const redo = () =>
   fireEvent.click(screen.getByRole('button', { name: 'Redo' }));
 describe('App edit history', { timeout: 30000 }, () => {
+  it('detach_shortcut_focuses_audio_and_delete_lifts_without_touching_picture_or_ctrl_L', async () => {
+    render(<App />);
+    await ready(['a.mp4']);
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Preview clip 1: a.mp4' }),
+    );
+    const location = new KeyboardEvent('keydown', {
+      key: 'l',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    document.dispatchEvent(location);
+    expect(location.defaultPrevented).toBe(false);
+    fireEvent.keyDown(document, { key: 'l', ctrlKey: true, altKey: true });
+    const detached = screen.getByRole('button', {
+      name: /Original\/Replacement Audio.*a.mp4.*Detached/,
+    });
+    expect(document.activeElement).toBe(detached);
+    fireEvent.keyDown(detached, { key: 'Delete' });
+    expect(
+      screen.queryByRole('button', {
+        name: /Original\/Replacement Audio.*a.mp4.*Detached/,
+      }),
+    ).toBeNull();
+    expect(document.querySelectorAll('.clip-item')).toHaveLength(1);
+    expect(document.activeElement).toBe(
+      screen.getByRole('heading', { name: 'Original/Replacement Audio' }),
+    );
+    undo();
+    expect(
+      screen.getByRole('button', {
+        name: /Original\/Replacement Audio.*a.mp4.*Detached/,
+      }),
+    ).toBeInTheDocument();
+    undo();
+    expect(
+      screen.getByRole('button', { name: 'Original audio: a.mp4' }),
+    ).toBeInTheDocument();
+  });
+  it('bin_import_and_keyboard_overwrite_are_separate_atomic_undo_actions', async () => {
+    render(<App />);
+    await ready(['a.mp4']);
+    fireEvent.change(screen.getByLabelText('Import video to bin'), {
+      target: {
+        files: [new File(['video'], 'take.mp4', { type: 'video/mp4' })],
+      },
+    });
+    const probe = screen.getByLabelText('Loading bin video candidate');
+    Object.defineProperties(probe, {
+      duration: { configurable: true, value: 1 },
+      videoWidth: { configurable: true, value: 1280 },
+      videoHeight: { configurable: true, value: 720 },
+    });
+    fireEvent.loadedMetadata(probe);
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Place take.mp4 on track' }),
+      ).toBeEnabled(),
+    );
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Place take.mp4 on track' }),
+    );
+    fireEvent.change(screen.getByLabelText('Placement start frame'), {
+      target: { value: '10' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Place media' }));
+    expect(document.querySelectorAll('.clip-item')).toHaveLength(3);
+    undo();
+    expect(document.querySelectorAll('.clip-item')).toHaveLength(1);
+    expect(
+      screen.getByRole('button', { name: 'Place take.mp4 on track' }),
+    ).toBeEnabled();
+    undo();
+    expect(
+      screen.queryByRole('button', { name: 'Place take.mp4 on track' }),
+    ).toBeNull();
+    redo();
+    redo();
+    expect(document.querySelectorAll('.clip-item')).toHaveLength(3);
+  });
+  it('upload_holds_source_lease_and_aborts_before_session_URL_release', async () => {
+    const realFactory = sourceModule.createProjectSources;
+    const registries: sourceModule.ProjectSources[] = [];
+    vi.spyOn(sourceModule, 'createProjectSources').mockImplementation(() => {
+      const sources = realFactory();
+      registries.push(sources);
+      return sources;
+    });
+    const fallback = globalThis.fetch;
+    let uploadSignal: AbortSignal | undefined;
+    let body: FormData | undefined;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith('/api/merge')) {
+          uploadSignal = init?.signal as AbortSignal;
+          body = init?.body as FormData;
+          return new Promise<Response>((_resolve, reject) =>
+            uploadSignal!.addEventListener(
+              'abort',
+              () => reject(new DOMException('Aborted', 'AbortError')),
+              { once: true },
+            ),
+          );
+        }
+        return fallback(input, init);
+      }),
+    );
+    const view = render(<App />);
+    await ready(['a.mp4']);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Render MP4' })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Render MP4' }));
+    const manifest = JSON.parse(
+      body!.get('manifest') as string,
+    ) as AdvancedMergeManifest;
+    const sources = registries[0],
+      id = manifest.video_sources[0].source_id;
+    const url = sources.get(id)?.url;
+    sources.reconcileUrls(new Set());
+    const heldDuringUpload = Boolean(url) && sources.get(id)?.url === url;
+    const abortedBeforeRelease: boolean[] = [];
+    sources.onBeforeClear(() =>
+      abortedBeforeRelease.push(uploadSignal!.aborted),
+    );
+    view.unmount();
+    expect({ heldDuringUpload, abortedBeforeRelease }).toEqual({
+      heldDuringUpload: true,
+      abortedBeforeRelease: [true],
+    });
+  });
   it('music_source_addition_is_undoable_and_redo_restores_File', async () => {
     render(<App />);
     await ready(['a.mp4']);

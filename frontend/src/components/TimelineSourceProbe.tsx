@@ -12,17 +12,21 @@ export function TimelineSourceProbe({
   token: SourceToken;
   file: File;
   url: string;
-  track: PositionedTrack;
+  track: PositionedTrack | 'bin-video' | 'bin-audio';
   onReady: (token: SourceToken, metadata: SourceMetadata) => void;
   onError: (token: SourceToken) => void;
 }) {
-  if (track === 'music')
+  if (track === 'music' || track === 'bin-audio')
     return (
       <audio
         title={file.name}
         src={url}
         preload="metadata"
-        aria-label="Loading music candidate"
+        aria-label={
+          track === 'music'
+            ? 'Loading music candidate'
+            : 'Loading bin audio candidate'
+        }
         onLoadedMetadata={(event) => {
           const duration = event.currentTarget.duration;
           if (Number.isFinite(duration) && duration > 0)
@@ -44,7 +48,11 @@ export function TimelineSourceProbe({
       playsInline
       preload="metadata"
       style={{ display: 'none' }}
-      aria-label="Loading replacement candidate"
+      aria-label={
+        track === 'video2'
+          ? 'Loading replacement candidate'
+          : 'Loading bin video candidate'
+      }
       onLoadedMetadata={(event) => {
         const video = event.currentTarget,
           duration = video.duration,

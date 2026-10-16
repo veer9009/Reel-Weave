@@ -294,6 +294,46 @@
 .positioned-editor {
   overflow-wrap: anywhere;
 }
+.media-bin-source {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  margin-block: 8px;
+  border: 1px solid #435066;
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+}
+.media-bin-source strong {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+.media-bin input {
+  max-width: 100%;
+}
+.media-bin-source button {
+  min-height: 44px;
+}
+.clip-context-menu {
+  position: fixed;
+  z-index: 60;
+  width: 220px;
+  padding: 10px;
+}
+.clip-context-menu button {
+  display: block;
+  min-height: 44px;
+  width: 100%;
+}
+.independent-audio-card .audio-block {
+  height: 100%;
+}
+.position-ghost {
+  pointer-events: none;
+  max-width: min(320px, 80vw);
+  white-space: normal;
+}
 .positioned-editor fieldset {
   min-width: 0;
   margin-top: 12px;

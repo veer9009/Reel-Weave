@@ -11,6 +11,121 @@ const options = () => ({
   onError: vi.fn(),
   onAnnouncement: vi.fn(),
 });
+it.each([false, true])(
+  'a_new_Auto_base_preflights_audio_only_history_before_rebasing_%s',
+  (collapse) => {
+    const o = options(),
+      h = renderHook(() => useEditHistory(o));
+    act(() => h.result.current.importVideo1([new File(['old'], 'old.mp4')]));
+    const occurrence = h.result.current.view.video1[0],
+      token = h.result.current.sources.get(occurrence.sourceId)!.token;
+    act(() =>
+      h.result.current.sourceReady(token, {
+        clipMetadata: {
+          ...clip().metadata!,
+          fps: collapse ? 60 : 30,
+          totalFrames: 60,
+          duration: collapse ? 1 : 2,
+        },
+      }),
+    );
+    act(() =>
+      expect(
+        h.result.current.commitDetach({ track: 'video1', id: occurrence.id }),
+      ).toBe(true),
+    );
+    if (collapse)
+      act(() =>
+        expect(
+          h.result.current.commitAudioEdit({
+            action: 'trim',
+            id: h.result.current.view.independentAudio[0].id,
+            edge: 'end',
+            deltaFrames: -59,
+          }),
+        ).toBe(true),
+      );
+    act(() =>
+      expect(
+        h.result.current.commitVideo1('ripple-delete', 'Remove picture', []),
+      ).toBe(true),
+    );
+    const before = h.result.current.history,
+      frozen = h.result.current.view.independentAudio[0].source;
+    act(() => h.result.current.importVideo1([new File(['next'], 'next.mp4')]));
+    expect(h.result.current.view.video1).toEqual([]);
+    const pending = h.result.current.pendingImports[0];
+    act(() =>
+      h.result.current.sourceReady(pending, {
+        clipMetadata: {
+          ...clip().metadata!,
+          fps: collapse ? 24 : 60,
+          totalFrames: 120,
+          duration: collapse ? 5 : 2,
+        },
+      }),
+    );
+    if (collapse) {
+      expect(h.result.current.history).toBe(before);
+      expect(h.result.current.view.independentAudio[0].durationFrames).toBe(1);
+      expect(o.onError).toHaveBeenCalled();
+    } else {
+      expect(h.result.current.view.independentAudio[0].durationFrames).toBe(
+        120,
+      );
+      expect(h.result.current.view.independentAudio[0].source).toEqual(frozen);
+      expect(h.result.current.view.independentAudio[0].sourceStartSample).toBe(
+        0,
+      );
+    }
+    expect(h.result.current.pendingImports).toEqual([]);
+  },
+);
+it('successful_edits_emit_live_transient_transport_and_rejected_or_noop_edits_emit_nothing', () => {
+  const h = setup(),
+    capture = vi.fn(() => ({
+      frame: 12,
+      projectSeconds: 0.4,
+      playingIntent: true,
+      occurrenceId: h.id,
+      sourceId: h.token.sourceId,
+      sourceTime: 0.4,
+    })),
+    apply = vi.fn(),
+    cancel = vi.fn();
+  act(() => h.result.current.bindTransport({ capture, apply, cancel }));
+  act(() =>
+    h.result.current.commitPlacement({
+      token: h.token,
+      track: 'video1',
+      timelineStartFrame: 10,
+      trim: { startFrame: 0, endFrame: 9 },
+    }),
+  );
+  expect(capture).toHaveBeenCalledOnce();
+  expect(apply).toHaveBeenCalledWith(
+    expect.objectContaining({ frame: 12 }),
+    expect.objectContaining({
+      action: 'overwrite',
+      before: expect.anything(),
+      after: expect.anything(),
+    }),
+  );
+  act(() =>
+    h.result.current.commitAudioEdit({ action: 'lift', id: 'missing' }),
+  );
+  expect(apply).toHaveBeenCalledTimes(1);
+  act(() => h.result.current.controls.undo());
+  expect(apply).toHaveBeenLastCalledWith(
+    expect.anything(),
+    expect.objectContaining({ action: 'undo' }),
+  );
+  act(() => h.result.current.clearProject());
+  expect(cancel).toHaveBeenCalledOnce();
+  expect(JSON.stringify(h.result.current.history)).not.toContain(
+    'playingIntent',
+  );
+});
 it('auto_fps_reorder_converts_short_music_before_source_EOF_validation', () => {
   const h = setup();
   act(() =>
@@ -76,6 +191,186 @@ function setup() {
   );
   return { ...hook, o, token, id: occurrence.id };
 }
+it('external_drop_is_one_action_and_metadata_conflicts_preserve_redo_and_release_candidate', () => {
+  const h = setup();
+  let token: ReturnType<typeof h.result.current.importToBin> = null;
+  act(() => {
+    token = h.result.current.importToBin(
+      new File(['take'], 'take.mp4'),
+      'video',
+      { track: 'video2', timelineStartFrame: 0 },
+    );
+  });
+  act(() =>
+    h.result.current.commitPlacement({
+      token: h.token,
+      track: 'video2',
+      timelineStartFrame: 0,
+      trim: { startFrame: 0, endFrame: 29 },
+    }),
+  );
+  const before = h.result.current.history;
+  act(() =>
+    h.result.current.sourceReady(token!, {
+      clipMetadata: { ...clip().metadata!, totalFrames: 30, duration: 1 },
+    }),
+  );
+  expect(h.result.current.history).toBe(before);
+  expect(h.result.current.pendingBinImports).toEqual([]);
+  expect(h.result.current.sources.get(token!.sourceId)?.url).toBeUndefined();
+  expect(h.o.onError).toHaveBeenCalledWith(
+    'This range overlaps another clip on Video 2. Move it to a free range.',
+  );
+});
+it('bin_readiness_during_a_trim_waits_until_the_draft_closes', () => {
+  const h = setup();
+  let token: ReturnType<typeof h.result.current.importToBin> = null;
+  act(() => {
+    token = h.result.current.importToBin(
+      new File(['take'], 'take.mp4'),
+      'video',
+    );
+  });
+  h.rerender({ ...h.o, trimDraftOpen: true });
+  act(() =>
+    h.result.current.sourceReady(token!, { clipMetadata: clip().metadata }),
+  );
+  expect(h.result.current.view.binSourceIds).toEqual([]);
+  h.rerender(h.o);
+  expect(h.result.current.view.binSourceIds).toEqual([token!.sourceId]);
+  expect(h.result.current.history.past).toHaveLength(1);
+});
+it('bin_import_remove_are_undoable_and_pending_readiness_cannot_commit_to_a_new_session', () => {
+  const h = setup();
+  let token: ReturnType<typeof h.result.current.importToBin> = null;
+  act(() => {
+    token = h.result.current.importToBin(new File(['bin'], 'bin.mp4'), 'video');
+  });
+  expect(h.result.current.view.binSourceIds).toEqual([]);
+  act(() =>
+    h.result.current.sourceReady(token!, { clipMetadata: clip().metadata }),
+  );
+  expect(h.result.current.view.binSourceIds).toEqual([token!.sourceId]);
+  expect(h.result.current.history.past).toHaveLength(1);
+  act(() => h.result.current.removeBinSource(token!.sourceId));
+  expect(h.result.current.view.video1).toHaveLength(1);
+  act(() => h.result.current.controls.undo());
+  expect(h.result.current.view.binSourceIds).toEqual([token!.sourceId]);
+  let pending: ReturnType<typeof h.result.current.importToBin> = null;
+  act(() => {
+    pending = h.result.current.importToBin(
+      new File(['old'], 'old.mp4'),
+      'video',
+    );
+  });
+  act(() => h.result.current.clearProject());
+  act(() =>
+    expect(
+      h.result.current.sourceReady(pending!, { clipMetadata: clip().metadata }),
+    ).toBe(false),
+  );
+  expect(h.result.current.view.binSourceIds).toEqual([]);
+});
+it('detach_and_audio_edit_each_commit_once_undo_restores_mode_and_failed_edits_keep_redo', () => {
+  const h = setup();
+  act(() =>
+    expect(h.result.current.commitDetach({ track: 'video1', id: h.id })).toBe(
+      true,
+    ),
+  );
+  const segment = h.result.current.view.independentAudio[0];
+  expect(h.result.current.history.past).toHaveLength(1);
+  expect(h.result.current.view.video1[0].originalAudio).toBe('detached');
+  act(() =>
+    h.result.current.commitAudioEdit({
+      action: 'move',
+      id: segment.id,
+      startFrame: 5,
+    }),
+  );
+  expect(h.result.current.history.past).toHaveLength(2);
+  act(() => h.result.current.controls.undo());
+  const future = h.result.current.history.future;
+  act(() =>
+    expect(
+      h.result.current.commitAudioEdit({
+        action: 'move',
+        id: segment.id,
+        startFrame: -1,
+      }),
+    ).toBe(false),
+  );
+  act(() =>
+    expect(
+      h.result.current.commitAudioEdit({
+        action: 'move',
+        id: segment.id,
+        startFrame: 0,
+      }),
+    ).toBe(false),
+  );
+  expect(h.result.current.history.future).toBe(future);
+  act(() => h.result.current.controls.undo());
+  expect(h.result.current.view.video1[0].originalAudio).toBe('linked');
+  expect(h.result.current.view.independentAudio).toEqual([]);
+});
+it('placement_overwrite_is_one_history_action_and_uses_current_source_token', () => {
+  const h = setup();
+  act(() =>
+    expect(
+      h.result.current.commitPlacement({
+        token: h.token,
+        track: 'video1',
+        timelineStartFrame: 10,
+        trim: { startFrame: 0, endFrame: 9 },
+      }),
+    ).toBe(true),
+  );
+  expect(h.result.current.view.video1).toHaveLength(3);
+  expect(h.result.current.history.past).toHaveLength(1);
+  act(() => h.result.current.controls.undo());
+  expect(h.result.current.view.video1).toHaveLength(1);
+  const future = h.result.current.history.future;
+  act(() =>
+    expect(
+      h.result.current.commitPlacement({
+        token: { ...h.token, session: h.token.session + 1 },
+        track: 'video1',
+        timelineStartFrame: 0,
+      }),
+    ).toBe(false),
+  );
+  expect(h.result.current.history.future).toBe(future);
+});
+it('independent_audio_gesture_commits_once_and_lock_cancels_the_draft', () => {
+  const h = setup();
+  act(() => h.result.current.commitDetach({ track: 'video1', id: h.id }));
+  const segment = h.result.current.view.independentAudio[0];
+  let token: string | null = null;
+  act(() => {
+    token = h.result.current.begin('independent-move', segment.id);
+  });
+  act(() =>
+    h.result.current.preview(token!, {
+      ...h.result.current.view,
+      independentAudio: [{ ...segment, timelineStartFrame: 5 }],
+    }),
+  );
+  act(() =>
+    h.result.current.preview(token!, {
+      ...h.result.current.view,
+      independentAudio: [{ ...segment, timelineStartFrame: 8 }],
+    }),
+  );
+  act(() => expect(h.result.current.finish(token!, true)).toBe(true));
+  expect(h.result.current.history.past).toHaveLength(2);
+  act(() => {
+    token = h.result.current.begin('independent-move', segment.id);
+  });
+  h.rerender({ ...h.o, editingLocked: true });
+  act(() => expect(h.result.current.finish(token!, true)).toBe(false));
+  expect(h.result.current.view.independentAudio[0].timelineStartFrame).toBe(8);
+});
 it('removed_song_restores_same_File_and_valid_URL', () => {
   const h = setup(),
     file = new File(['audio'], 'song.wav');
@@ -101,7 +396,7 @@ it('removed_song_restores_same_File_and_valid_URL', () => {
     'music',
     'song',
   );
-  if ('error' in deleted) throw new Error(deleted.error);
+  if ('error' in deleted) throw new Error(deleted.error.message);
   act(() =>
     h.result.current.commit(
       'music-ripple-delete',

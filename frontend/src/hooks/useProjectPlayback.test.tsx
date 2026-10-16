@@ -11,6 +11,19 @@ const ready: TimelineProjection = {
   items: [],
 };
 describe('shared project playback', () => {
+  it('registering_an_already_pending_readiness_token_does_not_publish_another_render', () => {
+    const renders = vi.fn();
+    const { result } = renderHook(() => {
+      renders();
+      return useProjectPlayback(ready, 0);
+    });
+    act(() => result.current.toggle());
+    act(() => result.current.suspend(7));
+    const count = renders.mock.calls.length;
+    act(() => result.current.suspend(7));
+    expect(renders).toHaveBeenCalledTimes(count);
+    expect(result.current.status).toBe('preparing');
+  });
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
   it('empty_transport_disabled', () => {
@@ -20,6 +33,51 @@ describe('shared project playback', () => {
     act(() => result.current.toggle());
     expect(result.current.frame).toBeNull();
     expect(result.current.playing).toBe(false);
+  });
+  it('real_presented_picture_frames_anchor_the_monotonic_clock_without_restoring_paused_intent', () => {
+    const { result } = renderHook(() => useProjectPlayback(ready, 0));
+    act(() => result.current.toggle());
+    act(() => vi.advanceTimersByTime(100));
+    act(() => result.current.observePicture(0.02, performance.now()));
+    expect(result.current.captureAnchor().projectSeconds).toBeCloseTo(0.02, 4);
+    act(() => vi.advanceTimersByTime(20));
+    expect(result.current.captureAnchor().projectSeconds).toBeCloseTo(0.04, 4);
+    act(() => result.current.pause());
+    const frame = result.current.frame;
+    act(() => result.current.observePicture(0.8, performance.now()));
+    expect(result.current.frame).toBe(frame);
+    expect(result.current.playing).toBe(false);
+  });
+  it('picture_and_sound_readiness_both_gate_the_shared_clock', () => {
+    const { result } = renderHook(() => useProjectPlayback(ready, 0));
+    act(() => result.current.toggle());
+    act(() => result.current.suspend(10));
+    act(() => result.current.suspend(-10));
+    act(() => result.current.ready(10));
+    expect(result.current.status).toBe('preparing');
+    act(() => result.current.ready(-10));
+    expect(result.current.status).toBe('playing');
+  });
+  it('pause_and_newer_edits_cancel_stale_readiness_and_capture_elapsed_time_between_ticks', () => {
+    const { result } = renderHook(() => useProjectPlayback(ready, 0));
+    act(() => result.current.toggle());
+    act(() => vi.advanceTimersByTime(15));
+    expect(result.current.captureAnchor().projectSeconds).toBeCloseTo(0.015, 4);
+    act(() => result.current.suspend(1));
+    expect(result.current.status).toBe('preparing');
+    const frame = result.current.frame;
+    act(() => vi.advanceTimersByTime(500));
+    expect(result.current.frame).toBe(frame);
+    act(() => result.current.pause());
+    act(() => result.current.ready(1));
+    expect(result.current.playing).toBe(false);
+    act(() => result.current.toggle());
+    act(() => result.current.suspend(2));
+    act(() => result.current.suspend(3));
+    act(() => result.current.ready(2));
+    expect(result.current.status).toBe('preparing');
+    act(() => result.current.ready(3));
+    expect(result.current.status).toBe('playing');
   });
   it('seek_clamps_to_integer_frame', () => {
     const { result } = renderHook(() => useProjectPlayback(ready, 0));
@@ -37,7 +95,7 @@ describe('shared project playback', () => {
     act(() => result.current.toggle());
     expect(result.current.frame).toBe(0);
   });
-  it('structural_revision_pauses_even_when_total_unchanged_and_shortening_clamps', () => {
+  it('structural_revision_preserves_intent_and_shortening_at_EOF_pauses', () => {
     const { result, rerender } = renderHook(
       ({ timeline, revision }) => useProjectPlayback(timeline, revision),
       { initialProps: { timeline: ready, revision: 0 } },
@@ -46,9 +104,10 @@ describe('shared project playback', () => {
     act(() => vi.advanceTimersByTime(1000));
     expect(result.current.frame).toBe(25);
     rerender({ timeline: ready, revision: 1 });
-    expect(result.current.playing).toBe(false);
+    expect(result.current.playing).toBe(true);
     rerender({ timeline: { ...ready, totalFrames: 10 }, revision: 2 });
     expect(result.current.frame).toBe(9);
+    expect(result.current.playing).toBe(false);
     rerender({
       timeline: { ...ready, status: 'unavailable', totalFrames: 0 },
       revision: 3,
@@ -81,7 +140,8 @@ describe('shared project playback', () => {
   it('throttled_clock_uses_elapsed_time', () => {
     const { result } = renderHook(() => useProjectPlayback(ready, 0));
     act(() => result.current.toggle());
-    vi.setSystemTime(Date.now() + 1000);
+    const now = performance.now();
+    vi.spyOn(performance, 'now').mockReturnValue(now + 1000);
     act(() => vi.advanceTimersByTime(20));
     expect(result.current.frame).toBe(25);
   });

@@ -3,6 +3,8 @@ import type { EditSnapshot } from '../lib/editHistory';
 
 export function historySnapshot(ids = ['a', 'b']): EditSnapshot {
   return {
+    binSourceIds: [],
+    independentAudio: [],
     video2: [],
     musicSourceId: null,
     music: [],
@@ -12,6 +14,7 @@ export function historySnapshot(ids = ['a', 'b']): EditSnapshot {
       trim: { startFrame: 0, endFrame: 59 },
       trimSaved: false,
       speed: 1,
+      originalAudio: 'linked',
     })),
     pip: null,
     audio: {
@@ -52,6 +55,7 @@ export function advancedFixture() {
         trim: { startFrame: 0, endFrame: 149 },
         trimSaved: true,
         speed: 1 as const,
+        originalAudio: 'linked' as const,
       },
     ],
     video2: [
@@ -61,6 +65,7 @@ export function advancedFixture() {
         trim: { startFrame: 0, endFrame: 59 },
         trimSaved: true,
         speed: 1 as const,
+        originalAudio: 'linked' as const,
         timelineStartFrame: 40,
         contentInFrame: 0,
         contentOutFrame: 60,

@@ -10,6 +10,76 @@ import {
 } from './editHistory';
 
 describe('metadata history', () => {
+  it('legacy_snapshot_defaults_linked_and_empty_collections', () => {
+    const base = historySnapshot();
+    const legacy = {
+      ...base,
+      binSourceIds: undefined,
+      independentAudio: undefined,
+      video1: base.video1.map((v) => ({
+        id: v.id,
+        sourceId: v.sourceId,
+        trim: v.trim,
+        trimSaved: v.trimSaved,
+        speed: v.speed,
+      })),
+    };
+    const present = createHistory(legacy).present;
+    expect(present.video1[0].originalAudio).toBe('linked');
+    expect(present.independentAudio).toEqual([]);
+    expect(present.binSourceIds).toEqual([]);
+  });
+  it('snapshot_roundtrip_keeps_frozen_recipe_windows_and_modes', () => {
+    const initial = historySnapshot(['a']);
+    const recipe = {
+      kind: 'video-edit' as const,
+      sourceId: 'source:a',
+      sourceStartFrame: 0,
+      sourceEndFrame: 59,
+      speed: 0.5 as const,
+      normalizationFps: 25 as const,
+    };
+    const segment = {
+      id: 'sound',
+      timelineStartFrame: 10,
+      durationFrames: 20,
+      sourceStartSample: 19200,
+      source: recipe,
+      detachedFrom: { track: 'video1' as const, clipId: 'deleted-owner' },
+    };
+    const next = {
+      ...initial,
+      binSourceIds: ['source:a'],
+      independentAudio: [segment],
+      video1: [
+        {
+          ...initial.video1[0],
+          originalAudio: 'detached' as const,
+          outputWindow: { outputInFrame: 10, outputOutFrame: 30 },
+        },
+      ],
+    };
+    const history = commitHistory(
+      createHistory(initial),
+      'trim',
+      'Window',
+      next,
+    );
+    recipe.sourceStartFrame = 3;
+    next.video1[0].outputWindow.outputInFrame = 12;
+    expect(history.present.video1[0].outputWindow).toEqual({
+      outputInFrame: 10,
+      outputOutFrame: 30,
+    });
+    expect(history.present.independentAudio[0].source).toMatchObject({
+      sourceStartFrame: 0,
+      normalizationFps: 25,
+    });
+    expect(redoHistory(undoHistory(history)).present).toEqual(history.present);
+    expect(
+      snapshotsEqual(history.present, { ...history.present, binSourceIds: [] }),
+    ).toBe(false);
+  });
   it('empty_and_noop', () => {
     const h = createHistory(historySnapshot());
     expect(h.past).toHaveLength(0);

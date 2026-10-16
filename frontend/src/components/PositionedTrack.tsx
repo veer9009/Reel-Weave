@@ -5,6 +5,9 @@ import { placementLength } from '../lib/advancedTimeline';
 import type { PositionedTrack as Track } from '../lib/positionedEdits';
 import type { TimelineSelection } from '../lib/timeline';
 import type { GestureToken } from '../lib/editHistory';
+import { TimelineDropZone } from './MediaBin';
+import type { SourcePlacementActions } from './MediaBin';
+import type { AudioTarget } from '../lib/audioTimeline';
 
 export type PositionedActions = {
   onFileDrop: (track: Track, file: File, startFrame: number) => void;
@@ -28,6 +31,8 @@ export type PositionedActions = {
   onError: (message: string) => void;
 };
 export type PositionedTrackProps = {
+  onVideoContextMenu?: (target: AudioTarget, x: number, y: number) => void;
+  placement?: SourcePlacementActions;
   track: Track;
   projection: AdvancedTimelineProjection;
   selection: TimelineSelection;
@@ -158,6 +163,16 @@ export function PositionedTrack(props: PositionedTrackProps) {
       if (drag.current) cancel();
     },
     onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => {
+      if (
+        track === 'video2' &&
+        (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))
+      ) {
+        event.preventDefault();
+        const r = event.currentTarget.getBoundingClientRect(),
+          id = event.currentTarget.dataset.occurrenceId;
+        if (id)
+          props.onVideoContextMenu?.({ track: 'video2', id }, r.left, r.bottom);
+      }
       if (event.key === 'Escape' && drag.current) {
         event.preventDefault();
         cancel();
@@ -169,22 +184,22 @@ export function PositionedTrack(props: PositionedTrackProps) {
       className="timeline-track"
       aria-label={track === 'video2' ? 'VIDEO 2' : 'AUDIO 2'}
     >
-      <h3>
+      <h3 id={`${track}-header`} tabIndex={-1}>
         {track === 'video2' ? 'Video 2 — Replacement' : 'Background music'}
       </h3>
-      <div
-        ref={lane}
+      <TimelineDropZone
+        placement={props.placement}
+        track={track}
+        displayFrames={projection.displayFrames}
+        disabled={disabled}
+        laneRef={lane}
         className="track-content positioned-lane"
-        aria-label={
+        label={
           track === 'video2'
             ? 'Video 2 replacement drop target'
             : 'Background music drop target'
         }
-        onDragOver={(event) => {
-          event.preventDefault();
-          event.dataTransfer.dropEffect = disabled ? 'none' : 'copy';
-        }}
-        onDrop={(event) => {
+        onLegacyDrop={(event) => {
           event.preventDefault();
           event.stopPropagation();
           if (disabled) return;
@@ -248,6 +263,18 @@ export function PositionedTrack(props: PositionedTrackProps) {
               }}
             >
               <button
+                id={`timeline-segment-${v.id}`}
+                data-occurrence-id={v.id}
+                onContextMenu={(event) => {
+                  if (track === 'video2') {
+                    event.preventDefault();
+                    props.onVideoContextMenu?.(
+                      { track: 'video2', id: v.id },
+                      event.clientX,
+                      event.clientY,
+                    );
+                  }
+                }}
                 type="button"
                 className="timeline-block video-block"
                 aria-label={`Select ${label} ${name}: frames ${v.timelineStartFrame}–${end}${invalid ? ' — Invalid range' : ''}`}
@@ -272,6 +299,9 @@ export function PositionedTrack(props: PositionedTrackProps) {
                 {...events}
               >
                 {name}
+                {'originalAudio' in v && v.originalAudio === 'detached' && (
+                  <small>Detached audio</small>
+                )}
                 <small>
                   Frames {v.timelineStartFrame}–{end}
                   {invalid ? ' · Invalid range' : ''}
@@ -304,7 +334,7 @@ export function PositionedTrack(props: PositionedTrackProps) {
             </div>
           );
         })}
-      </div>
+      </TimelineDropZone>
     </section>
   );
 }

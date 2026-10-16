@@ -3,8 +3,14 @@ import { TriangleAlert } from 'lucide-react';
 import { useMemo } from 'react';
 import { UploadCard } from './components/UploadCard';
 import { ClipList } from './components/ClipList';
+import { MediaBin } from './components/MediaBin';
+import type { IndependentAudioActions } from './components/IndependentAudioTrack';
+import { editIndependentAudio } from './lib/audioTimeline';
+import type { PlacementDraft } from './lib/placement';
+import type { TimelineSelection } from './lib/timeline';
 import { MergeSummary } from './components/MergeSummary';
 import { JobResult } from './components/JobResult';
+import { ExportOptions } from './components/ExportOptions';
 import { TrimEditor } from './components/TrimEditor';
 import { TimelinePlacementDialog } from './components/TimelinePlacementDialog';
 import { buildAdvancedTimeline, placementLength } from './lib/advancedTimeline';
@@ -30,12 +36,23 @@ import type { EditSnapshot } from './lib/editHistory';
 import {
   buildTimeline,
   planClipSplit,
+  planWindowedSplit,
   planVersionReplacement,
 } from './lib/timeline';
 import type { BackgroundAudio } from './components/BackgroundAudioTrack';
-import { ApiError, getHealth, getJob, submitAdvancedMerge } from './lib/api';
-import type { Health, Job } from './lib/api';
-import { buildAdvancedMergeRequest } from './lib/advancedManifest';
+import {
+  ApiError,
+  getHealth,
+  getJob,
+  submitAdvancedMerge,
+  submitV3Merge,
+} from './lib/api';
+import type { Health, Job, ExportFormat } from './lib/api';
+import {
+  buildAdvancedMergeRequest,
+  buildV3MergeRequest,
+  requiresV3,
+} from './lib/advancedManifest';
 import { isEditableClip, moveClip, validateSelection } from './lib/clips';
 import type {
   AudioSettings,
@@ -66,6 +83,15 @@ export default function App() {
   const [pollAttempt, setPollAttempt] = useState(0);
   const [announcement, setAnnouncement] = useState('');
   const [editingClipId, setEditingClipId] = useState<string | null>(null);
+  const [exportFormats, setExportFormats] = useState<ExportFormat[]>(['mp4']);
+  const [activeDragDraft, setActiveDragDraft] = useState<PlacementDraft | null>(
+    null,
+  );
+  const [selectionRequest, setSelectionRequest] = useState<{
+    serial: number;
+    selection: TimelineSelection;
+    focusId?: string;
+  }>();
   const [externalOverlays, setOverlays] = useState<OverlayState>({
     image: null,
     video: null,
@@ -73,6 +99,8 @@ export default function App() {
   const [imageToken, setImageToken] = useState<SourceToken | null>(null);
   const urls = useRef(new Set<string>());
   const uploadController = useRef<AbortController | null>(null);
+  const pollingController = useRef<AbortController | null>(null);
+  const projectEpoch = useRef(0);
   const active =
     uploading || job?.status === 'queued' || job?.status === 'processing';
   const completed = job?.status === 'completed';
@@ -84,6 +112,22 @@ export default function App() {
     max_overlay_video_file_size_mb: 200,
   };
   const history = useEditHistory({
+    onPlaced: (track, id) => {
+      setSelectionRequest((value) => ({
+        serial: (value?.serial ?? 0) + 1,
+        selection: {
+          kind:
+            track === 'video1'
+              ? 'clip'
+              : track === 'video2'
+                ? 'replacement'
+                : track === 'independent'
+                  ? 'independent'
+                  : 'music',
+          id,
+        },
+      }));
+    },
     limits,
     editingLocked: Boolean(active || completed),
     trimDraftOpen: editingClipId !== null,
@@ -102,8 +146,24 @@ export default function App() {
     video2: history.view.video2,
     musicSourceId: history.view.musicSourceId,
     music: history.view.music,
+    independentAudio: history.view.independentAudio,
   });
   const sources = history.sources;
+  const placeMedia = (draft: PlacementDraft) => {
+    if (!history.commitPlacement(draft)) return false;
+    setActiveDragDraft(null);
+    setAnnouncement('Media placed.');
+    return true;
+  };
+  useEffect(
+    () =>
+      sources.onBeforeClear(() => {
+        projectEpoch.current++;
+        uploadController.current?.abort();
+        pollingController.current?.abort();
+      }),
+    [sources],
+  );
   const projected = useMemo(
     () =>
       materializeSnapshot(JSON.parse(projectionKey) as EditSnapshot, sources),
@@ -176,8 +236,11 @@ export default function App() {
           trim: c.trim ?? null,
           trimSaved: c.trimSaved ?? false,
           speed: c.speed ?? 1,
+          outputWindow: c.outputWindow,
+          originalAudio: c.originalAudio ?? original.originalAudio ?? 'linked',
         };
       }),
+      derivedFrom,
     );
   }
   const editableClips = clips.filter(isEditableClip);
@@ -206,6 +269,11 @@ export default function App() {
     !advanced.renderErrors.length &&
     !history.pendingTimelineSources.length &&
     !history.pendingImports.length &&
+    !history.pendingBinImports.length &&
+    exportFormats.every(
+      (format) =>
+        format === 'mp4' || health?.export_capabilities?.[format] === true,
+    ) &&
     clips.length >= 1 &&
     health?.ffmpeg_available &&
     health.ffprobe_available &&
@@ -264,7 +332,7 @@ export default function App() {
       timeout = setTimeout(() => controller.abort(), 15000);
       try {
         const result = await getJob(jobId!, controller.signal);
-        if (disposed) return;
+        if (disposed || epoch !== projectEpoch.current) return;
         setJob(result);
         setPollError(false);
         if (result.status === 'failed')
@@ -275,7 +343,7 @@ export default function App() {
         else if (result.status === 'queued' || result.status === 'processing')
           next = setTimeout(() => void poll(), 1500);
       } catch (cause) {
-        if (disposed) return;
+        if (disposed || epoch !== projectEpoch.current) return;
         if (cause instanceof ApiError && cause.status === 404) {
           setJob(null);
           setError(
@@ -291,12 +359,16 @@ export default function App() {
         clearTimeout(timeout);
       }
     }
+    const epoch = projectEpoch.current;
+    pollingController.current = controller;
     void poll();
     return () => {
       disposed = true;
       clearTimeout(next);
       clearTimeout(timeout);
       controller.abort();
+      if (pollingController.current === controller)
+        pollingController.current = null;
     };
   }, [jobId, jobStatus, pollAttempt]);
 
@@ -306,7 +378,7 @@ export default function App() {
     edit: EditResult<EditSnapshot>,
   ): boolean {
     if ('error' in edit) {
-      setHistoryError(edit.error);
+      setHistoryError(edit.error.message);
       return false;
     }
     const ok = history.commit(
@@ -432,6 +504,83 @@ export default function App() {
     onEnd: (token, accept) => history.finish(token, accept),
     onError: setHistoryError,
   };
+  const audioActions: IndependentAudioActions = {
+    snapshot: history.view,
+    sources,
+    onEdit: (edit) => {
+      const before = history.history.present.independentAudio;
+      if (!history.commitAudioEdit(edit)) return false;
+      const after = history.history.present.independentAudio;
+      let selected = after.find((v) => !before.some((old) => old.id === v.id));
+      if (edit.action === 'split')
+        selected = after.find(
+          (v) =>
+            v.timelineStartFrame === edit.frame &&
+            !before.some((old) => old.id === v.id),
+        );
+      if (edit.action === 'lift' || edit.action === 'ripple-delete') {
+        const index = before.findIndex((v) => v.id === edit.id);
+        selected =
+          after.find((v) => v.id === before[index + 1]?.id) ||
+          after.find((v) => v.id === before[index - 1]?.id);
+        setSelectionRequest((value) => ({
+          serial: (value?.serial ?? 0) + 1,
+          selection: selected
+            ? { kind: 'independent', id: selected.id }
+            : { kind: 'none' },
+          focusId: selected
+            ? `timeline-segment-${selected.id}`
+            : 'independent-audio-header',
+        }));
+      } else if (selected)
+        setSelectionRequest((value) => ({
+          serial: (value?.serial ?? 0) + 1,
+          selection: { kind: 'independent', id: selected!.id },
+        }));
+      return true;
+    },
+    onSave: (segment) =>
+      history.commit('independent-trim', 'Edit independent audio range', {
+        ...history.history.present,
+        independentAudio: history.history.present.independentAudio.map((v) =>
+          v.id === segment.id ? segment : v,
+        ),
+      }),
+    onDetach: (target) => {
+      const before = history.history.present.independentAudio;
+      if (!history.commitDetach(target)) return false;
+      const selected = history.history.present.independentAudio.find(
+        (v) => !before.some((old) => old.id === v.id),
+      );
+      if (selected)
+        setSelectionRequest((value) => ({
+          serial: (value?.serial ?? 0) + 1,
+          selection: { kind: 'independent', id: selected.id },
+        }));
+      setAnnouncement('Audio detached. Original/Replacement Audio selected.');
+      return true;
+    },
+    onReplaceFile: (id, file) => {
+      history.importToBin(file, 'audio', undefined, id);
+    },
+    onBegin: (id, edge) =>
+      history.begin(edge ? 'independent-trim' : 'independent-move', id),
+    onPreview: (token, edit) => {
+      if (!outputFps) return false;
+      const next = editIndependentAudio(
+        history.history.present,
+        edit,
+        outputFps,
+        sources,
+        () => crypto.randomUUID(),
+      );
+      if ('error' in next) return false;
+      history.preview(token, next.value);
+      return true;
+    },
+    onEnd: (token, accept) => history.finish(token, accept),
+    onError: setHistoryError,
+  };
   function selectFiles(files: File[]) {
     if (active || completed || !health || !files.length) return;
     const validation = validateSelection(
@@ -468,7 +617,9 @@ export default function App() {
       'trim',
       'Trim clip',
       clips.map((clip) =>
-        clip.id === id ? { ...clip, trim, trimSaved: true } : clip,
+        clip.id === id
+          ? { ...clip, trim, trimSaved: true, outputWindow: undefined }
+          : clip,
       ),
     );
     setEditingClipId(null);
@@ -675,22 +826,28 @@ export default function App() {
       setError('Clip limit reached. Remove a clip before splitting.');
       return;
     }
-    const plan = planClipSplit(timeline, targetId, frame);
+    const target = clips.find((clip) => clip.id === targetId)!;
+    const plan = target.outputWindow
+      ? planWindowedSplit(timeline, targetId, frame)
+      : planClipSplit(timeline, targetId, frame);
     if ('error' in plan) {
-      setError(plan.error);
+      setError(
+        typeof plan.error === 'string' ? plan.error : plan.error.message,
+      );
       return;
     }
-    const target = clips.find((clip) => clip.id === targetId)!;
     const left: Clip = {
       ...target,
       id: crypto.randomUUID(),
-      trim: plan.leftTrim,
+      trim: 'value' in plan ? target.trim : plan.leftTrim,
+      outputWindow: 'value' in plan ? plan.value.leftWindow : undefined,
       trimSaved: true,
     };
     const right: Clip = {
       ...target,
       id: crypto.randomUUID(),
-      trim: plan.rightTrim,
+      trim: 'value' in plan ? target.trim : plan.rightTrim,
+      outputWindow: 'value' in plan ? plan.value.rightWindow : undefined,
       trimSaved: true,
     };
     if (
@@ -731,13 +888,20 @@ export default function App() {
       setError(plan.error);
       return;
     }
-    const left: Clip = { ...target, trim: plan.leftTrim, trimSaved: true };
+    const left: Clip = {
+      ...target,
+      trim: plan.leftTrim,
+      outputWindow: plan.leftWindow,
+      trimSaved: true,
+    };
     const right: Clip = {
       ...source,
       id: crypto.randomUUID(),
       trim: plan.rightTrim,
       trimSaved: true,
       speed: target.speed,
+      originalAudio: target.originalAudio,
+      outputWindow: plan.rightWindow,
     };
     const nextClips = clips.flatMap((clip) =>
       clip.id === targetId ? [left, right] : clip.id === sourceId ? [] : [clip],
@@ -789,34 +953,98 @@ export default function App() {
     setUploading(true);
     const controller = new AbortController();
     uploadController.current = controller;
+    const epoch = projectEpoch.current;
+    let releaseOwner = () => {};
     try {
-      setJob(
-        await submitAdvancedMerge(
-          buildAdvancedMergeRequest(
+      const v3 = requiresV3(history.history.present, exportFormats);
+      const render = v3
+        ? buildV3MergeRequest(
             history.history.present,
             sources,
             outputFps,
             overlays,
-          ),
-          controller.signal,
-        ),
+            [...exportFormats],
+            limits,
+          )
+        : buildAdvancedMergeRequest(
+            history.history.present,
+            sources,
+            outputFps,
+            overlays,
+          );
+      const ids = new Set(
+        render.manifest.video_sources.map((v) => v.source_id),
       );
+      if ('audio_sources' in render.manifest)
+        render.manifest.audio_sources.forEach((v) => ids.add(v.source_id));
+      if (history.history.present.musicSourceId)
+        ids.add(history.history.present.musicSourceId);
+      if (history.history.present.pip)
+        ids.add(history.history.present.pip.sourceId);
+      if (imageToken) ids.add(imageToken.sourceId);
+      releaseOwner = sources.acquireLease('render-submission', ids);
+      const submitted = await ('audioFiles' in render
+        ? submitV3Merge(render, controller.signal)
+        : submitAdvancedMerge(render, controller.signal));
+      if (!controller.signal.aborted && epoch === projectEpoch.current)
+        setJob(submitted);
     } catch (cause) {
-      if (!controller.signal.aborted)
+      if (!controller.signal.aborted && epoch === projectEpoch.current) {
         setError(
           cause instanceof Error
             ? cause.message
             : 'Upload failed. Please try again.',
         );
+        if (cause instanceof ApiError) {
+          const snapshot = history.history.present,
+            id = cause.segmentId;
+          const item = snapshot.video1.find(
+            (v) => v.id === id || (!id && v.sourceId === cause.sourceId),
+          );
+          const replacement = snapshot.video2.find(
+            (v) => v.id === id || (!id && v.sourceId === cause.sourceId),
+          );
+          const audio = snapshot.independentAudio.find(
+            (v) => v.id === id || (!id && v.source.sourceId === cause.sourceId),
+          );
+          const music = snapshot.music.find(
+            (v) => v.id === id || (!id && v.sourceId === cause.sourceId),
+          );
+          const selection: TimelineSelection | undefined = item
+            ? { kind: 'clip', id: item.id }
+            : replacement
+              ? { kind: 'replacement', id: replacement.id }
+              : audio
+                ? { kind: 'independent', id: audio.id }
+                : music
+                  ? { kind: 'music', id: music.id }
+                  : undefined;
+          if (selection)
+            setSelectionRequest((value) => ({
+              serial: (value?.serial ?? 0) + 1,
+              selection,
+            }));
+        }
+      }
     } finally {
-      if (!controller.signal.aborted) setUploading(false);
-      uploadController.current = null;
+      releaseOwner();
+      if (!controller.signal.aborted && epoch === projectEpoch.current)
+        setUploading(false);
+      if (uploadController.current === controller)
+        uploadController.current = null;
     }
   }
   function newProject() {
+    projectEpoch.current++;
+    uploadController.current?.abort();
+    pollingController.current?.abort();
+    setUploading(false);
     urls.current.forEach((url) => URL.revokeObjectURL(url));
     urls.current.clear();
     history.clearProject();
+    setExportFormats(['mp4']);
+    setActiveDragDraft(null);
+    setSelectionRequest(undefined);
     setImageToken(null);
     setOverlays({ image: null, video: null });
     setEditingClipId(null);
@@ -935,6 +1163,24 @@ export default function App() {
         </>
       )}
       <EditingWorkspace
+        transportController={history}
+        audioActions={audioActions}
+        selectionRequest={selectionRequest}
+        placement={{
+          snapshot: history.view,
+          sources,
+          limits,
+          activeDraft: activeDragDraft,
+          onCommit: placeMedia,
+          onError: setHistoryError,
+          onExternal: (track, file, start) => {
+            history.importToBin(
+              file,
+              track === 'video1' || track === 'video2' ? 'video' : 'audio',
+              { track, timelineStartFrame: start },
+            );
+          },
+        }}
         historyControls={history.controls}
         advanced={advanced}
         gestureActive={history.gestureActive}
@@ -964,7 +1210,7 @@ export default function App() {
             kind,
           );
           if ('error' in edit) {
-            setHistoryError(edit.error);
+            setHistoryError(edit.error.message);
             return false;
           }
           return history.commit(
@@ -1011,6 +1257,73 @@ export default function App() {
               limits={limits}
               onSelect={selectFiles}
             />
+            <MediaBin
+              sources={[
+                ...history.view.binSourceIds,
+                ...history.pendingBinImports
+                  .filter((v) => !v.placement && !v.replaceId)
+                  .map((v) => v.token.sourceId),
+              ]
+                .map((id) => sources.get(id))
+                .filter((v) => v !== undefined)}
+              fps={timeline.fps}
+              disabled={
+                !health ||
+                editingLocked ||
+                history.gestureActive ||
+                editingClipId !== null
+              }
+              onImport={(file, type) => {
+                history.importToBin(file, type);
+              }}
+              onRemove={(id) => {
+                const pending = history.pendingBinImports.find(
+                  (v) => v.token.sourceId === id,
+                );
+                if (pending) history.cancelBinImport(pending.token);
+                else history.removeBinSource(id);
+                setActiveDragDraft(null);
+              }}
+              onPlace={placeMedia}
+              onDragDraft={setActiveDragDraft}
+              onPip={(file) => selectOverlay('video', file)}
+            />
+            {history.pendingBinImports.map(
+              ({ token, mediaType, placement, replaceId }) => (
+                <div key={token.sourceId}>
+                  {(placement || replaceId) && (
+                    <>
+                      <p role="status">
+                        Reading {sources.get(token.sourceId)!.file.name} for{' '}
+                        {placement
+                          ? `${placement.track} at frame ${placement.timelineStartFrame}`
+                          : 'audio replacement'}
+                        .
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => history.cancelBinImport(token)}
+                      >
+                        Cancel pending placement
+                      </button>
+                    </>
+                  )}
+                  <TimelineSourceProbe
+                    token={token}
+                    file={sources.get(token.sourceId)!.file}
+                    url={sources.ensureUrl(token.sourceId)}
+                    track={mediaType === 'video' ? 'bin-video' : 'bin-audio'}
+                    onReady={history.sourceReady}
+                    onError={(token) => {
+                      history.sourceError(token);
+                      setHistoryError(
+                        'Could not read media metadata. Re-import the source.',
+                      );
+                    }}
+                  />
+                </div>
+              ),
+            )}
             {history.pendingImports.map((token) => (
               <TimelineSourceProbe
                 key={token.sourceId}
@@ -1135,6 +1448,17 @@ export default function App() {
                   ? 'Finish or cancel the current edit before rendering.'
                   : '')}
             </p>
+            <ExportOptions
+              formats={exportFormats}
+              onChange={setExportFormats}
+              capabilities={health?.export_capabilities}
+              disabled={
+                !health ||
+                editingLocked ||
+                history.gestureActive ||
+                Boolean(editingClipId)
+              }
+            />
             <MergeSummary
               clips={clips}
               timeline={timeline}
@@ -1146,7 +1470,9 @@ export default function App() {
         }
         resultContent={
           <div ref={resultRegion}>
-            {completed && job ? (
+            {job?.exports ? (
+              <JobResult key={job.job_id} job={job} onNewProject={newProject} />
+            ) : completed && job ? (
               <JobResult key={job.job_id} job={job} onNewProject={newProject} />
             ) : active ? (
               <div

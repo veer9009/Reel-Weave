@@ -22,7 +22,7 @@ export function Inspector({
     const section =
       selection.kind === 'replacement'
         ? 'replacement'
-        : selection.kind === 'music'
+        : selection.kind === 'music' || selection.kind === 'independent'
           ? 'audio'
           : selection.kind === 'clip'
             ? 'clip'

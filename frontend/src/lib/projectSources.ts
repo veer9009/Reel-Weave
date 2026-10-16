@@ -1,6 +1,7 @@
 import type { ClipMetadata } from './clips';
 import type { EditHistory, EditSnapshot } from './editHistory';
-export type SourceKind = 'video1' | 'video2' | 'pip' | 'image' | 'music';
+export type SourceKind =
+  'video1' | 'video2' | 'pip' | 'image' | 'music' | 'video' | 'audio';
 export type SourceToken = {
   session: number;
   sourceId: string;
@@ -13,6 +14,7 @@ export type SourceMetadata = {
   metadataOrigin?: 'browser' | 'backend';
 };
 export type SourceRecord = {
+  mediaType: 'video' | 'audio' | 'image';
   token: SourceToken;
   kind: SourceKind;
   file: File;
@@ -26,6 +28,26 @@ export function createProjectSources() {
   let session = 0;
   const records = new Map<string, SourceRecord>();
   let externalOwners: ReadonlySet<string> = new Set();
+  const leases = new Map<
+    string,
+    { serial: number; ids: ReadonlySet<string> }
+  >();
+  const beforeClear = new Set<() => void>();
+  let leaseSerial = 0;
+  let reachable: ReadonlySet<string> = new Set();
+  const owners = () =>
+    new Set([
+      ...externalOwners,
+      ...[...leases.values()].flatMap((v) => [...v.ids]),
+    ]);
+  const reconcile = () => {
+    const held = owners();
+    for (const [id, r] of records)
+      if (r.url && !reachable.has(id) && !held.has(id)) {
+        URL.revokeObjectURL(r.url);
+        delete r.url;
+      }
+  };
   const valid = (t: SourceToken) => {
     const r = records.get(t.sourceId);
     return r &&
@@ -37,7 +59,18 @@ export function createProjectSources() {
   return {
     register(file: File, kind: SourceKind): SourceToken {
       const token = { session, sourceId: crypto.randomUUID(), requestId: 1 };
-      records.set(token.sourceId, { token, kind, file, status: 'loading' });
+      records.set(token.sourceId, {
+        token,
+        kind,
+        mediaType:
+          kind === 'image'
+            ? 'image'
+            : kind === 'music' || kind === 'audio'
+              ? 'audio'
+              : 'video',
+        file,
+        status: 'loading',
+      });
       return token;
     },
     get(id: string) {
@@ -48,7 +81,7 @@ export function createProjectSources() {
       if (!r || r.status === 'error') return false;
       const m = metadata.clipMetadata;
       if (
-        (r.kind === 'video1' || r.kind === 'video2') &&
+        (r.kind === 'video1' || r.kind === 'video2' || r.kind === 'video') &&
         (!m ||
           !Number.isFinite(m.duration) ||
           m.duration <= 0 ||
@@ -63,7 +96,7 @@ export function createProjectSources() {
       )
         return false;
       if (
-        (r.kind === 'pip' || r.kind === 'music') &&
+        (r.kind === 'pip' || r.kind === 'music' || r.kind === 'audio') &&
         (!Number.isFinite(metadata.duration) || metadata.duration! <= 0)
       )
         return false;
@@ -72,7 +105,7 @@ export function createProjectSources() {
         metadata: m,
         duration: m?.duration ?? metadata.duration,
         sampleCount:
-          r.kind === 'music'
+          r.mediaType === 'audio'
             ? (metadata.sampleCount ??
               Math.floor(metadata.duration! * 48000 + 0.5))
             : undefined,
@@ -94,19 +127,35 @@ export function createProjectSources() {
       externalOwners = new Set(ids);
     },
     get externalOwners() {
-      return externalOwners;
+      return owners();
     },
-    reconcileUrls(reachable: ReadonlySet<string>) {
-      for (const [id, r] of records)
-        if (r.url && !reachable.has(id) && !externalOwners.has(id)) {
-          URL.revokeObjectURL(r.url);
-          delete r.url;
+    acquireLease(owner: string, ids: ReadonlySet<string>): () => void {
+      const serial = ++leaseSerial;
+      leases.set(owner, { serial, ids: new Set(ids) });
+      return () => {
+        if (leases.get(owner)?.serial === serial) {
+          leases.delete(owner);
+          reconcile();
         }
+      };
+    },
+    onBeforeClear(callback: () => void): () => void {
+      beforeClear.add(callback);
+      return () => {
+        beforeClear.delete(callback);
+      };
+    },
+    reconcileUrls(next: ReadonlySet<string>) {
+      reachable = new Set(next);
+      reconcile();
     },
     clear() {
+      for (const stop of beforeClear) stop();
       for (const r of records.values()) if (r.url) URL.revokeObjectURL(r.url);
       records.clear();
       externalOwners = new Set();
+      leases.clear();
+      reachable = new Set();
       session++;
     },
   };
@@ -120,6 +169,8 @@ export function collectReachableSources(
 ): ReadonlySet<string> {
   const ids = new Set(owners);
   const add = (s: EditSnapshot) => {
+    s.binSourceIds?.forEach((id) => ids.add(id));
+    s.independentAudio?.forEach((v) => ids.add(v.source.sourceId));
     s.video1.forEach((v) => ids.add(v.sourceId));
     s.video2?.forEach((v) => ids.add(v.sourceId));
     s.music?.forEach((v) => ids.add(v.sourceId));

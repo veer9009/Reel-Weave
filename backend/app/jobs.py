@@ -108,6 +108,87 @@ class AdvancedMergePlan:
     video_overlay: OverlaySettings | None
 
 
+ExportFormat = Literal["mp4", "mov", "wav", "mp3"]
+
+
+@dataclass(frozen=True, slots=True)
+class WindowedVideoOccurrence(VideoOccurrence):
+    timeline_start_frame: int
+    duration_frames: int
+    output_in_frame: int
+    output_out_frame: int
+    original_audio: Literal["linked", "detached"]
+
+
+@dataclass(frozen=True, slots=True)
+class V3ReplacementOccurrence(ReplacementOccurrence):
+    original_audio: Literal["linked", "detached"]
+
+
+@dataclass(frozen=True, slots=True)
+class AudioSourceDescriptor:
+    source_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class AudioFileRecipe:
+    source_id: str
+    kind: Literal["audio-file"] = "audio-file"
+
+
+@dataclass(frozen=True, slots=True)
+class VideoEditRecipe:
+    source_id: str
+    source_start_frame: int
+    source_end_frame: int
+    speed: float
+    normalization_fps: int
+    kind: Literal["video-edit"] = "video-edit"
+
+
+AudioRecipe = AudioFileRecipe | VideoEditRecipe
+
+
+@dataclass(frozen=True, slots=True)
+class DetachedProvenance:
+    track: Literal["video1", "video2"]
+    clip_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class IndependentAudioSegment:
+    id: str
+    timeline_start_frame: int
+    duration_frames: int
+    source_start_sample: int
+    source: AudioRecipe
+    detached_from: DetachedProvenance | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class V3MergePlan:
+    video_sources: tuple[VideoSourceDescriptor, ...]
+    clips: tuple[WindowedVideoOccurrence, ...]
+    order: tuple[str, ...]
+    video2: tuple[V3ReplacementOccurrence, ...]
+    output_fps: int
+    audio_mix: AudioMixSettings
+    music: MusicPlan | None
+    image_overlay: OverlaySettings | None
+    video_overlay: OverlaySettings | None
+    audio_sources: tuple[AudioSourceDescriptor, ...]
+    independent_audio: tuple[IndependentAudioSegment, ...]
+    exports: tuple[ExportFormat, ...] = ("mp4",)
+    schema_version: Literal[3] = 3
+
+
+@dataclass(frozen=True, slots=True)
+class ExportState:
+    status: Literal["queued", "processing", "ready", "failed"] = "queued"
+    error: str | None = None
+    path: Path | None = None
+
+
 @dataclass(slots=True)
 class Job:
     id: str
@@ -116,6 +197,12 @@ class Job:
     output_dir: Path
     result_path: Path
     advanced_plan: AdvancedMergePlan | None = None
+    v3_plan: V3MergePlan | None = None
+    audio_source_paths: dict[str, Path] = field(default_factory=dict)
+    decoded_audio_paths: dict[str, Path] = field(default_factory=dict)
+    recipe_audio_paths: dict[VideoEditRecipe, Path] = field(default_factory=dict)
+    audio_master_path: Path | None = None
+    exports: dict[ExportFormat, ExportState] = field(default_factory=dict)
     video_source_paths: dict[str, Path] = field(default_factory=dict)
     resolved_plan: ResolvedRenderPlan | None = None
     decoded_music_path: Path | None = None
@@ -139,8 +226,22 @@ class Job:
         upload, intermediate, output = storage.prepare_job(job_id)
         return cls(job_id, upload, intermediate, output, output / "merged.mp4")
 
-    def response(self) -> dict[str, str | None]:
-        return {"job_id": self.id, "status": self.status, "error": self.error}
+    def response(self) -> dict:
+        result = {"job_id": self.id, "status": self.status, "error": self.error}
+        if self.v3_plan is not None:
+            result["exports"] = {
+                name: {
+                    "status": state.status,
+                    "error": state.error,
+                    **(
+                        {"download_url": f"/api/jobs/{self.id}/exports/{name}"}
+                        if state.status == "ready"
+                        else {}
+                    ),
+                }
+                for name, state in self.exports.copy().items()
+            }
+        return result
 
 
 class JobRegistry:
@@ -234,6 +335,14 @@ class JobManager:
             try:
                 await asyncio.to_thread(self.merge_executor, job)
             except Exception:
+                if job.v3_plan is not None:
+                    from .exports import _fixed_path
+
+                    for name in job.exports:
+                        job.exports[name] = ExportState("failed", f"{name.upper()} export failed.")
+                        for staged in (False, True):
+                            with contextlib.suppress(OSError, RuntimeError):
+                                _fixed_path(job, name, staged=staged).unlink(missing_ok=True)
                 job.status = "failed"
                 job.error = "Video processing failed. Check that each clip is readable."
             else:
