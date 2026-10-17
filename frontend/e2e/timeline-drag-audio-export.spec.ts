@@ -285,14 +285,36 @@ test('real optional MP3 failure retains an encoded MP4 and shows no failed downl
       )
       .toBe(true);
     const url = JSON.parse(readFileSync(ready, 'utf8')).url as string;
-    await page.route('**/api/**', async (route) => {
+    const media = generateAdvancedMedia(info.outputPath('media'));
+    await page.context().route('**/api/**', async (route) => {
       const original = new URL(route.request().url());
-      const result = await route.fetch({
-        url: `${url}${original.pathname}${original.search}`,
-      });
+      const destination = `${url}${original.pathname}${original.search}`;
+      // Chromium interception omits file-backed upload bytes from postData.
+      // Forward the browser's actual manifest with the same fixture File bytes
+      // to the real test worker, rather than submitting an empty video.
+      const manifest =
+        original.pathname === '/api/merge'
+          ? route
+              .request()
+              .postDataBuffer()
+              ?.toString('utf8')
+              .match(/name="manifest"\r\n\r\n([\s\S]*?)\r\n--/)?.[1]
+          : undefined;
+      if (original.pathname === '/api/merge') expect(manifest).toBeDefined();
+      const result = manifest
+        ? await page.request.post(destination, {
+            multipart: {
+              files: {
+                name: 'base.mp4',
+                mimeType: 'video/mp4',
+                buffer: readFileSync(media.base),
+              },
+              manifest,
+            },
+          })
+        : await route.fetch({ url: destination });
       await route.fulfill({ response: result });
     });
-    const media = generateAdvancedMedia(info.outputPath('media'));
     await base(page, media.base);
     await page.getByLabel('MP3', { exact: true }).check();
     await page.getByRole('button', { name: 'Render MP4', exact: true }).click();
@@ -300,13 +322,24 @@ test('real optional MP3 failure retains an encoded MP4 and shows no failed downl
     await expect(
       page.getByRole('link', { name: 'Download MP3', exact: true }),
     ).toHaveCount(0);
+    const downloadLink = page.getByRole('link', {
+      name: 'Download MP4',
+      exact: true,
+    });
+    // Edge's download manager bypasses intercepted page/context requests.
+    // Keep the UI's artifact path and point its origin at this test's worker.
+    await downloadLink.evaluate((node, origin) => {
+      const anchor = node as HTMLAnchorElement;
+      const target = new URL(anchor.href);
+      anchor.href = `${origin}${target.pathname}${target.search}`;
+    }, url);
     const event = page.waitForEvent('download');
-    await page.getByRole('link', { name: 'Download MP4', exact: true }).click();
+    await downloadLink.click();
     const output = info.outputPath('surviving.mp4');
     await (await event).saveAs(output);
     expect(probeDownloadedMp4(output).frames).toBe(150);
   } finally {
-    await page.unroute('**/api/**');
+    await page.context().unroute('**/api/**');
     if (child.exitCode === null) {
       const exited = once(child, 'exit');
       child.kill();

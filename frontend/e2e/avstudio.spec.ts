@@ -370,7 +370,7 @@ test('desktop and mobile: edit, render, play, download and New project', async (
     await expect(page.getByText(text, { exact: false })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Render MP4' })).toBeDisabled();
   await page.screenshot({
-    path: '../docs/screenshots/desktop-empty.png',
+    path: info.outputPath('desktop-empty.png'),
     fullPage: true,
   });
   await page.getByLabel('Choose video clips').setInputFiles(clipPaths);
@@ -482,7 +482,7 @@ test('desktop and mobile: edit, render, play, download and New project', async (
     'a-little-moment.mp4',
   );
   await page.screenshot({
-    path: '../docs/screenshots/desktop-arranged.png',
+    path: info.outputPath('desktop-arranged.png'),
     fullPage: true,
   });
 
@@ -528,10 +528,14 @@ test('desktop and mobile: edit, render, play, download and New project', async (
     mobileClipLayout.itemRight,
   );
   await page.screenshot({
-    path: '../docs/screenshots/mobile-arranged.png',
+    path: info.outputPath('mobile-arranged.png'),
     fullPage: true,
   });
-  await expect(page.getByText(/Silent browser preview/i)).toBeVisible();
+  await expect(
+    page.getByText('Browser picture and sound preview · approximate', {
+      exact: true,
+    }),
+  ).toBeVisible();
   await page.getByLabel('Timeline FPS', { exact: true }).selectOption('25');
   await expect(page.getByLabel('Effective timeline FPS')).toContainText(
     '25 FPS',
@@ -599,7 +603,7 @@ test('desktop and mobile: edit, render, play, download and New project', async (
     .toBeGreaterThan(0);
   await video.evaluate((element: HTMLVideoElement) => element.pause());
   await page.screenshot({
-    path: '../docs/screenshots/mobile-result.png',
+    path: info.outputPath('mobile-result.png'),
     fullPage: true,
   });
   const downloadEvent = page.waitForEvent('download');
@@ -637,7 +641,7 @@ test('desktop and mobile: edit, render, play, download and New project', async (
     page.getByRole('region', { name: 'Sequence timeline' }),
   ).toBeVisible();
   await page.screenshot({
-    path: '../docs/screenshots/desktop-result.png',
+    path: info.outputPath('desktop-result.png'),
     fullPage: true,
   });
   await page.getByRole('button', { name: 'New project' }).click();

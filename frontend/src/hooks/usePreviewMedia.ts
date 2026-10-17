@@ -31,6 +31,7 @@ export function usePreviewMedia(options: Options) {
   const [api] = useState(() => {
     let latest = options,
       previousPlaying = options.playing;
+    let pausedTime: number | undefined;
     const elements: (HTMLVideoElement | null)[] = [null, null],
       slots: Slot[] = [
         {
@@ -109,6 +110,9 @@ export function usePreviewMedia(options: Options) {
       needsPosition: boolean;
       time: number;
       waiting: boolean;
+      origin: number;
+      speed: number;
+      clip: NonNullable<Current>['clip'];
     } | null = null;
     const publish = () => {
       if (!disposed) render((v) => v + 1);
@@ -263,9 +267,28 @@ export function usePreviewMedia(options: Options) {
         index = 1 - active;
         assign(index, current);
       } else assign(index, current);
+      const seconds =
+        o.projectSeconds ?? (o.frame ?? 0) / (o.projection?.base.fps ?? 25);
+      const origin = current.sourceTime - seconds * current.clip.speed;
+      const adjacentLegacyEdit =
+        request &&
+        !request.clip.outputWindow &&
+        !current.clip.outputWindow &&
+        request.clip.metadata.fps === current.clip.metadata.fps &&
+        current.clip.trim.startFrame === request.clip.trim.endFrame + 1;
+      const mappingTolerance =
+        o.generation === undefined || adjacentLegacyEdit
+          ? current.clip.speed / (o.projection?.base.fps ?? 25)
+          : 0.000001;
+      const mappingChanged =
+        request &&
+        request.generation === o.generation &&
+        (request.speed !== current.clip.speed ||
+          Math.abs(request.origin - origin) > mappingTolerance);
       const sourceChanged = !request || request.index !== index,
         positionChanged =
           !request ||
+          mappingChanged ||
           request.positionRevision !== o.positionRevision ||
           (!o.onSuspend && !o.playing && request.time !== current.sourceTime);
       const fresh =
@@ -283,9 +306,19 @@ export function usePreviewMedia(options: Options) {
             sourceChanged || positionChanged || Boolean(request?.needsPosition),
           time: current.sourceTime,
           waiting: false,
+          origin,
+          speed: current.clip.speed,
+          clip: current.clip,
         };
         if (elements[index]) observe(index, elements[index]!);
       }
+      request!.origin = origin;
+      request!.clip = current.clip;
+      if (!o.playing) pausedTime = current.sourceTime;
+      const positionTime =
+        resumed && !fresh && pausedTime !== undefined
+          ? pausedTime
+          : current.sourceTime;
       const e = elements[index];
       if (
         slots[index].error &&
@@ -318,12 +351,12 @@ export function usePreviewMedia(options: Options) {
         if (
           resumed &&
           o.onSuspend &&
-          Math.abs(e.currentTime - current.sourceTime) >
+          Math.abs(e.currentTime - positionTime) >
             0.04 * current.clip.speed
         )
           request!.needsPosition = true;
         if (request!.needsPosition) {
-          position(index, current.sourceTime);
+          position(index, positionTime);
           request!.needsPosition = false;
         }
       }

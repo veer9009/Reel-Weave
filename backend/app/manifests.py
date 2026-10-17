@@ -361,6 +361,11 @@ def parse_v3_manifest(value: dict, video_file_count: int, max_clips: int):
         "Audio",
     )
     _object(value["overlays"], {"image", "video"}, "Overlays")
+    for kind, overlay in value["overlays"].items():
+        if isinstance(overlay, dict) and any(
+            not isinstance(overlay.get(field), str) for field in ("position", "size")
+        ):
+            _invalid(f"The {kind} overlay position and size must be strings.")
     legacy = {
         "clips": [
             {

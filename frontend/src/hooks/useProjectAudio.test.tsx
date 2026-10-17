@@ -18,13 +18,13 @@ const elements: HTMLMediaElement[] = [],
   }[] = [];
 let rejectResume = false;
 let graphTime = 1;
-let lastContext: Context;
+const contexts: Context[] = [];
 class Context {
   state = 'suspended';
   destination = {};
   currentTime = graphTime;
   constructor() {
-    lastContext = this;
+    contexts.push(this);
   }
   resume = vi.fn(async () => {
     if (rejectResume)
@@ -48,6 +48,7 @@ class Context {
 }
 beforeEach(() => {
   elements.length = 0;
+  contexts.length = 0;
   nodes.length = 0;
   gains.length = 0;
   rejectResume = false;
@@ -133,6 +134,105 @@ const ready = (element: HTMLMediaElement, duration = 6) => {
   element.dispatchEvent(new Event('loadedmetadata'));
   element.dispatchEvent(new Event('canplay'));
 };
+it('play_intent_gates_transport_before_the_audio_context_is_created', () => {
+  const h = setup();
+  expect(h.props.transport.suspend).toHaveBeenCalled();
+  expect(h.result.current.status).toBe('preparing');
+  expect(h.props.transport.ready).not.toHaveBeenCalled();
+});
+it('initial_context_readiness_releases_the_gate_registered_before_creation', async () => {
+  const h = setup();
+  const token = vi.mocked(h.props.transport.suspend).mock.calls[0][0];
+  await act(async () => {
+    await h.result.current.resumeAudio();
+    elements.forEach((e) => ready(e));
+  });
+  expect(h.props.transport.ready).toHaveBeenCalledWith(token);
+});
+it('resuming_a_prepared_voice_does_not_seek_to_elapsed_render_time', async () => {
+  const h = setup();
+  h.rerender({ ...h.props, transport: { ...h.props.transport, playing: false, status: 'preparing' } });
+  await act(async () => {
+    await h.result.current.resumeAudio();
+    elements.forEach((e) => ready(e));
+  });
+  const writes = elements.map((e) => vi.spyOn(e, 'currentTime', 'set'));
+  h.rerender({ ...h.props, transport: { ...h.props.transport,
+    captureAnchor: () => ({ ...h.props.transport.captureAnchor(), projectSeconds: 0.08 }) } });
+  for (const write of writes) expect(write).not.toHaveBeenCalled();
+});
+it('audio_ownership_uses_the_live_position_when_the_rendered_frame_precedes_a_split', async () => {
+  const h = setup();
+  const first = h.props.snapshot.video1[0];
+  const snapshot = { ...h.props.snapshot, independentAudio: [], music: [],
+    video1: [{ ...first, trim: { startFrame: 0, endFrame: 24 } },
+      { ...first, id: 'right', trim: { startFrame: 25, endFrame: 149 } }] };
+  const props = { ...h.props, snapshot,
+    projection: buildAdvancedTimeline(snapshot, h.sources, { image: null, video: null }) };
+  h.rerender(props);
+  await act(async () => {
+    await h.result.current.resumeAudio();
+    elements.forEach((e) => ready(e));
+  });
+  const voice = elements[0], url = voice.getAttribute('src');
+  voice.currentTime = 1.01;
+  h.rerender({ ...props, transport: { ...props.transport, frame: 24,
+    captureAnchor: () => ({ ...props.transport.captureAnchor(), projectSeconds: 1.01 }) } });
+  expect(voice.getAttribute('src')).toBe(url);
+  expect(elements).toHaveLength(1);
+});
+it.each(['independentAudio', 'music'] as const)(
+  'same_file_%s_boundary_seeks_to_the_next_segment_source_window',
+  async (lane) => {
+    const h = setup();
+    const first = h.props.snapshot[lane][0];
+    const snapshot = {
+      ...h.props.snapshot,
+      [lane]: [
+        { ...first, durationFrames: 25 },
+        {
+          ...first,
+          id: 'later',
+          timelineStartFrame: 25,
+          durationFrames: 25,
+          sourceStartSample: 192000,
+        },
+      ],
+    };
+    h.rerender({ ...h.props, snapshot });
+    vi.mocked(HTMLMediaElement.prototype.play).mockImplementation(function (
+      this: HTMLMediaElement,
+    ) {
+      Object.defineProperty(this, 'paused', {
+        configurable: true,
+        value: false,
+      });
+      return Promise.resolve();
+    });
+    await act(async () => {
+      await h.result.current.resumeAudio();
+      elements.forEach((e) => ready(e));
+    });
+    elements.forEach((e) => {
+      e.currentTime = 1;
+    });
+    h.rerender({
+      ...h.props,
+      snapshot,
+      transport: {
+        ...h.props.transport,
+        frame: 25,
+        captureAnchor: () => ({
+          ...h.props.transport.captureAnchor(),
+          frame: 25,
+          projectSeconds: 1,
+        }),
+      },
+    });
+    expect(elements[lane === 'independentAudio' ? 0 : 1].currentTime).toBe(4);
+    expect(elements[lane === 'independentAudio' ? 1 : 0].currentTime).toBe(1);
+  },
+);
 it('continuous_edits_do_not_reseek_a_running_native_voice_but_explicit_seek_repositions_it', async () => {
   const h = setup();
   vi.mocked(HTMLMediaElement.prototype.play).mockImplementation(function (
@@ -190,7 +290,7 @@ it('a_running_context_with_a_stalled_render_clock_cannot_claim_audible_readiness
     expect(h.props.transport.ready).not.toHaveBeenCalled();
     expect(h.result.current.status).toBe('preparing');
     await act(async () => {
-      lastContext.currentTime = 0.02;
+      contexts.at(-1)!.currentTime = 0.02;
       vi.advanceTimersByTime(20);
     });
     expect(h.props.transport.ready).toHaveBeenCalled();

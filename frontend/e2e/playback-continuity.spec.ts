@@ -1,9 +1,40 @@
 import { test, expect } from '@playwright/test';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import {
   generateAdvancedMedia,
   generateContinuityVideo,
 } from './mediaFixtures';
+
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    const records: unknown[] = [];
+    (window as unknown as { boundaryRecords: unknown[] }).boundaryRecords = records;
+    const record = (element: HTMLMediaElement, type: string, value?: number) => {
+      records.push({ type, value, tag: element.tagName, src: element.src,
+        time: element.currentTime, now: performance.now(), paused: element.paused,
+        seeking: element.seeking, ready: element.readyState,
+        stack: new Error().stack?.split('\n').slice(2, 6),
+        frame: document.querySelector<HTMLInputElement>('[aria-label="Timeline position"]')?.value });
+    };
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime')!;
+    Object.defineProperty(HTMLMediaElement.prototype, 'currentTime', {
+      ...descriptor, set(value: number) { record(this, 'seek-write', value); descriptor.set!.call(this, value); },
+    });
+    for (const name of ['play', 'pause'] as const) {
+      const original = HTMLMediaElement.prototype[name];
+      Object.defineProperty(HTMLMediaElement.prototype, name, { configurable: true, writable: true,
+        value(this: HTMLMediaElement) {
+          if ((name === 'pause' && !this.paused) || (name === 'play' && this.paused)) record(this, name);
+          return original.call(this);
+        },
+      });
+    }
+  });
+});
+test.afterEach(async ({ page }, info) => {
+  const records = await page.evaluate(() => (window as unknown as { boundaryRecords: unknown[] }).boundaryRecords).catch(() => []);
+  writeFileSync(info.outputPath('boundary-records.json'), JSON.stringify(records, null, 2));
+});
 
 for (const speed of ['1', '0.75', '0.5'])
   test(`same-source split preserves decoder and presented frames at speed ${speed}`, async ({
@@ -337,8 +368,10 @@ test('replacement boundaries hand off real decoders and return without stopping 
     .click();
   await seek(30);
   const baseUrl = await page
-    .getByLabel('Uploaded clip preview', { exact: true })
+    .getByRole('list', { name: 'Clip order', exact: true })
+    .locator('video').first()
     .getAttribute('src');
+  await expect(page.getByLabel('Uploaded clip preview', { exact: true })).toHaveAttribute('src', baseUrl!);
   await page.evaluate(() => {
     const events: unknown[] = [];
     (window as unknown as { handoffEvents: unknown[] }).handoffEvents = events;
@@ -474,10 +507,16 @@ for (const cancel of [false, true])
           await delivery;
         }
         try {
+          const bytes = readFileSync(media.takeA);
+          const range = route.request().headers().range?.match(/^bytes=(\d*)-(\d*)$/);
+          const start = range ? (range[1] ? Number(range[1]) : Math.max(0, bytes.length - Number(range[2]))) : 0;
+          const end = range && range[1] && range[2] ? Math.min(Number(range[2]), bytes.length - 1) : bytes.length - 1;
           await route.fulfill({
-            path: media.takeA,
+            status: range ? 206 : 200,
+            body: bytes.subarray(start, end + 1),
             contentType: 'video/mp4',
-            headers: { 'cache-control': 'no-store' },
+            headers: { 'cache-control': 'no-store', 'accept-ranges': 'bytes',
+              ...(range ? { 'content-range': `bytes ${start}-${end}/${bytes.length}` } : {}) },
           });
         } catch (error) {
           if (!route.request().failure()) throw error;

@@ -13,7 +13,13 @@ type Options = {
   projection?: AdvancedTimelineProjection;
   transport: ProjectPlayback;
 };
-type Target = { sourceId: string; time: number; speed: number; end: number };
+type Target = {
+  sourceId: string;
+  time: number;
+  speed: number;
+  end: number;
+  origin: number;
+};
 type Voice = {
   element: HTMLAudioElement;
   node: MediaElementAudioSourceNode;
@@ -24,6 +30,7 @@ type Voice = {
   pending: boolean;
   ended: number | null;
   positionRevision: number | undefined;
+  mapping?: { origin: number; speed: number; generation: number };
 };
 export function useProjectAudio(options: Options) {
   const [, render] = useState(0);
@@ -72,6 +79,7 @@ export function useProjectAudio(options: Options) {
             time: offset,
             end: (source.sampleCount ?? 0) / 48000,
             speed: 1,
+            origin: offset - seconds,
           };
         if (!source.metadata) return null;
         return {
@@ -81,6 +89,9 @@ export function useProjectAudio(options: Options) {
             offset * recipe.speed,
           end: (recipe.sourceEndFrame + 1) / source.metadata.fps,
           speed: recipe.speed,
+          origin:
+            recipe.sourceStartFrame / source.metadata.fps +
+            (offset - seconds) * recipe.speed,
         };
       };
       const range = resolveAudioOwnership(s, p).find(
@@ -124,6 +135,7 @@ export function useProjectAudio(options: Options) {
       voice.accepted = false;
       voice.pending = false;
       voice.ended = null;
+      voice.mapping = undefined;
     };
     const block = (next: Status, text: string) => {
       publish(next, text);
@@ -307,7 +319,26 @@ export function useProjectAudio(options: Options) {
       // the rendered transport position introduce buffering and interrupt sound.
       // Explicit seeks and discontinuous source mappings advance this revision.
       const revision = latest.transport.positionRevision;
-      if (voice.accepted && !e.paused && voice.positionRevision === revision)
+      const generation = latest.transport.generation;
+      const tolerance =
+        voice.mapping?.generation === generation
+          ? 0.000001
+          : target.speed / (latest.projection?.base.fps ?? 25);
+      const continuous =
+        voice.mapping &&
+        voice.mapping.speed === target.speed &&
+        Math.abs(voice.mapping.origin - target.origin) <= tolerance;
+      voice.mapping = {
+        origin: target.origin,
+        speed: target.speed,
+        generation,
+      };
+      if (
+        voice.accepted &&
+        (latest.transport.playing || !e.paused) &&
+        voice.positionRevision === revision &&
+        continuous
+      )
         return;
       voice.positionRevision = revision;
       if (target.time >= Math.min(e.duration, target.end)) {
@@ -325,7 +356,15 @@ export function useProjectAudio(options: Options) {
     const sync = () => {
       const o = latest,
         s = o.snapshot;
-      if (!s || !o.sources || !o.projection || !context) return;
+      if (!s || !o.sources || !o.projection) return;
+      if (generation !== o.transport.generation) {
+        generation = o.transport.generation;
+        gate = null;
+      }
+      if (!context) {
+        if (o.transport.playingIntent) ensureGate();
+        return;
+      }
       buses[0].gain.value =
         s.audio.originalMuted || !o.transport.playing || !graphReady
           ? 0
@@ -334,10 +373,6 @@ export function useProjectAudio(options: Options) {
         s.audio.musicMuted || !o.transport.playing || !graphReady
           ? 0
           : s.audio.musicVolume;
-      if (generation !== o.transport.generation) {
-        generation = o.transport.generation;
-        gate = null;
-      }
       const targets = currentTargets();
       if (!o.transport.playingIntent) {
         for (const bus of [0, 1])

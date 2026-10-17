@@ -121,3 +121,19 @@ def test_duplicate_detection_keeps_legacy_ignored_fields_compatible():
     raw = manifest(1)
     raw = raw[:-1] + ', "unused": {"schema_version": 3, "same": 1, "same": 2}}'
     assert _parse_manifest(raw, 1, 10).order == ("clip-0",)
+
+
+@pytest.mark.parametrize("field,value", [("position", []), ("size", {})])
+@pytest.mark.parametrize("kind", ["image", "video"])
+def test_v3_overlay_invalid_enum_types_return_validation_error(kind, field, value):
+    m = v3_manifest()
+    m["overlays"][kind] = {
+        "start_frame": 0,
+        "end_frame": 1,
+        "position": "top-left",
+        "size": "small",
+        field: value,
+    }
+    with pytest.raises(ApiError) as error:
+        parse(m)
+    assert error.value.status_code == 422

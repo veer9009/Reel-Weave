@@ -96,12 +96,10 @@ it('v3_preserves_windows_and_frozen_audio_only_sources_with_deduplicated_uploads
   expect(JSON.stringify(render.manifest)).not.toMatch(
     /blob:|requestId|normalizationFps/,
   );
-  const fetch = vi
-    .fn()
-    .mockResolvedValue({
-      ok: true,
-      json: async () => ({ job_id: 'job', status: 'queued', error: null }),
-    });
+  const fetch = vi.fn().mockResolvedValue({
+    ok: true,
+    json: async () => ({ job_id: 'job', status: 'queued', error: null }),
+  });
   vi.stubGlobal('fetch', fetch);
   await submitV3Merge(render);
   const form = fetch.mock.calls[0][1].body as FormData;

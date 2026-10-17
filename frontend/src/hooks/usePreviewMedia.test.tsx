@@ -7,7 +7,87 @@ import {
   resolveProgramFrame,
 } from '../lib/advancedTimeline';
 import { useProjectPlayback } from './useProjectPlayback';
-it('a_real_readiness_resume_realigns_picture_drift_before_starting_the_clock_again', () => {
+it.each([false, true])(
+  'same_file_picture_boundary_handles_legacy_rounding_%s',
+  (legacySplit) => {
+    const f = advancedFixture();
+    if (legacySplit)
+      f.sources.markReady(f.base, {
+        clipMetadata: {
+          duration: 5,
+          fps: 30,
+          totalFrames: 150,
+          width: 320,
+          height: 180,
+          source: 'browser',
+        },
+      });
+    const first = f.snapshot.video1[0];
+    const projection = buildAdvancedTimeline(
+      {
+        ...f.snapshot,
+        video2: [],
+        video1: [
+          {
+            ...first,
+            trim: { startFrame: 0, endFrame: legacySplit ? 19 : 24 },
+          },
+          {
+            ...first,
+            id: 'later',
+            trim: { startFrame: legacySplit ? 20 : 100, endFrame: 124 },
+          },
+        ],
+      },
+      f.sources,
+      { image: null, video: null },
+    );
+    function Harness({ frame }: { frame: number }) {
+      const media = usePreviewMedia({
+        current: resolveProgramFrame(projection, frame),
+        projection,
+        frame,
+        projectSeconds: frame / 25,
+        playing: true,
+        generation: 1,
+        positionRevision: 0,
+        onSuspend: () => {},
+        onReady: () => {},
+      });
+      return (
+        <>
+          {media.slots.map((slot, index) => (
+            <video
+              key={index}
+              ref={media.bind[index]}
+              src={slot.url}
+              aria-label={
+                index === media.active ? 'Active picture' : 'Upcoming picture'
+              }
+              {...media.events[index]}
+            />
+          ))}
+        </>
+      );
+    }
+    const view = render(<Harness frame={0} />);
+    const video = screen.getByLabelText('Active picture') as HTMLVideoElement;
+    Object.defineProperties(video, {
+      duration: { configurable: true, value: 6 },
+      readyState: { configurable: true, value: 4 },
+      seeking: { configurable: true, value: false },
+      paused: { configurable: true, value: false },
+    });
+    fireEvent.loadedMetadata(video);
+    video.currentTime = 1;
+    const time = vi.spyOn(video, 'currentTime', 'set');
+    view.rerender(<Harness frame={legacySplit ? 17 : 25} />);
+    expect(screen.getByLabelText('Active picture')).toBe(video);
+    if (legacySplit) expect(time).not.toHaveBeenCalled();
+    else expect(video.currentTime).toBe(4);
+  },
+);
+it.each([0, 2])('readiness_resume_realigns_picture_to_the_frozen_position_not_render_delay_%s', (resumeFrame) => {
   const f = advancedFixture(),
     projection = buildAdvancedTimeline(
       { ...f.snapshot, video2: [] },
@@ -16,9 +96,9 @@ it('a_real_readiness_resume_realigns_picture_drift_before_starting_the_clock_aga
     );
   function Harness({ playing }: { playing: boolean }) {
     const media = usePreviewMedia({
-      current: resolveProgramFrame(projection, 0),
+      current: resolveProgramFrame(projection, playing ? resumeFrame : 0),
       projection,
-      frame: 0,
+      frame: playing ? resumeFrame : 0,
       playing,
       generation: 1,
       positionRevision: 0,
