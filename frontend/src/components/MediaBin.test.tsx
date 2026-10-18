@@ -3,6 +3,53 @@ import { expect, it, vi } from 'vitest';
 import { advancedFixture } from '../test/historyFixtures';
 import { MediaBin, TimelineDropZone } from './MediaBin';
 import { SOURCE_DRAG_MIME, sourceDragData } from '../lib/placement';
+it('compact_bin_keeps_source_specific_actions_and_loading_errors', () => {
+  const f = advancedFixture();
+  const source = f.sources.get(f.base.sourceId)!;
+  const props = {
+    sources: [source],
+    disabled: false,
+    fps: 25 as const,
+    onImport: () => {},
+    onRemove: () => {},
+    onPlace: () => false,
+    onPip: () => {},
+  };
+  const view = render(<MediaBin {...props} />);
+  expect(screen.getByRole('heading', { name: 'Media Bin' })).toBeVisible();
+  expect(
+    screen.getByRole('button', { name: 'Use base.mp4 as PIP' }),
+  ).toHaveTextContent('Use as PIP');
+  expect(
+    screen.getByRole('button', { name: 'Place base.mp4 on track' }),
+  ).toBeEnabled();
+  expect(
+    screen.getByRole('button', { name: 'Remove base.mp4 from bin' }),
+  ).toBeEnabled();
+  expect(screen.getByLabelText('Import video to bin')).toHaveAttribute(
+    'accept',
+    '.mp4,.mov,.webm,.mkv',
+  );
+  expect(screen.getByLabelText('Import audio to bin')).toHaveAttribute(
+    'accept',
+    '.mp3,.wav,.aac,.m4a',
+  );
+  view.rerender(
+    <MediaBin {...props} sources={[{ ...source, status: 'loading' }]} />,
+  );
+  expect(screen.getByRole('status')).toHaveTextContent(
+    /Reading metadata.*base.mp4/,
+  );
+  expect(
+    screen.getByRole('button', { name: 'Place base.mp4 on track' }),
+  ).toBeDisabled();
+  view.rerender(
+    <MediaBin {...props} sources={[{ ...source, status: 'error' }]} />,
+  );
+  expect(screen.getByRole('status')).toHaveTextContent(
+    'Metadata unavailable. Re-import this source.',
+  );
+});
 it('ready_bin_source_has_keyboard_placement_with_track_and_frame_without_removing_source', () => {
   const f = advancedFixture(),
     place = vi.fn(() => true);

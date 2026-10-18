@@ -7,7 +7,67 @@ import { clip, overlays } from '../test/fixtures';
 import { EditingWorkspace } from './EditingWorkspace';
 import { advancedFixture } from '../test/historyFixtures';
 import { buildAdvancedTimeline } from '../lib/advancedTimeline';
+import { detachAudio } from '../lib/audioTimeline';
 import type { IndependentAudioActions } from './IndependentAudioTrack';
+
+it('audio_keyboard_lift_stays_distinct_from_explicit_ripple', () => {
+  const f = advancedFixture();
+  const initial = buildAdvancedTimeline(f.snapshot, f.sources, {
+    image: null,
+    video: null,
+  });
+  let serial = 0;
+  const detached = detachAudio(
+    f.snapshot,
+    f.sources,
+    initial,
+    { track: 'video1', id: 'base' },
+    () => `ui-audio-${++serial}`,
+  );
+  if ('error' in detached) throw new Error(detached.error.message);
+  const projection = buildAdvancedTimeline(detached.value, f.sources, {
+    image: null,
+    video: null,
+  });
+  const edit = vi.fn(() => true);
+  const actions: IndependentAudioActions = {
+    snapshot: detached.value,
+    sources: f.sources,
+    onEdit: edit,
+    onSave: () => false,
+    onDetach: () => false,
+    onReplaceFile: () => {},
+    onBegin: () => null,
+    onPreview: () => false,
+    onEnd: () => {},
+    onError: () => {},
+  };
+  render(
+    <EditingWorkspace
+      {...splitWorkspaceProps(projection.base.items.map((v) => v.clip))}
+      timeline={projection.base}
+      advanced={projection}
+      audioActions={actions}
+    />,
+  );
+  fireEvent.click(
+    screen.getAllByRole('button', {
+      name: /Original\/Replacement Audio.*base.mp4.*Detached/,
+    })[0],
+  );
+  for (const key of ['Delete', 'Backspace']) {
+    fireEvent.keyDown(document, { key });
+    expect(edit).toHaveBeenLastCalledWith({ action: 'lift', id: 'ui-audio-1' });
+  }
+  const tools = screen.getByRole('toolbar', { name: 'Timeline Tools' });
+  fireEvent.click(
+    within(tools).getByRole('button', { name: 'Ripple Delete selected' }),
+  );
+  expect(edit).toHaveBeenLastCalledWith({
+    action: 'ripple-delete',
+    id: 'ui-audio-1',
+  });
+});
 
 it('detach_shortcut_guards_typing_repeat_IME_modal_and_locks_and_context_menu_restores_focus', () => {
   const f = advancedFixture(),

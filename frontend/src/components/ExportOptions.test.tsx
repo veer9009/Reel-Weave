@@ -1,6 +1,26 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import { ExportOptions } from './ExportOptions';
+it.each([false, true])(
+  'keeps_optional_capability_and_locked_states_visible_%s',
+  (locked) => {
+    render(
+      <ExportOptions
+        formats={['mp4', 'mov', 'wav', 'mp3']}
+        onChange={() => {}}
+        capabilities={{ mov: true, wav: true, mp3: true }}
+        disabled={locked}
+      />,
+    );
+    for (const format of ['MP4', 'MOV', 'WAV', 'MP3']) {
+      const input = screen.getByLabelText(format);
+      expect(input).toBeChecked();
+      if (locked || format === 'MP4') expect(input).toBeDisabled();
+      else expect(input).toBeEnabled();
+    }
+    expect(screen.getByText(/MP4 is included with every render/)).toBeVisible();
+  },
+);
 it('keeps_mp4_mandatory_and_disables_unavailable_formats_and_locked_selection', () => {
   const change = vi.fn();
   const view = render(

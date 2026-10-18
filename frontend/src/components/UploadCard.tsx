@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { FolderOpen, Upload, CloudUpload } from 'lucide-react';
+import { FolderOpen, Upload } from 'lucide-react';
 import type { Limits } from '../lib/clips';
 type Props = {
   disabled: boolean;
@@ -16,8 +16,7 @@ export function UploadCard({ disabled, limits, onSelect }: Props) {
           <Upload aria-hidden="true" />
         </span>
         <div>
-          <h2 id="upload-title">Add your clips</h2>
-          <p>Add source videos to Video 1.</p>
+          <h2 id="upload-title">Add to Video 1</h2>
         </div>
       </div>
       <div
@@ -38,10 +37,7 @@ export function UploadCard({ disabled, limits, onSelect }: Props) {
           if (!disabled) onSelect(Array.from(e.dataTransfer.files));
         }}
       >
-        <span className="upload-symbol">
-          <CloudUpload aria-hidden="true" />
-        </span>
-        <h3>Drag & drop your videos here</h3>
+        <h3>Drop video clips</h3>
         <p>Files are uploaded to the configured backend when rendering.</p>
         <button
           className="browse-button"

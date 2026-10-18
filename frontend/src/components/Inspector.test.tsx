@@ -2,6 +2,28 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { expect, it } from 'vitest';
 import { Inspector } from './Inspector';
 import { useState } from 'react';
+it('all_inspector_sections_remain_reachable_without_selection', () => {
+  render(
+    <Inspector
+      selection={{ kind: 'none' }}
+      clipContent={<input aria-label="Source frame" />}
+      replacementContent={<p>Replacement controls</p>}
+      overlayContent={<p>Overlay controls</p>}
+      audioContent={<p>Audio controls</p>}
+      deliveryContent={<button>Render MP4</button>}
+    />,
+  );
+  for (const label of [
+    'Clip',
+    'Video 2 — Replacement',
+    'Overlay/PIP',
+    'Audio',
+    'Delivery',
+  ])
+    expect(screen.getByText(label).closest('details')).toHaveAttribute('open');
+  expect(screen.getByLabelText('Source frame')).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Render MP4' })).toBeVisible();
+});
 it('selection_reveals_section_and_collapsing_preserves_inputs', () => {
   const props = {
     selection: { kind: 'none' } as const,

@@ -777,6 +777,7 @@ export function EditingWorkspace(props: Props) {
               type="button"
               className="secondary-button"
               aria-keyshortcuts="Control+Z"
+              aria-label="Undo"
               title="Undo (Ctrl+Z)"
               disabled={!props.historyControls?.canUndo}
               onClick={() => props.historyControls?.undo()}
@@ -788,6 +789,7 @@ export function EditingWorkspace(props: Props) {
               type="button"
               className="secondary-button"
               aria-keyshortcuts="Control+Y Control+Shift+Z"
+              aria-label="Redo"
               title="Redo (Ctrl+Y or Ctrl+Shift+Z)"
               disabled={!props.historyControls?.canRedo}
               onClick={() => props.historyControls?.redo()}
@@ -799,6 +801,7 @@ export function EditingWorkspace(props: Props) {
               type="button"
               className="secondary-button"
               disabled={!canSplit}
+              aria-label="Split at playhead"
               title={splitReason ?? 'Split at playhead'}
               aria-describedby={!canSplit ? 'split-reason' : undefined}
               onClick={() => {
@@ -854,6 +857,7 @@ export function EditingWorkspace(props: Props) {
                   });
                 else deleteSelected();
               }}
+              aria-label="Ripple Delete selected"
               title={
                 selectedIndependent
                   ? 'Ripple Delete on Original/Replacement Audio only'

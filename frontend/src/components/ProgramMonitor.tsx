@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Play, Pause } from 'lucide-react';
 import { usePreviewMedia } from '../hooks/usePreviewMedia';
 import type { ProjectPlayback } from '../hooks/useProjectPlayback';
 import type { ProjectSources } from '../lib/projectSources';
@@ -171,7 +172,7 @@ export function ProgramMonitor({
   }, [pipVisible, overlays.video?.url]);
   return (
     <section className="program-monitor panel" aria-label="Program preview">
-      <h2>Program preview</h2>
+      <h2>Program</h2>
       {transport?.status === 'preparing' && (
         <p role="status">Preparing Preview</p>
       )}
@@ -252,13 +253,18 @@ export function ProgramMonitor({
           type="button"
           onClick={onToggle}
           disabled={frame === null}
+          title={
+            transport?.playingIntent || playing
+              ? 'Pause preview'
+              : 'Play preview'
+          }
           aria-label={
             transport?.playingIntent || playing
               ? 'Pause preview'
               : 'Play preview'
           }
         >
-          {playing ? 'Pause' : 'Play'}
+          {playing ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}
         </button>
         <output aria-label="Current time and frame" aria-live="off">
           {frame !== null && timeline.fps

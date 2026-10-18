@@ -1,6 +1,32 @@
 import { render, screen } from '@testing-library/react';
 import { expect, it } from 'vitest';
 import { JobResult } from './JobResult';
+it('partial_success_retains_primary_download_and_pending_reset_lock', () => {
+  render(
+    <JobResult
+      job={{
+        job_id: 'partial',
+        status: 'processing',
+        error: null,
+        exports: {
+          mp4: { status: 'ready', error: null },
+          mov: { status: 'processing', error: null },
+          wav: { status: 'failed', error: 'Audio encoding failed.' },
+        },
+      }}
+      onNewProject={() => {}}
+    />,
+  );
+  expect(screen.getByRole('link', { name: 'Download MP4' })).toBeVisible();
+  expect(screen.getByText('MOV: processing')).toBeVisible();
+  expect(screen.getByText(/Audio encoding failed/)).toBeVisible();
+  expect(screen.queryByRole('link', { name: 'Download MOV' })).toBeNull();
+  expect(screen.queryByRole('link', { name: 'Download WAV' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'New project' })).toBeNull();
+  expect(
+    screen.getByText(/Requested downloads are still processing/),
+  ).toBeVisible();
+});
 it('retains_successful_artifact_links_and_shows_failed_extra_without_a_link', () => {
   render(
     <JobResult

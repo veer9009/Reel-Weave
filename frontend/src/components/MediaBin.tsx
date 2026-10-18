@@ -36,11 +36,7 @@ export function MediaBin({
   const [selected, setSelected] = useState<SourceRecord | null>(null);
   return (
     <section className="panel media-bin" aria-label="Project media bin">
-      <h2>Project media bin</h2>
-      <p>
-        Import reusable sources, then drag them to a lane or choose Place on
-        Track.
-      </p>
+      <h2>Media Bin</h2>
       {(['video', 'audio'] as const).map((type) => (
         <label key={type}>
           Import {type} to bin
@@ -82,7 +78,7 @@ export function MediaBin({
           }}
           onDragEnd={() => onDragDraft?.(null)}
         >
-          <strong>{source.file.name}</strong>
+          <strong title={source.file.name}>{source.file.name}</strong>
           <span>
             {source.mediaType === 'video' ? 'Video source' : 'Audio source'}
           </span>
@@ -103,10 +99,11 @@ export function MediaBin({
           {onPip && source.mediaType === 'video' && (
             <button
               type="button"
+              aria-label={`Use ${source.file.name} as PIP`}
               disabled={disabled || source.status !== 'ready'}
               onClick={() => onPip(source.file)}
             >
-              Use {source.file.name} as PIP
+              Use as PIP
             </button>
           )}
           <button

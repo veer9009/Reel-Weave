@@ -1,17 +1,20 @@
 .editing-workspace {
-  max-width: 1600px;
+  max-width: none;
   margin: auto;
-  padding: 24px;
+  padding: 12px;
+  font-size: 13px;
+  line-height: 1.5;
 }
 .editing-workspace h1 {
-  font-size: 20px;
+  font-size: 13px;
   letter-spacing: 0;
-  margin: 0 0 16px;
+  margin: 0 0 8px;
+  color: var(--muted);
 }
 .workspace-panels {
   display: grid;
-  grid-template-columns: 260px minmax(360px, 1fr) 300px;
-  gap: 16px;
+  grid-template-columns: 240px minmax(360px, 1fr) 300px;
+  gap: 8px;
   align-items: start;
 }
 .workspace-panels > * {
@@ -23,8 +26,8 @@
 }
 .inspector details {
   border: 1px solid var(--line);
-  border-radius: 8px;
-  margin-bottom: 10px;
+  border-radius: 4px;
+  margin-bottom: 8px;
   background: var(--card);
 }
 .inspector summary {
@@ -32,6 +35,37 @@
   cursor: pointer;
   min-height: 44px;
   font-weight: 600;
+  font-size: 13px;
+}
+.inspector details[open] > summary {
+  border-bottom: 1px solid var(--line);
+  background: #191c2b;
+}
+.inspector-content > label,
+.inspector-content > div > label {
+  display: grid;
+  gap: 4px;
+  margin-block: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.inspector-content select,
+.inspector-content input[type='file'] {
+  min-width: 0;
+  max-width: 100%;
+}
+.inspector-content > button {
+  max-width: 100%;
+  margin-block: 4px;
+}
+.inspector-content .overlay-track-heading,
+.inspector-content .audio-heading {
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.inspector-content h2 {
+  font-size: 13px;
+  letter-spacing: 0;
 }
 .inspector-content {
   padding: 12px;
@@ -39,14 +73,20 @@
 .inspector-content .panel {
   border: 0;
   padding: 0;
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
 }
 .inspector-content .overlay-slots,
 .inspector-content .audio-mix-controls {
   display: grid;
   grid-template-columns: 1fr;
 }
-.program-monitor {
-  padding: 16px;
+.workspace-panels > .program-monitor {
+  padding: 12px;
+  border-radius: 6px;
+  background: var(--card);
+  box-shadow: none;
 }
 .program-monitor h2 {
   font-size: 14px;
@@ -116,19 +156,213 @@
   margin-top: 12px;
   font-size: 12px;
 }
+.program-transport button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  position: relative;
+}
+.program-transport button[title]:is(:hover, :focus-visible)::after {
+  content: attr(title);
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 10;
+  width: max-content;
+  padding: 8px;
+  background: #202438;
+  color: #f1f1f7;
+  border: 1px solid #64748b;
+  border-radius: 4px;
+  font-size: 12px;
+  pointer-events: none;
+}
+.program-transport output {
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
 .preview-note {
   color: var(--muted);
   font-size: 12px;
   margin-top: 12px;
 }
 .render-region {
-  margin-top: 16px;
+  margin-top: 8px;
+}
+.render-region .result,
+.render-region .processing {
+  padding: 12px;
+  border-radius: 6px;
+  background: var(--card);
+  box-shadow: none;
+  text-align: left;
+}
+.render-region .result h2,
+.render-region .processing h2 {
+  font-size: 14px;
+  letter-spacing: 0;
+  margin: 0;
+}
+.render-region .processing p {
+  margin: 8px 0 0;
+  max-width: none;
+}
+.render-region .result-heading {
+  margin-bottom: 12px;
+}
+.render-region .result-actions {
+  gap: 8px;
+  margin-top: 12px;
+}
+.render-region .result-actions > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.inspector .export-options {
+  min-width: 0;
+  margin: 8px 0 16px;
+  padding: 12px;
+  border: 1px solid #64748b;
+  border-radius: 4px;
+}
+.inspector .export-options > div > label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+.inspector .export-options input {
+  accent-color: var(--purple);
+}
+.inspector .export-options small {
+  display: block;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.inspector .summary dl {
+  margin: 12px 0;
+  gap: 8px;
+  font-size: 12px;
+}
+.inspector .summary .primary-button {
+  margin-top: 12px;
+}
+.inspector button:not(.primary-button):not(.icon-button) {
+  background: #202438;
+  border: 1px solid #64748b;
+  border-radius: 4px;
+  color: #f1f1f7;
+  padding: 8px;
+  font: inherit;
+  font-size: 12px;
+}
+.inspector button:disabled,
+.media-panel button:disabled {
+  opacity: 0.75;
 }
 .render-region:empty {
   display: none;
 }
 .media-panel .upload-card {
-  padding: 16px;
+  padding: 12px;
+}
+
+/* Media chrome only: import and drop handlers retain their existing owners. */
+.media-panel .panel {
+  background: var(--card);
+  box-shadow: none;
+  border-radius: 6px;
+}
+.media-panel .section-heading {
+  margin-bottom: 8px;
+}
+.media-panel .section-heading h2,
+.media-bin h2 {
+  font-size: 13px;
+  letter-spacing: 0;
+}
+.media-panel .dropzone {
+  padding: 12px 8px;
+  background: #0e111c;
+  border-radius: 4px;
+}
+.media-panel .dropzone.dragging {
+  background: #24203b;
+  border-color: var(--purple);
+}
+.media-bin {
+  padding: 12px;
+  margin-top: 8px;
+  font-size: 13px;
+}
+.media-bin > label {
+  display: grid;
+  gap: 4px;
+  margin-block: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.media-panel .replacement-upload {
+  display: grid;
+  gap: 4px;
+  margin-block: 8px;
+  font-size: 12px;
+}
+.media-panel input[type='file'],
+.inspector input[type='file'] {
+  min-width: 0;
+  max-width: 100%;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+}
+.media-panel input[type='file']::file-selector-button,
+.inspector input[type='file']::file-selector-button {
+  min-height: 32px;
+  margin-right: 8px;
+  padding: 4px 8px;
+  background: #202438;
+  color: #f1f1f7;
+  border: 1px solid #64748b;
+  border-radius: 4px;
+  font: inherit;
+}
+.media-bin-source[draggable='true'] {
+  cursor: grab;
+}
+.media-bin-source {
+  background: #0e111c;
+}
+.media-bin-source > strong {
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.media-bin-source > span {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 12px;
+}
+.media-bin-source > button {
+  background: #202438;
+  border: 1px solid #64748b;
+  border-radius: 4px;
+  padding: 8px;
+  font: inherit;
+  font-size: 12px;
+}
+.media-bin-source > p {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.media-panel .clip-details p {
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.media-panel .clip-item {
+  border-radius: 4px;
 }
 .media-panel .clip-item {
   display: grid;

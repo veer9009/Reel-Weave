@@ -1056,14 +1056,14 @@ h1 {
   background: #0b0d16;
 }
 .site-header {
-  max-width: 1600px;
-  height: 72px;
-  padding: 0 24px;
+  max-width: none;
+  height: 56px;
+  padding: 0 12px;
   gap: 16px;
 }
 .brand-wordmark {
-  width: 180px;
-  height: 48px;
+  width: 150px;
+  height: 40px;
 }
 .brand-icon,
 .compact-brand-name {

@@ -14,6 +14,42 @@ const props = {
   onSeek: vi.fn(),
   onToggle: vi.fn(),
 };
+it('compact_program_keeps_transport_and_truthful_state_copy', () => {
+  const toggle = vi.fn();
+  const audioPreview = {
+    status: 'resume-required',
+    message: 'Resume sound to audition this source.',
+    resumeAudio: async () => true,
+  };
+  const view = render(
+    <ProgramMonitor {...props} onToggle={toggle} audioPreview={audioPreview} />,
+  );
+  expect(screen.getByRole('heading', { name: 'Program' })).toBeVisible();
+  expect(screen.getByLabelText('Current time and frame')).toHaveAttribute(
+    'aria-live',
+    'off',
+  );
+  expect(screen.getByRole('button', { name: 'Play preview' })).toHaveAttribute(
+    'title',
+    'Play preview',
+  );
+  expect(screen.getAllByText(audioPreview.message).length).toBeGreaterThan(0);
+  fireEvent.click(screen.getByRole('button', { name: 'Resume Audio' }));
+  expect(toggle).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole('button', { name: 'Play preview' }));
+  expect(toggle).toHaveBeenCalledTimes(2);
+  view.rerender(
+    <ProgramMonitor
+      {...props}
+      playing
+      audioPreview={{ ...audioPreview, status: 'ready', message: null }}
+    />,
+  );
+  expect(screen.getByRole('button', { name: 'Pause preview' })).toBeVisible();
+  expect(
+    screen.getByText('Browser picture and sound preview · approximate'),
+  ).toBeVisible();
+});
 beforeEach(() => {
   vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
   vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});

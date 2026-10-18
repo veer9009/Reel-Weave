@@ -25,6 +25,48 @@ const job = {
   status: 'queued',
   error: null,
 };
+
+it('professional_shell_has_named_regions_and_one_submission', async () => {
+  serve();
+  render(<App />);
+  await screen.findByText('Backend ready');
+  expect(screen.getAllByRole('main')).toHaveLength(1);
+  expect(
+    screen.getByRole('link', { name: 'AVStudio workspace' }),
+  ).toBeVisible();
+  expect(screen.getByLabelText('Inspector')).toBeVisible();
+  const submit = screen.getAllByRole('button', { name: 'Render MP4' });
+  expect(submit).toHaveLength(1);
+  expect(submit[0]).toBeDisabled();
+  expect(submit[0]).toHaveAttribute('aria-describedby', 'render-hint');
+  expect(
+    screen.getByText('Add at least one video clip to render'),
+  ).toBeVisible();
+  expect(
+    screen.queryByRole('button', { name: /^(Save|Open|Export)$/ }),
+  ).toBeNull();
+});
+
+it('append_and_reuse_imports_remain_distinct', async () => {
+  serve();
+  render(<App />);
+  await screen.findByText('Backend ready');
+  expect(screen.getByRole('heading', { name: 'Add to Video 1' })).toBeVisible();
+  expect(screen.getByLabelText('Choose video clips')).toHaveAttribute(
+    'multiple',
+  );
+  expect(screen.getByLabelText('Choose video clips')).toHaveAttribute(
+    'accept',
+    '.mp4,.mov,.webm,.mkv',
+  );
+  expect(screen.getByLabelText('Import video to bin')).toBeEnabled();
+  expect(screen.getByLabelText('Import audio to bin')).toBeEnabled();
+  expect(
+    screen.getByText(
+      'Files are uploaded to the configured backend when rendering.',
+    ),
+  ).toBeVisible();
+});
 function serve(
   mode: 'success' | 'error' | 'network' | 'failed' | 'pollError' = 'success',
   expectedFiles = ['second.mov', 'first.mp4'],

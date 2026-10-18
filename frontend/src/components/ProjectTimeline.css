@@ -338,6 +338,79 @@
   min-width: 0;
   margin-top: 12px;
 }
+
+/* Workspace chrome: no lane, ruler, clip, trim or drop geometry changes. */
+.editing-workspace > .project-timeline {
+  margin-top: 8px;
+  border-radius: 6px;
+  background: var(--card);
+  box-shadow: none;
+}
+.timeline-track > h3 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.25;
+}
+.timeline-heading h2 {
+  font-size: 13px;
+  letter-spacing: 0;
+}
+.timeline-heading > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.timeline-settings {
+  gap: 8px;
+  margin: 8px 0;
+}
+.timeline-tools {
+  border-radius: 4px;
+}
+.timeline-tools button[title] {
+  position: relative;
+}
+.timeline-tools button[title]:is(:hover, :focus-visible)::after {
+  content: attr(title);
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 0;
+  z-index: 10;
+  width: max-content;
+  max-width: min(240px, calc(100vw - 100px));
+  padding: 8px;
+  border: 1px solid #64748b;
+  border-radius: 4px;
+  background: #202438;
+  color: #f1f1f7;
+  font-size: 12px;
+  font-weight: 400;
+  white-space: normal;
+  text-align: left;
+  pointer-events: none;
+}
+.timeline-track[aria-label='VIDEO 2'] .video-block {
+  background: #302744;
+  box-shadow: inset 0 0 0 1px #9b86ce;
+}
+.timeline-track[aria-label='AUDIO 2'] .video-block {
+  background: #245446;
+}
+.timeline-track[aria-label='Overlay/PIP'] .timeline-block {
+  background: #38321f;
+  box-shadow: inset 0 0 0 1px #a8975d;
+}
+.timeline-track[aria-label='VIDEO 2'] .video-block.invalid,
+.timeline-track[aria-label='Overlay/PIP'] .timeline-block.invalid {
+  box-shadow: inset 0 0 0 1px #fb7185;
+}
+.timeline-block:focus-visible {
+  outline: 3px solid #f1f1f7;
+  outline-offset: -3px;
+}
+.timeline-block[aria-pressed='true']:focus-visible {
+  box-shadow: inset 0 0 0 5px #38bdf8;
+}
 .positioned-editor button,
 .timeline-placement-dialog button {
   min-height: 44px;
