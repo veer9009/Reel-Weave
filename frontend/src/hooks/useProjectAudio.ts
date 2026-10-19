@@ -62,11 +62,13 @@ export function useProjectAudio(options: Options) {
       const o = latest,
         s = o.snapshot,
         p = o.projection,
-        fps = p?.base.fps,
-        frame = o.transport.frame;
-      if (!s || !p || !fps || frame === null || frame >= p.base.totalFrames)
+        fps = p?.base.fps;
+      if (!s || !p || !fps || o.transport.frame === null)
         return [null, null];
       const seconds = o.transport.captureAnchor().projectSeconds;
+      // Ownership and source offsets must use the same live clock at cuts.
+      const frame = seconds * fps;
+      if (frame >= p.base.totalFrames) return [null, null];
       const recipeTarget = (
         recipe: AudioRecipe,
         offset: number,

@@ -182,6 +182,117 @@ it('audio_ownership_uses_the_live_position_when_the_rendered_frame_precedes_a_sp
   expect(elements).toHaveLength(1);
 });
 it.each(['independentAudio', 'music'] as const)(
+  'live_position_selects_the_next_%s_segment_before_the_rendered_frame_catches_up',
+  async (lane) => {
+    const h = setup();
+    const first = h.props.snapshot[lane][0];
+    const snapshot = {
+      ...h.props.snapshot,
+      [lane]: [
+        { ...first, durationFrames: 25 },
+        {
+          ...first,
+          id: 'later',
+          timelineStartFrame: 25,
+          durationFrames: 25,
+          sourceStartSample: 192000,
+        },
+      ],
+    };
+    h.rerender({ ...h.props, snapshot });
+    await act(async () => {
+      await h.result.current.resumeAudio();
+      elements.forEach((e) => ready(e));
+    });
+    // Mocked play() does not advance native media time. The continuous lane
+    // keeps that clock, while the lane with a new source window must seek.
+    elements.forEach((e) => {
+      e.currentTime = 1.01;
+    });
+    h.rerender({
+      ...h.props,
+      snapshot,
+      transport: {
+        ...h.props.transport,
+        frame: 24,
+        captureAnchor: () => ({
+          ...h.props.transport.captureAnchor(),
+          projectSeconds: 1.01,
+        }),
+      },
+    });
+    expect(elements[lane === 'independentAudio' ? 0 : 1].currentTime).toBeCloseTo(
+      4.01,
+      5,
+    );
+    expect(elements[lane === 'independentAudio' ? 1 : 0].currentTime).toBeCloseTo(
+      1.01,
+      5,
+    );
+  },
+);
+it('live_replacement_boundaries_switch_original_ownership_exclusively_and_keep_music', async () => {
+  const h = setup();
+  const snapshot: EditSnapshot = {
+    ...h.props.snapshot,
+    independentAudio: [],
+    video2: [
+      {
+        ...h.snapshot.video2[0],
+        timelineStartFrame: 25,
+        contentOutFrame: 25,
+      },
+    ],
+  };
+  const props = {
+    ...h.props,
+    snapshot,
+    projection: buildAdvancedTimeline(snapshot, h.sources, {
+      image: null,
+      video: null,
+    }),
+  };
+  h.rerender(props);
+  await act(async () => {
+    await h.result.current.resumeAudio();
+    elements.forEach((e) => ready(e));
+  });
+  const baseVoice = elements.find(
+    (e) => e.getAttribute('src') === 'blob:base.mp4',
+  )!;
+  const pauseBase = vi.spyOn(baseVoice, 'pause');
+  for (const [frame, seconds, expected] of [
+    [24, 0.99, 'blob:base.mp4'],
+    [24, 1.01, 'blob:take.mp4'],
+    [49, 2.01, 'blob:base.mp4'],
+  ] as const) {
+    h.rerender({
+      ...props,
+      transport: {
+        ...props.transport,
+        frame,
+        captureAnchor: () => ({
+          ...props.transport.captureAnchor(),
+          projectSeconds: seconds,
+        }),
+      },
+    });
+    await act(async () => {
+      elements.forEach((e) => ready(e));
+    });
+    expect(
+      elements
+        .map((e) => e.getAttribute('src'))
+        .filter(Boolean)
+        .sort(),
+    ).toEqual([expected, 'blob:dialogue.wav'].sort());
+    if (expected === 'blob:take.mp4') {
+      expect(baseVoice.getAttribute('src')).toBeNull();
+      expect(pauseBase).toHaveBeenCalled();
+    }
+  }
+});
+it.each(['independentAudio', 'music'] as const)(
   'same_file_%s_boundary_seeks_to_the_next_segment_source_window',
   async (lane) => {
     const h = setup();
