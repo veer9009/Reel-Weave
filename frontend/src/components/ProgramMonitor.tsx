@@ -173,12 +173,13 @@ export function ProgramMonitor({
   return (
     <section className="program-monitor panel" aria-label="Program preview">
       <h2>Program</h2>
-      {transport?.status === 'preparing' && (
-        <p role="status">Preparing Preview</p>
-      )}
-      {transport?.status === 'failed' && (
-        <p role="status">Picture preview stopped. Check the source media.</p>
-      )}
+      <p className="program-status" role="status">
+        {transport?.status === 'preparing'
+          ? 'Preparing Preview'
+          : transport?.status === 'failed'
+            ? 'Picture preview stopped. Check the source media.'
+            : ''}
+      </p>
       <div className="program-canvas">
         {media.slots.map((slot, index) => (
           <video

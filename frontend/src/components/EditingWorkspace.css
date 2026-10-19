@@ -92,6 +92,10 @@
   font-size: 14px;
   margin-bottom: 12px;
 }
+.program-status {
+  min-height: 1.5em;
+  margin: 0;
+}
 .program-canvas {
   aspect-ratio: 16/9;
   background: #05070c;
