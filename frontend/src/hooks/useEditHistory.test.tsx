@@ -4,6 +4,174 @@ import { useEditHistory } from './useEditHistory';
 import { clip } from '../test/fixtures';
 import { rippleDeletePositioned } from '../lib/positionedEdits';
 import type { Video2Occurrence } from '../lib/advancedTimeline';
+import { createProjectContext } from '../lib/projectContext';
+import { createProjectSources } from '../lib/projectSources';
+import { historySnapshot } from '../test/historyFixtures';
+it('Open locks current edits and replaces all project context in one reversible action', () => {
+  const restored = vi.fn(),
+    o = { ...options(), onProjectContextRestore: restored };
+  const h = renderHook(() => useEditHistory(o));
+  const controller = h.result.current;
+  const before = controller.history;
+  const staging = createProjectSources();
+  staging.registerReady({
+    id: 'prepared_source',
+    kind: 'video',
+    mediaType: 'video',
+    file: new File(['abc'], 'b.mp4'),
+    metadata: {
+      clipMetadata: {
+        duration: 2,
+        fps: 30,
+        totalFrames: 60,
+        width: 320,
+        height: 180,
+        source: 'browser',
+      },
+    },
+  });
+  const snapshot = historySnapshot(['b']);
+  snapshot.video1 = [{ ...snapshot.video1[0], sourceId: 'prepared_source' }];
+  const context = {
+    ...createProjectContext(),
+    exportFormats: ['mp4', 'mov'] as const,
+    timingFps: 30 as const,
+  };
+  let lock: ReturnType<typeof controller.acquireProjectOpenLock> = null;
+  act(() => {
+    lock = controller.acquireProjectOpenLock();
+  });
+  expect(lock).not.toBeNull();
+  expect(controller.controls.shortcutsAllowed).toBe(false);
+  expect(controller.history).toBe(before);
+  act(() => {
+    expect(
+      lock!.replace({
+        envelope: { ...snapshot, projectContext: context },
+        sources: staging,
+        dispose: () => staging.clear(),
+      }).ok,
+    ).toBe(true);
+    lock!.release();
+  });
+  expect(controller.history.past).toHaveLength(1);
+  expect(restored).toHaveBeenCalledTimes(1);
+  act(() => {
+    expect(controller.controls.undo()).toBe(true);
+  });
+  const aContext = controller.projectContext;
+  act(() =>
+    controller.updateExternalProjectContext(
+      { exportFormats: ['mp4', 'wav'] },
+      'export',
+    ),
+  );
+  expect(controller.controls.canRedo).toBe(true);
+  act(() => {
+    expect(controller.controls.redo()).toBe(true);
+  });
+  expect(controller.projectContext.exportFormats).toEqual(['mp4', 'mov']);
+  act(() => controller.controls.undo());
+  expect(controller.projectContext.incarnationId).toBe(aContext.incarnationId);
+  expect(controller.projectContext.exportFormats).toEqual(['mp4', 'wav']);
+});
+it('a cancelled Open lock neither resets transport nor changes history', () => {
+  const h = renderHook(() => useEditHistory(options()));
+  const cancel = vi.fn();
+  h.result.current.bindTransport({ cancel, capture: vi.fn(), apply: vi.fn() });
+  const before = h.result.current.history;
+  act(() => {
+    const lock = h.result.current.acquireProjectOpenLock();
+    lock!.release();
+  });
+  expect(cancel).not.toHaveBeenCalled();
+  expect(h.result.current.history).toBe(before);
+});
+it('imports into B ignore audio-only snapshots retained from project A', () => {
+  const o = { ...options(), limits: { max_clips: 2, max_file_size_mb: 200 } };
+  const h = renderHook(() => useEditHistory(o));
+  const controller = h.result.current;
+  const aSources = createProjectSources();
+  aSources.registerReady({
+    id: 'a_audio',
+    kind: 'audio',
+    mediaType: 'audio',
+    file: new File(['audio'], 'a.wav'),
+    metadata: { duration: 2, sampleCount: 96000 },
+  });
+  const a = historySnapshot([]);
+  a.independentAudio = [
+    {
+      id: 'a_segment',
+      timelineStartFrame: 0,
+      durationFrames: 30,
+      sourceStartSample: 0,
+      source: { kind: 'audio-file', sourceId: 'a_audio' },
+    },
+  ];
+  const bSources = createProjectSources();
+  bSources.registerReady({
+    id: 'b_video',
+    kind: 'video',
+    mediaType: 'video',
+    file: new File(['video'], 'b.mp4'),
+    metadata: {
+      clipMetadata: {
+        ...clip().metadata!,
+        duration: 2,
+        fps: 30,
+        totalFrames: 60,
+      },
+    },
+  });
+  const b = historySnapshot(['b1', 'b2']);
+  b.video1 = b.video1.map((v) => ({ ...v, sourceId: 'b_video' }));
+  for (const [snapshot, sources] of [
+    [a, aSources],
+    [b, bSources],
+  ] as const) {
+    act(() => {
+      const lock = controller.acquireProjectOpenLock()!;
+      expect(
+        lock.replace({
+          envelope: {
+            ...snapshot,
+            projectContext: { ...createProjectContext(), timingFps: 30 },
+          },
+          sources,
+          dispose: () => sources.clear(),
+        }).ok,
+      ).toBe(true);
+      lock.release();
+    });
+  }
+  act(() => {
+    expect(
+      controller.commitVideo1('ripple-delete', 'Delete second clip', [
+        controller.view.video1[0],
+      ]),
+    ).toBe(true);
+  });
+  act(() => controller.importVideo1([new File(['new'], 'replacement.mp4')]));
+  expect(controller.pendingImports).toHaveLength(0);
+  expect(controller.view.video1).toHaveLength(2);
+  const imported = controller.view.video1[1];
+  act(() =>
+    controller.sourceReady(controller.sources.get(imported.sourceId)!.token, {
+      clipMetadata: {
+        ...clip().metadata!,
+        duration: 1,
+        fps: 30,
+        totalFrames: 30,
+      },
+    }),
+  );
+  expect(controller.view.video1[1].trim).toEqual({
+    startFrame: 0,
+    endFrame: 29,
+  });
+  expect(o.onError).not.toHaveBeenCalled();
+});
 const options = () => ({
   limits: { max_clips: 20, max_file_size_mb: 200 },
   editingLocked: false,
@@ -191,6 +359,35 @@ function setup() {
   );
   return { ...hook, o, token, id: occurrence.id };
 }
+it('undo_restores_the_auto_FPS_fallback_for_audio_only_project_edits', () => {
+  const h = setup(),
+    controller = h.result.current;
+  act(() => {
+    expect(controller.commitDetach({ track: 'video1', id: h.id })).toBe(true);
+  });
+  act(() => {
+    expect(controller.commitVideo1('ripple-delete', 'Remove picture', [])).toBe(
+      true,
+    );
+  });
+  act(() => {
+    expect(controller.setFpsSelection('50')).toBe(true);
+  });
+  act(() => {
+    expect(controller.controls.undo()).toBe(true);
+  });
+  const segment = controller.view.independentAudio[0];
+  act(() => {
+    expect(
+      controller.commitAudioEdit({
+        action: 'split',
+        id: segment.id,
+        frame: 30,
+      }),
+    ).toBe(true);
+  });
+  expect(controller.view.independentAudio[1].sourceStartSample).toBe(48000);
+});
 it('external_drop_is_one_action_and_metadata_conflicts_preserve_redo_and_release_candidate', () => {
   const h = setup();
   let token: ReturnType<typeof h.result.current.importToBin> = null;
@@ -911,7 +1108,7 @@ it('30 edit capacity, no-op gesture preserves Redo and capacity failure is atomi
   act(() => expect(h.result.current.controls.redo()).toBe(false));
   expect(h.result.current.history).toBe(before);
 });
-it('URLs release on redo invalidation and eviction, while original files remain session-owned', () => {
+it('URLs and unowned Files release on redo invalidation and eviction', () => {
   const h = setup();
   const file = new File(['p'], 'pip.mp4');
   let token: ReturnType<typeof h.result.current.stagePip>;
@@ -929,7 +1126,7 @@ it('URLs release on redo invalidation and eviction, while original files remain 
     }),
   );
   expect(h.result.current.sources.get(token!.sourceId)?.url).toBeUndefined();
-  expect(h.result.current.sources.get(token!.sourceId)?.file).toBe(file);
+  expect(h.result.current.sources.get(token!.sourceId)).toBeUndefined();
   const video = h.result.current.view.video1[0];
   act(() =>
     h.result.current.commit('ripple-delete', 'Delete', {

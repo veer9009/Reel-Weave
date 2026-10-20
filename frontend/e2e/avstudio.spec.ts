@@ -167,6 +167,10 @@ test('responsive workspace and keyboard access', async ({ page }) => {
   await page.getByRole('link', { name: 'AVStudio workspace' }).focus();
   await page.keyboard.press('Tab');
   await expect(
+    page.getByRole('button', { name: 'Open Project', exact: true }),
+  ).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(
     page.getByRole('button', { name: 'Browse files' }),
   ).toBeFocused();
   const chooser = page.waitForEvent('filechooser');

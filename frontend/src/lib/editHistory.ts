@@ -9,6 +9,8 @@ import type {
 import type { IndependentAudioSegment } from './audioTimeline';
 import type { OverlaySchedule } from './overlays';
 import type { Video2Occurrence, MusicOccurrence } from './advancedTimeline';
+import { cloneProjectContext } from './projectContext';
+import type { ProjectContext, ProjectEnvelope } from './projectContext';
 export type Video1Occurrence = {
   outputWindow?: OutputWindow;
   originalAudio?: OriginalAudioMode;
@@ -20,6 +22,7 @@ export type Video1Occurrence = {
 };
 export type PipOccurrence = OverlaySchedule & { id: string; sourceId: string };
 export type EditSnapshot = {
+  projectContext?: ProjectContext;
   binSourceIds: readonly string[];
   independentAudio: readonly IndependentAudioSegment[];
   video1: readonly Video1Occurrence[];
@@ -36,6 +39,7 @@ export type LegacyEditSnapshot = Omit<
 > &
   Partial<Pick<EditSnapshot, 'binSourceIds' | 'independentAudio'>>;
 export type HistoryAction =
+  | 'project-open'
   | 'bin-import'
   | 'bin-remove'
   | 'overwrite'
@@ -79,6 +83,9 @@ export function normalizeSnapshot(
   s: EditSnapshot | LegacyEditSnapshot,
 ): EditSnapshot {
   return {
+    ...(s.projectContext
+      ? { projectContext: cloneProjectContext(s.projectContext) }
+      : {}),
     binSourceIds: [...(s.binSourceIds ?? [])],
     independentAudio: (s.independentAudio ?? []).map((v) => ({
       ...v,
@@ -124,7 +131,29 @@ export function normalizeSnapshot(
 }
 const copy = normalizeSnapshot;
 export function snapshotsEqual(a: EditSnapshot, b: EditSnapshot): boolean {
-  return JSON.stringify(copy(a)) === JSON.stringify(copy(b));
+  return (
+    JSON.stringify({ ...copy(a), projectContext: undefined }) ===
+    JSON.stringify({ ...copy(b), projectContext: undefined })
+  );
+}
+export function commitProjectReplacement(
+  h: EditHistory,
+  next: ProjectEnvelope,
+): EditHistory {
+  const after = copy(next);
+  return {
+    past: [
+      ...h.past,
+      {
+        action: 'project-open' as const,
+        label: 'Open Project',
+        before: h.present,
+        after,
+      },
+    ].slice(-30),
+    present: after,
+    future: [],
+  };
 }
 export function createHistory(
   initial: EditSnapshot | LegacyEditSnapshot,
@@ -169,15 +198,20 @@ export function rebaseHistory(
   h: EditHistory,
   rewrite: (s: EditSnapshot) => EditSnapshot,
   userEdit: boolean,
+  incarnationId?: string,
 ): EditHistory {
+  const apply = (s: EditSnapshot) =>
+    incarnationId && s.projectContext?.incarnationId !== incarnationId
+      ? s
+      : copy(rewrite(s));
   const rebase = (e: HistoryEntry) => ({
     ...e,
-    before: copy(rewrite(e.before)),
-    after: copy(rewrite(e.after)),
+    before: apply(e.before),
+    after: apply(e.after),
   });
   return {
     past: h.past.map(rebase),
-    present: copy(rewrite(h.present)),
+    present: apply(h.present),
     future: userEdit ? [] : h.future.map(rebase),
   };
 }

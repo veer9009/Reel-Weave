@@ -11,6 +11,9 @@ import type { TimelineSelection } from './lib/timeline';
 import { MergeSummary } from './components/MergeSummary';
 import { JobResult } from './components/JobResult';
 import { ExportOptions } from './components/ExportOptions';
+import { ProjectFileControls } from './components/ProjectFileControls';
+import { useProjectFiles } from './hooks/useProjectFiles';
+import { collectSnapshotSources } from './lib/projectContext';
 import { TrimEditor } from './components/TrimEditor';
 import { TimelinePlacementDialog } from './components/TimelinePlacementDialog';
 import { buildAdvancedTimeline, placementLength } from './lib/advancedTimeline';
@@ -72,6 +75,7 @@ import type {
 } from './lib/overlays';
 
 export default function App() {
+  const workspaceRef = useRef<HTMLDivElement>(null);
   const resultRegion = useRef<HTMLDivElement>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [healthAttempt, setHealthAttempt] = useState(0);
@@ -112,6 +116,24 @@ export default function App() {
     max_overlay_video_file_size_mb: 200,
   };
   const history = useEditHistory({
+    onProjectContextRestore: (restored) => {
+      setImageToken(restored.imageToken);
+      setOverlays({ image: restored.image, video: null });
+      setExportFormats([...restored.context.exportFormats]);
+      setEditingClipId(null);
+      setActiveDragDraft(null);
+      setSelectionRequest((value) => ({
+        serial: (value?.serial ?? 0) + 1,
+        selection: { kind: 'none' },
+      }));
+      projectEpoch.current++;
+      uploadController.current?.abort();
+      pollingController.current?.abort();
+      setJob(null);
+      setError(null);
+      setHistoryError(null);
+      setPollError(false);
+    },
     onPlaced: (track, id) => {
       setSelectionRequest((value) => ({
         serial: (value?.serial ?? 0) + 1,
@@ -138,6 +160,7 @@ export default function App() {
     },
   });
   // Keep audio-only edits from replacing the current preview geometry.
+  const renderedIncarnationId = history.projectContext.incarnationId;
   const projectionKey = JSON.stringify({
     sourceRevision: history.sourceRevision,
     fpsSelection: history.view.fpsSelection,
@@ -149,6 +172,57 @@ export default function App() {
     independentAudio: history.view.independentAudio,
   });
   const sources = history.sources;
+  const currentSourceIds = collectSnapshotSources(history.history.present);
+  const pendingProjectOperation = Boolean(
+    editingClipId ||
+    activeDragDraft ||
+    history.gestureActive ||
+    history.pendingPip ||
+    history.pendingImports.length ||
+    history.pendingBinImports.length ||
+    history.pendingTimelineSources.length ||
+    [...currentSourceIds].some((id) => sources.get(id)?.status === 'loading'),
+  );
+  const pendingProjectReason = pendingProjectOperation
+    ? 'Finish or cancel the current edit or media import.'
+    : null;
+  const fileAvailability = {
+    saveDisabledReason:
+      pendingProjectReason ??
+      (!currentSourceIds.size
+        ? 'Add media before saving a project.'
+        : [...currentSourceIds].some(
+              (id) => sources.get(id)?.status !== 'ready',
+            )
+          ? 'All project media must be ready before saving.'
+          : null),
+    openDisabledReason:
+      pendingProjectReason ??
+      (active
+        ? 'Wait for the current render to finish.'
+        : completed
+          ? 'Use New Project to leave the completed result before opening another project.'
+          : null),
+  };
+  const projectFiles = useProjectFiles({
+    history,
+    limits,
+    availability: fileAvailability,
+    onOpened: () => {
+      setAnnouncement('Project opened. Undo is available.');
+    },
+    onAnnounce: setAnnouncement,
+  });
+  useEffect(
+    () =>
+      imageToken
+        ? sources.acquireLease(
+            'project-image-preview',
+            new Set([imageToken.sourceId]),
+          )
+        : undefined,
+    [sources, imageToken],
+  );
   const placeMedia = (draft: PlacementDraft) => {
     if (!history.commitPlacement(draft)) return false;
     setActiveDragDraft(null);
@@ -262,6 +336,7 @@ export default function App() {
     );
   });
   const canMerge = Boolean(
+    projectFiles.openPhase === 'idle' &&
     !active &&
     !completed &&
     !history.gestureActive &&
@@ -600,10 +675,12 @@ export default function App() {
     );
   }
   function setClipMetadata(id: string, metadata: ClipMetadata) {
+    if (history.projectContext.incarnationId !== renderedIncarnationId) return;
     const token = clipSourceTokens.get(id);
     if (token) history.sourceReady(token, { clipMetadata: metadata });
   }
   function setClipMetadataError(id: string) {
+    if (history.projectContext.incarnationId !== renderedIncarnationId) return;
     const clip = clips.find((candidate) => candidate.id === id);
     const token = clipSourceTokens.get(id);
     if (!token || !history.sourceError(token)) return;
@@ -643,7 +720,12 @@ export default function App() {
     setJob(null);
   }
   function selectOverlay(kind: OverlayKind, file: File) {
-    if (active || job?.status === 'completed') return;
+    if (
+      projectFiles.openPhase !== 'idle' ||
+      active ||
+      job?.status === 'completed'
+    )
+      return;
     const isImage = kind === 'image';
     const supported = isImage
       ? /\.(png|jpe?g)$/i.test(file.name)
@@ -691,7 +773,16 @@ export default function App() {
     externalOwners(token);
     setImageToken(token);
     const url = history.sources.ensureUrl(token.sourceId);
-    history.excludedUserEdit();
+    history.updateExternalProjectContext(
+      {
+        imageOverlay: {
+          id: crypto.randomUUID(),
+          sourceId: token.sourceId,
+          ...schedule,
+        },
+      },
+      'image',
+    );
     setOverlays((current) => ({
       ...current,
       [kind]: {
@@ -707,6 +798,16 @@ export default function App() {
   }
   function setOverlayMetadata(kind: OverlayKind, duration?: number) {
     const token = kind === 'image' ? imageToken : pipSourceToken;
+    if (
+      kind === 'image' &&
+      token?.sourceId !== history.projectContext.imageOverlay?.sourceId
+    )
+      return;
+    if (
+      kind === 'video' &&
+      token?.sourceId !== history.history.present.pip?.sourceId
+    )
+      return;
     if (
       kind === 'image' &&
       token &&
@@ -726,6 +827,16 @@ export default function App() {
   }
   function setOverlayMetadataError(kind: OverlayKind) {
     const token = kind === 'image' ? imageToken : pipSourceToken;
+    if (
+      kind === 'image' &&
+      token?.sourceId !== history.projectContext.imageOverlay?.sourceId
+    )
+      return;
+    if (
+      kind === 'video' &&
+      token?.sourceId !== history.history.present.pip?.sourceId
+    )
+      return;
     if (
       kind === 'image' &&
       token &&
@@ -768,7 +879,12 @@ export default function App() {
       )
     )
       return;
-    history.excludedUserEdit();
+    const imageContext = history.projectContext.imageOverlay;
+    if (imageContext)
+      history.updateExternalProjectContext(
+        { imageOverlay: { ...imageContext, ...changes } },
+        'image',
+      );
     history.notifyStructuralChange();
     setOverlays((current) => ({
       ...current,
@@ -790,7 +906,7 @@ export default function App() {
     if (!overlay) return;
     externalOwners(null);
     setImageToken(null);
-    history.excludedUserEdit();
+    history.updateExternalProjectContext({ imageOverlay: null }, 'image');
     setOverlays((current) => ({ ...current, [kind]: null }));
     setError(null);
     setJob(null);
@@ -937,7 +1053,8 @@ export default function App() {
     return nextFrame;
   }
   async function merge() {
-    if (!canMerge || outputFps === null) return;
+    if (projectFiles.openPhase !== 'idle' || !canMerge || outputFps === null)
+      return;
     const validation = validateSelection(
       clips.map((c) => c.file),
       0,
@@ -1035,6 +1152,7 @@ export default function App() {
     }
   }
   function newProject() {
+    projectFiles.reset();
     projectEpoch.current++;
     uploadController.current?.abort();
     pollingController.current?.abort();
@@ -1062,6 +1180,8 @@ export default function App() {
   return (
     <div
       className="app"
+      ref={workspaceRef}
+      tabIndex={-1}
       onDragOver={(event) => {
         if (event.dataTransfer.types.includes('Files')) event.preventDefault();
       }}
@@ -1092,6 +1212,11 @@ export default function App() {
           />
           <span className="compact-brand-name">AVStudio</span>
         </a>
+        <ProjectFileControls
+          controller={projectFiles}
+          availability={fileAvailability}
+          workspaceRef={workspaceRef}
+        />
         <span className="header-note">
           {health
             ? health.ffmpeg_available && health.ffprobe_available
@@ -1388,10 +1513,18 @@ export default function App() {
             disabled={editingLocked}
             onSelect={selectBackgroundAudio}
             onMetadata={(duration) => {
-              if (musicToken) history.sourceReady(musicToken, { duration });
+              if (
+                musicToken &&
+                musicToken.sourceId === history.history.present.musicSourceId
+              )
+                history.sourceReady(musicToken, { duration });
             }}
             onMetadataError={() => {
-              if (musicToken) history.sourceError(musicToken);
+              if (
+                musicToken &&
+                musicToken.sourceId === history.history.present.musicSourceId
+              )
+                history.sourceError(musicToken);
             }}
             onReplace={selectBackgroundAudio}
             candidateName={
@@ -1450,7 +1583,14 @@ export default function App() {
             </p>
             <ExportOptions
               formats={exportFormats}
-              onChange={setExportFormats}
+              onChange={(formats) => {
+                if (projectFiles.openPhase !== 'idle') return;
+                history.updateExternalProjectContext(
+                  { exportFormats: formats },
+                  'export',
+                );
+                setExportFormats(formats);
+              }}
               capabilities={health?.export_capabilities}
               disabled={
                 !health ||

@@ -1,6 +1,22 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import { ExportOptions } from './ExportOptions';
+it('a_restored_unavailable_format_can_be_deselected_without_enabling_new_unsupported_exports', () => {
+  const change = vi.fn();
+  render(
+    <ExportOptions
+      formats={['mp4', 'wav']}
+      onChange={change}
+      capabilities={{ wav: false, mov: false }}
+      disabled={false}
+    />,
+  );
+  expect(screen.getByLabelText('WAV')).toBeChecked();
+  expect(screen.getByLabelText('WAV')).toBeEnabled();
+  expect(screen.getByLabelText('MOV')).toBeDisabled();
+  fireEvent.click(screen.getByLabelText('WAV'));
+  expect(change).toHaveBeenCalledWith(['mp4']);
+});
 it.each([false, true])(
   'keeps_optional_capability_and_locked_states_visible_%s',
   (locked) => {

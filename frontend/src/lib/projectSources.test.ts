@@ -5,6 +5,88 @@ import {
 } from './projectSources';
 import { createHistory, commitHistory, undoHistory } from './editHistory';
 import { historySnapshot } from '../test/historyFixtures';
+it('ready_adoption_is_transactional_and_rollback_keeps_staging_owned', () => {
+  const live = createProjectSources(),
+    staged = createProjectSources();
+  const old = live.register(new File(['old'], 'old.mp4'), 'video1');
+  const token = staged.registerReady({
+    id: 'ready_source',
+    file: new File(['abc'], 'base.mp4'),
+    kind: 'video',
+    mediaType: 'video',
+    metadata: {
+      duration: 2,
+      clipMetadata: {
+        duration: 2,
+        fps: 30,
+        totalFrames: 60,
+        width: 320,
+        height: 180,
+        source: 'browser',
+      },
+    },
+  });
+  const url = staged.ensureUrl(token.sourceId);
+  const transfer = live.adoptFrom(staged);
+  expect(live.get(token.sourceId)?.url).toBe(url);
+  transfer.rollback();
+  transfer.rollback();
+  expect(live.get(token.sourceId)).toBeUndefined();
+  expect(staged.get(token.sourceId)?.url).toBe(url);
+  expect(live.get(old.sourceId)).toBeDefined();
+  expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(url);
+  const accepted = live.adoptFrom(staged);
+  live.reconcileUrls(new Set([token.sourceId, old.sourceId]));
+  accepted.commit();
+  staged.clear();
+  expect(live.get(token.sourceId)?.file.name).toBe('base.mp4');
+  expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(url);
+});
+it('garbage_collection_waits_for_the_last_consumer_lease', () => {
+  const sources = createProjectSources();
+  const token = sources.register(new File(['v'], 'v.mp4'), 'video1');
+  const url = sources.ensureUrl(token.sourceId);
+  const release = sources.acquireLease('render', new Set([token.sourceId]));
+  sources.collectGarbage(new Set());
+  expect(sources.get(token.sourceId)).toBeDefined();
+  release();
+  expect(sources.get(token.sourceId)).toBeUndefined();
+  expect(URL.revokeObjectURL).toHaveBeenCalledWith(url);
+});
+it('adoption_collisions_and_clear_do_not_damage_the_original_owner', () => {
+  const live = createProjectSources(),
+    staged = createProjectSources();
+  const input = {
+    id: 'same_id',
+    file: new File(['a'], 'a.wav'),
+    kind: 'audio' as const,
+    mediaType: 'audio' as const,
+    metadata: { duration: 1, sampleCount: 48000 },
+  };
+  live.registerReady(input);
+  staged.registerReady(input);
+  expect(() => live.adoptFrom(staged)).toThrow();
+  expect(live.get(input.id)?.file).toBe(input.file);
+  expect(staged.get(input.id)?.file).toBe(input.file);
+  const other = createProjectSources();
+  const adoption = other.adoptFrom(staged);
+  other.clear();
+  expect(() => adoption.commit()).toThrow();
+  expect(staged.get(input.id)?.file).toBe(input.file);
+});
+it('restored_audio_keeps_saved_samples_when_preview_metadata_arrives_again', () => {
+  const sources = createProjectSources();
+  const token = sources.registerReady({
+    id: 'restored_audio',
+    file: new File(['abc'], 'a.mp3'),
+    kind: 'audio',
+    mediaType: 'audio',
+    metadata: { duration: 2, sampleCount: 96000 },
+  });
+  expect(sources.markReady(token, { duration: 2.04 })).toBe(true);
+  expect(sources.get(token.sourceId)?.duration).toBe(2);
+  expect(sources.get(token.sourceId)?.sampleCount).toBe(96000);
+});
 it('leases_aggregate_owners_and_old_release_does_not_release_a_newer_lease', () => {
   const sources = createProjectSources();
   const token = sources.register(new File(['v'], 'voice.mp4'), 'video1');

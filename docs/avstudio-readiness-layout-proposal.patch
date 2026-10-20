@@ -1,0 +1,26 @@
+--- a/frontend/src/components/ProgramMonitor.tsx
++++ b/frontend/src/components/ProgramMonitor.tsx
+@@ -174,5 +174,7 @@
+     <section className="program-monitor panel" aria-label="Program preview">
+       <h2>Program</h2>
+       {transport?.status === 'preparing' && (
+-        <p role="status">Preparing Preview</p>
++        <p role="status" className="program-readiness">
++          Preparing Preview
++        </p>
+       )}
+--- a/frontend/src/components/EditingWorkspace.css
++++ b/frontend/src/components/EditingWorkspace.css
+@@ -86,2 +86,3 @@
+   padding: 12px;
++  position: relative;
+   border-radius: 6px;
+@@ -94,2 +95,8 @@
+ }
++.program-readiness {
++  position: absolute;
++  top: 12px;
++  right: 12px;
++  margin: 0;
++}
+ .program-canvas {

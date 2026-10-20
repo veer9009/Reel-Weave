@@ -16,9 +16,27 @@ import {
   commitHistory,
   undoHistory,
   redoHistory,
-  rebaseHistory,
+  rebaseHistory as rebaseScopedHistory,
   snapshotsEqual,
+  normalizeSnapshot,
+  commitProjectReplacement,
 } from '../lib/editHistory';
+import {
+  cloneProjectContext,
+  collectSnapshotSources,
+  createProjectContext,
+} from '../lib/projectContext';
+import type {
+  PreparedProject,
+  ProjectCapture,
+  ProjectContext,
+  ProjectContextRestore,
+  ProjectEnvelope,
+  ProjectOpenLock,
+} from '../lib/projectContext';
+import type { CapturedSource, ProjectResult } from '../lib/projectFileTypes';
+import { projectFailure } from '../lib/projectFileTypes';
+import { validatePositioned } from '../lib/positionedEdits';
 import type {
   EditSnapshot,
   GestureToken,
@@ -50,6 +68,7 @@ import {
   validateOverlaySchedule,
 } from '../lib/overlays';
 export type HistoryOptions = {
+  onProjectContextRestore?: (restored: ProjectContextRestore) => void;
   onPlaced?: (track: PlacementDraft['track'], id: string) => void;
   limits: Limits;
   editingLocked: boolean;
@@ -58,6 +77,7 @@ export type HistoryOptions = {
   onAnnouncement: (message: string) => void;
 };
 const defaults = (): EditSnapshot => ({
+  projectContext: createProjectContext(),
   binSourceIds: [],
   independentAudio: [],
   video1: [],
@@ -100,6 +120,7 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
     transportToken = 0;
   let pendingPip: SourceToken | null = null;
   let lastResolvedFps: ProjectFps | null = null;
+  let openLock: object | null = null;
   let pendingImports: EditSnapshot['video1'] = [];
   let pendingBinImports: {
     token: SourceToken;
@@ -116,9 +137,38 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
   const sources = createProjectSources();
   sources.onBeforeClear(() => transport?.cancel());
   const allowed = () =>
-    !api.options.editingLocked && !api.options.trimDraftOpen && !transaction;
+    !openLock &&
+    !api.options.editingLocked &&
+    !api.options.trimDraftOpen &&
+    !transaction;
+  const context = () => history.present.projectContext!;
+  const withTiming = (s: EditSnapshot): EditSnapshot =>
+    s.projectContext
+      ? {
+          ...s,
+          projectContext: {
+            ...s.projectContext,
+            timingFps:
+              resolveProjectFps(
+                s.fpsSelection,
+                sources.get(s.video1[0]?.sourceId)?.metadata?.fps,
+              ) ?? s.projectContext.timingFps,
+          },
+        }
+      : s;
+  const rebaseHistory = (
+    h: typeof history,
+    rewrite: (s: EditSnapshot) => EditSnapshot,
+    userEdit: boolean,
+  ) =>
+    rebaseScopedHistory(
+      h,
+      (s) => withTiming(rewrite(s)),
+      userEdit,
+      context().incarnationId,
+    );
   const reconcile = () =>
-    sources.reconcileUrls(
+    sources.collectGarbage(
       collectReachableSources(
         history,
         transaction?.preview ?? null,
@@ -134,6 +184,52 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
   const publish = () => {
     reconcile();
     changed();
+  };
+  const restoreContext = (
+    s: EditSnapshot,
+    registry = sources,
+  ): ProjectContextRestore => {
+    const next = cloneProjectContext(s.projectContext!);
+    const overlay = next.imageOverlay;
+    const r = overlay ? registry.get(overlay.sourceId) : null;
+    if (overlay && (!r || r.mediaType !== 'image' || r.status !== 'ready'))
+      throw new Error('Missing or unready image source.');
+    return {
+      context: next,
+      image:
+        overlay && r
+          ? {
+              kind: 'image',
+              file: r.file,
+              url: registry.ensureUrl(overlay.sourceId),
+              metadataStatus: 'ready',
+              startFrame: overlay.startFrame,
+              endFrame: overlay.endFrame,
+              position: overlay.position,
+              size: overlay.size,
+            }
+          : null,
+      imageToken: r?.token ?? null,
+    };
+  };
+  const publishReplacement = (
+    next: typeof history,
+    restored: ProjectContextRestore,
+  ) => {
+    transport?.cancel();
+    history = next;
+    lastResolvedFps = restored.context.timingFps;
+    revision++;
+    sourceRevision++;
+    sources.setExternalOwners(
+      new Set(
+        restored.context.imageOverlay
+          ? [restored.context.imageOverlay.sourceId]
+          : [],
+      ),
+    );
+    options.onProjectContextRestore?.(restored);
+    publish();
   };
   const apply = (
     next: typeof history,
@@ -159,17 +255,34 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
           }
         : null;
     if (structural(history.present, next.present)) revision++;
-    history = next;
+    history = rebaseScopedHistory(
+      next,
+      withTiming,
+      false,
+      context().incarnationId,
+    );
     if (edit && anchor) transport?.apply(anchor, edit);
     lastResolvedFps =
       resolveProjectFps(
         history.present.fpsSelection,
         sources.get(history.present.video1[0]?.sourceId)?.metadata?.fps,
-      ) ?? lastResolvedFps;
+      ) ??
+      history.present.projectContext?.timingFps ??
+      lastResolvedFps;
     publish();
   };
   const valid = (snapshot: EditSnapshot) => {
-    const error = validateRestoration(snapshot, sources, api.options.limits);
+    const resolved = resolveProjectFps(
+      snapshot.fpsSelection,
+      sources.get(snapshot.video1[0]?.sourceId)?.metadata?.fps,
+    );
+    const error =
+      validateRestoration(snapshot, sources, api.options.limits) ??
+      validatePositioned(
+        snapshot,
+        sources,
+        resolved ?? snapshot.projectContext?.timingFps ?? undefined,
+      );
     if (error) api.options.onError(error);
     return !error;
   };
@@ -177,8 +290,11 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
     if (!allowed()) return false;
     const entry = (redo ? history.future : history.past).at(-1);
     if (!entry || !valid(redo ? entry.after : entry.before)) return false;
+    const target = redo ? entry.after : entry.before;
+    let restored: ProjectContextRestore | undefined;
     try {
-      materializeSnapshot(redo ? entry.after : entry.before, sources);
+      materializeSnapshot(target, sources);
+      if (entry.action === 'project-open') restored = restoreContext(target);
     } catch (error) {
       api.options.onError(
         error instanceof Error
@@ -191,14 +307,124 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
     pendingImports = [];
     pendingBinImports = [];
     timelineCandidates = [];
-    apply(
-      redo ? redoHistory(history) : undoHistory(history),
-      redo ? 'redo' : 'undo',
-    );
+    const next = redo ? redoHistory(history) : undoHistory(history);
+    if (restored) publishReplacement(next, restored);
+    else apply(next, redo ? 'redo' : 'undo');
     api.options.onAnnouncement(`${redo ? 'Redid' : 'Undid'} ${entry.label}.`);
     return true;
   };
   const api = {
+    get projectContext(): ProjectContext {
+      return cloneProjectContext(context());
+    },
+    updateExternalProjectContext(
+      patch: Pick<Partial<ProjectContext>, 'imageOverlay' | 'exportFormats'>,
+      userEdit: 'image' | 'export' | 'metadata',
+    ) {
+      if (openLock) return;
+      history = rebaseScopedHistory(
+        history,
+        (s) => ({
+          ...s,
+          projectContext: cloneProjectContext({
+            ...s.projectContext!,
+            ...patch,
+          }),
+        }),
+        userEdit === 'image',
+        context().incarnationId,
+      );
+      publish();
+    },
+    captureProject(capturedAt: Date): ProjectCapture {
+      const envelope = normalizeSnapshot(
+        withTiming(history.present),
+      ) as ProjectEnvelope;
+      const captured = new Map<string, CapturedSource>();
+      for (const sourceId of collectSnapshotSources(envelope)) {
+        const r = sources.get(sourceId);
+        if (!r || r.status !== 'ready')
+          throw new Error('All saved sources must be ready.');
+        captured.set(sourceId, {
+          kind: r.kind,
+          mediaType: r.mediaType,
+          file: r.file,
+          status: r.status,
+          ...(r.metadata ? { metadata: { ...r.metadata } } : {}),
+          ...(r.duration !== undefined ? { duration: r.duration } : {}),
+          ...(r.sampleCount !== undefined
+            ? { sampleCount: r.sampleCount }
+            : {}),
+        });
+      }
+      return {
+        envelope,
+        sources: captured,
+        capturedAt: new Date(capturedAt.getTime()),
+      };
+    },
+    acquireProjectOpenLock(): ProjectOpenLock | null {
+      if (
+        !allowed() ||
+        pendingPip ||
+        pendingImports.length ||
+        pendingBinImports.length ||
+        timelineCandidates.length
+      )
+        return null;
+      const owner = {};
+      openLock = owner;
+      const lock: ProjectOpenLock = {
+        release() {
+          if (openLock === owner) {
+            openLock = null;
+            changed();
+          }
+        },
+        replace(prepared: PreparedProject): ProjectResult<void> {
+          if (
+            openLock !== owner ||
+            options.editingLocked ||
+            options.trimDraftOpen ||
+            transaction
+          )
+            return projectFailure(
+              'cancelled',
+              'Open Project is no longer available.',
+            );
+          let adoption: ReturnType<typeof sources.adoptFrom> | undefined;
+          let next: typeof history;
+          let restored: ProjectContextRestore;
+          try {
+            const target = prepared.envelope;
+            const issue =
+              validateRestoration(target, prepared.sources, options.limits) ??
+              validatePositioned(
+                target,
+                prepared.sources,
+                target.projectContext.timingFps ?? undefined,
+              );
+            if (issue) return projectFailure('invalid', issue, 'edit');
+            materializeSnapshot(target, prepared.sources);
+            restoreContext(target, prepared.sources);
+            next = commitProjectReplacement(history, target);
+            adoption = sources.adoptFrom(prepared.sources);
+            restored = restoreContext(next.present);
+          } catch {
+            adoption?.rollback();
+            return projectFailure(
+              'resource',
+              'Could not prepare the opened project. Retry or cancel.',
+            );
+          }
+          publishReplacement(next, restored);
+          adoption.commit();
+          return { ok: true, value: undefined };
+        },
+      };
+      changed();
+      return lock;
+    },
     bindTransport(listener: TransportListener) {
       transport = listener;
       return () => {
@@ -254,12 +480,15 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
       next: EditSnapshot,
       lineage: ReadonlyMap<string, string> = new Map(),
     ): boolean {
-      if (api.options.editingLocked || transaction) return false;
+      if (openLock || api.options.editingLocked || transaction) return false;
+      next = { ...next, projectContext: cloneProjectContext(context()) };
       const oldFps =
         resolveProjectFps(
           history.present.fpsSelection,
           sources.get(history.present.video1[0]?.sourceId)?.metadata?.fps,
-        ) ?? lastResolvedFps;
+        ) ??
+        history.present.projectContext?.timingFps ??
+        lastResolvedFps;
       const newFps =
         resolveProjectFps(
           next.fpsSelection,
@@ -612,6 +841,7 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
     },
     importVideo1(files: File[]) {
       if (
+        openLock ||
         api.options.editingLocked ||
         !files.length ||
         history.present.video1.length +
@@ -632,7 +862,9 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
         history.present,
         ...history.past.flatMap((e) => [e.before, e.after]),
         ...history.future.flatMap((e) => [e.before, e.after]),
-      ];
+      ].filter(
+        (s) => s.projectContext?.incarnationId === context().incarnationId,
+      );
       if (
         retained.some(
           (s) =>
@@ -653,7 +885,9 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
       );
     },
     sourceReady(token: SourceToken, metadata: SourceMetadata): boolean {
+      if (openLock) return false;
       if (!sources.markReady(token, metadata)) return false;
+      if (sources.get(token.sourceId)?.restoredProjectSource) return true;
       sourceRevision++;
       if (pendingBinImports.some((v) => v.token.sourceId === token.sourceId)) {
         api.resumeBinImports();
@@ -764,6 +998,7 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
       }
     },
     sourceError(token: SourceToken): boolean {
+      if (openLock) return false;
       if (!sources.markError(token)) return false;
       sourceRevision++;
       pendingBinImports = pendingBinImports.filter(
@@ -842,12 +1077,14 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
       );
     },
     excludedUserEdit() {
-      if (api.options.editingLocked || api.options.trimDraftOpen) return;
+      if (openLock || api.options.editingLocked || api.options.trimDraftOpen)
+        return;
       transaction = null;
       history = { ...history, future: [] };
       publish();
     },
     notifyStructuralChange() {
+      if (openLock) return;
       revision++;
       changed();
     },
@@ -1085,6 +1322,7 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
       publish();
     },
     clearProject() {
+      openLock = null;
       transaction = null;
       pendingPip = null;
       pendingImports = [];
@@ -1117,6 +1355,7 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
       }
     },
     dispose() {
+      openLock = null;
       transaction = null;
       pendingPip = null;
       pendingImports = [];

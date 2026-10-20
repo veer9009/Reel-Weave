@@ -26,7 +26,11 @@ export function ExportOptions({
                 type="checkbox"
                 aria-label={format.toUpperCase()}
                 checked={format === 'mp4' || formats.includes(format)}
-                disabled={disabled || format === 'mp4' || !available}
+                disabled={
+                  disabled ||
+                  format === 'mp4' ||
+                  (!available && !formats.includes(format))
+                }
                 onChange={(event) =>
                   onChange(
                     event.target.checked

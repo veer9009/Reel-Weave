@@ -1315,3 +1315,6 @@ input[type='range'] {
     flex-direction: column;
   }
 }
+.site-header {
+  flex-wrap: wrap;
+}

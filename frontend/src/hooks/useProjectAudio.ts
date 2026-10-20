@@ -246,6 +246,13 @@ export function useProjectAudio(options: Options) {
             return;
           voice.pending = false;
           voice.accepted = false;
+          // An edit may retain this voice while replacing the transport
+          // generation. A rejected trial belongs to its captured generation,
+          // just like a successful trial; retry against the current mapping.
+          if (latest.transport.generation !== ownerGeneration) {
+            sync();
+            return;
+          }
           block(
             error instanceof DOMException && error.name === 'NotAllowedError'
               ? 'resume-required'

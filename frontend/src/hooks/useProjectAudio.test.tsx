@@ -536,6 +536,40 @@ it('user_play_initializes_two_buses_independent_ownership_suppresses_linked_audi
   h.unmount();
   expect(h.sources.externalOwners.size).toBe(0);
 });
+it('an_old_generation_play_rejection_cannot_pause_a_continuous_successor', async () => {
+  const h = setup();
+  const rejects: ((reason: DOMException) => void)[] = [];
+  const resolves: (() => void)[] = [];
+  vi.mocked(HTMLMediaElement.prototype.play).mockImplementation(function (
+    this: HTMLMediaElement,
+  ) {
+    Object.defineProperty(this, 'paused', { configurable: true, value: false });
+    return new Promise<void>((resolve, reject) => {
+      resolves.push(resolve);
+      rejects.push(reject);
+    });
+  });
+  await act(async () => {
+    await h.result.current.resumeAudio();
+    elements.forEach((element) => ready(element));
+  });
+  expect(rejects).toHaveLength(2);
+  h.rerender({
+    ...h.props,
+    transport: { ...h.props.transport, generation: 2 },
+  });
+  await act(async () => {
+    rejects.slice().forEach((reject) =>
+      reject(new DOMException('Interrupted old trial', 'AbortError')),
+    );
+  });
+  expect(h.props.transport.pause).not.toHaveBeenCalled();
+  expect(h.result.current.status).not.toBe('failed');
+  expect(h.props.transport.playingIntent).toBe(true);
+  expect(resolves).toHaveLength(4);
+  await act(async () => resolves.slice(2).forEach((resolve) => resolve()));
+  expect(h.result.current.status).toBe('ready');
+});
 it('frozen_video_recipe_uses_its_own_speed_sample_offset_and_source_after_owner_deletion', async () => {
   const h = setup(),
     snapshot: EditSnapshot = {

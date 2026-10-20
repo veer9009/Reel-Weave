@@ -1,0 +1,77 @@
+.project-file-controls {
+  min-width: 0;
+  max-width: 100%;
+  font-size: 12px;
+}
+.project-file-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.project-file-controls small {
+  display: block;
+  max-width: 38ch;
+  overflow-wrap: anywhere;
+}
+.project-relink-dialog {
+  width: min(760px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  box-sizing: border-box;
+  overflow: auto;
+  border: 1px solid #65647d;
+  border-radius: 16px;
+  padding: 24px;
+  color: #f3f4f6;
+  background: #171923;
+}
+.project-relink-dialog::backdrop {
+  background: rgb(0 0 0 / 65%);
+}
+.project-relink-dialog h2 {
+  margin-top: 0;
+}
+.project-relink-sources {
+  padding: 0;
+  list-style: none;
+}
+.project-source-row {
+  padding: 16px 0;
+  border-bottom: 1px solid #44465b;
+}
+.project-source-row p {
+  margin: 6px 0;
+}
+.project-source-row button {
+  margin: 4px 8px 4px 0;
+  max-width: 100%;
+  white-space: normal;
+}
+.project-source-name,
+.project-relink-dialog p {
+  overflow-wrap: anywhere;
+}
+.project-source-status {
+  font-weight: 700;
+}
+.project-relink-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 12px;
+  position: sticky;
+  bottom: -24px;
+  padding: 16px 0;
+  background: #171923;
+}
+.project-relink-dialog :focus-visible {
+  outline: 3px solid #c4b5fd;
+  outline-offset: 3px;
+}
+@media (max-width: 420px) {
+  .project-relink-dialog {
+    padding: 16px;
+  }
+  .project-relink-actions {
+    bottom: -16px;
+  }
+}
