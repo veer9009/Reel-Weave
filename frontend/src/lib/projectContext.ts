@@ -58,7 +58,6 @@ export function collectSnapshotSources(
     ...snapshot.video2.map((v) => v.sourceId),
     ...snapshot.music.map((v) => v.sourceId),
     ...snapshot.independentAudio.map((v) => v.source.sourceId),
-    ...(snapshot.musicSourceId ? [snapshot.musicSourceId] : []),
     ...(snapshot.pip ? [snapshot.pip.sourceId] : []),
     ...(snapshot.projectContext?.imageOverlay
       ? [snapshot.projectContext.imageOverlay.sourceId]

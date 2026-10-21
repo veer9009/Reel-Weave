@@ -12,7 +12,7 @@ import {
 } from './advancedManifest';
 import { materializeSnapshot } from './historyProjection';
 import { buildAdvancedTimeline } from './advancedTimeline';
-import type { ProjectDocumentV1 } from './projectFileTypes';
+import type { ProjectDocument } from './projectFileTypes';
 import type { PreparedProject } from './projectContext';
 import type { LocalMediaMetadata, ProjectMediaVerifier } from './projectMedia';
 import type { OverlayState } from './overlays';
@@ -29,7 +29,7 @@ const verifier: ProjectMediaVerifier = {
   },
   dispose() {},
 };
-function prepare(document: ProjectDocumentV1, prefix: string) {
+function prepare(document: ProjectDocument, prefix: string) {
   const matches = new Map<string, AcceptedRelink>();
   let serial = 0;
   for (const source of document.sources) {

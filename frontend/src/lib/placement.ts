@@ -316,17 +316,8 @@ export function validatePlacement(
       if ('error' in edited) return edited;
       next = edited.value;
     } else {
-      if (
-        snapshot.musicSourceId &&
-        snapshot.musicSourceId !== source.token.sourceId
-      )
-        return fail(
-          'Use Change Music to replace the active music source.',
-          'music_source_change',
-        );
       next = {
         ...snapshot,
-        musicSourceId: source.token.sourceId,
         music: [
           ...snapshot.music,
           {

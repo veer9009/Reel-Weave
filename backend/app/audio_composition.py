@@ -16,16 +16,30 @@ class AudioGraph:
 def build_music_graph(
     segments: tuple[MusicSegment, ...], output_fps: int, total_frames: int, input_index: int
 ) -> AudioGraph:
+    return build_segmented_music_graph(
+        segments, output_fps, total_frames, {s.source_id: input_index for s in segments}
+    )
+
+
+def build_segmented_music_graph(
+    segments: tuple[MusicSegment, ...],
+    output_fps: int,
+    total_frames: int,
+    input_indexes: dict[str, int],
+) -> AudioGraph:
     k = 48000 // output_fps
     total = total_frames * k
     active = [v for v in segments if v.timeline_start_frame < total_frames]
     filters = [
         f"anullsrc=channel_layout=stereo:sample_rate=48000,atrim=end_sample={total},asetpts=PTS-STARTPTS[bed]"
     ]
-    if active:
+    groups: dict[str, list[int]] = {}
+    for i, segment in enumerate(active):
+        groups.setdefault(segment.source_id, []).append(i)
+    for source_id, indexes in groups.items():
         filters.append(
-            f"[{input_index}:a:0]asplit={len(active)}"
-            + "".join(f"[source{i}]" for i in range(len(active)))
+            f"[{input_indexes[source_id]}:a:0]asplit={len(indexes)}"
+            + "".join(f"[source{i}]" for i in indexes)
         )
     labels = ["[bed]"]
     for i, v in enumerate(active):

@@ -53,6 +53,9 @@ import { materializeSnapshot } from '../lib/historyProjection';
 import { buildTimeline } from '../lib/timeline';
 import { changeBaseSourceEdit } from '../lib/overwriteEdits';
 import { buildAdvancedTimeline } from '../lib/advancedTimeline';
+import { planAudioSplit } from '../lib/audioSplit';
+import type { AudioSplitTarget } from '../lib/audioSplit';
+import type { EditResult } from '../lib/positionedEdits';
 import { detachAudio, editIndependentAudio } from '../lib/audioTimeline';
 import type { AudioTarget, AudioSegmentEdit } from '../lib/audioTimeline';
 import type { PlacementDraft } from '../lib/placement';
@@ -82,7 +85,6 @@ const defaults = (): EditSnapshot => ({
   independentAudio: [],
   video1: [],
   video2: [],
-  musicSourceId: null,
   music: [],
   pip: null,
   audio: {
@@ -127,6 +129,9 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
     mediaType: 'video' | 'audio';
     placement?: PlacementDraft;
     replaceId?: string;
+    replaceTarget?: AudioSplitTarget;
+    expectedRevision?: number;
+    expectedTarget?: string;
   }[] = [];
   let timelineCandidates: {
     token: SourceToken;
@@ -596,6 +601,17 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
           mediaType,
           placement: placement ? { ...placement, token } : undefined,
           replaceId,
+          ...(replaceId
+            ? {
+                replaceTarget: { kind: 'independent' as const, id: replaceId },
+                expectedRevision: revision,
+                expectedTarget: JSON.stringify(
+                  history.present.independentAudio.find(
+                    (v) => v.id === replaceId,
+                  ),
+                ),
+              }
+            : {}),
         },
       ];
       publish();
@@ -636,6 +652,87 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
         return false;
       }
       return api.commit('detach-audio', 'Detach Audio', next.value);
+    },
+    splitAudio(
+      target: AudioSplitTarget,
+      frame: number,
+    ): EditResult<{ leftId: string; rightId: string }> {
+      const m = materializeSnapshot(history.present, sources);
+      const result = planAudioSplit(
+        {
+          snapshot: history.present,
+          sources,
+          projection: buildAdvancedTimeline(history.present, sources, {
+            image: null,
+            video: m.pip,
+          }),
+          target,
+          frame,
+          editingLocked: !allowed(),
+          gestureActive: Boolean(transaction),
+          modalOpen: api.options.trimDraftOpen,
+          limits: api.options.limits,
+        },
+        () => crypto.randomUUID(),
+      );
+      if ('error' in result) {
+        api.options.onError(result.error.message);
+        return result;
+      }
+      if (
+        !api.commit(
+          target.kind === 'music' ? 'music-split' : 'independent-split',
+          'Split Audio',
+          result.value.nextSnapshot,
+        )
+      )
+        return {
+          error: {
+            code: 'edit_locked',
+            message: 'The audio edit is no longer available.',
+            lane: target.kind,
+            segmentId: target.id,
+          },
+        };
+      return {
+        value: { leftId: result.value.leftId, rightId: result.value.rightId },
+      };
+    },
+    replaceAudioPiece(
+      target: AudioSplitTarget,
+      file: File,
+    ): SourceToken | null {
+      if (!allowed()) return null;
+      const segment = (
+        target.kind === 'music'
+          ? history.present.music
+          : history.present.independentAudio
+      ).find((v) => v.id === target.id);
+      if (!segment) {
+        api.options.onError('Select an available audio segment to replace.');
+        return null;
+      }
+      const token = api.importToBin(file, 'audio');
+      if (!token) return null;
+      pendingBinImports = pendingBinImports
+        .map((v) =>
+          v.token.sourceId === token.sourceId
+            ? {
+                ...v,
+                replaceTarget: { ...target },
+                expectedRevision: revision,
+                expectedTarget: JSON.stringify(segment),
+              }
+            : v,
+        )
+        .filter(
+          (v) =>
+            v.token.sourceId === token.sourceId ||
+            v.replaceTarget?.kind !== target.kind ||
+            v.replaceTarget?.id !== target.id,
+        );
+      publish();
+      return token;
     },
     commitAudioEdit(edit: AudioSegmentEdit): boolean {
       if (!allowed()) return false;
@@ -979,14 +1076,43 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
       );
       pendingBinImports = pendingBinImports.filter((v) => !ready.includes(v));
       for (const item of ready) {
-        if (item.replaceId)
-          api.commitAudioEdit({
-            action: 'replace',
-            id: item.replaceId,
-            source: { kind: 'audio-file', sourceId: item.token.sourceId },
-            sourceStartSample: 0,
-          });
-        else if (item.placement) api.commitPlacement(item.placement);
+        if (item.replaceTarget) {
+          const target = item.replaceTarget;
+          const current = (
+            target.kind === 'music'
+              ? history.present.music
+              : history.present.independentAudio
+          ).find((v) => v.id === target.id);
+          if (
+            revision !== item.expectedRevision ||
+            JSON.stringify(current) !== item.expectedTarget
+          ) {
+            api.options.onError(
+              'Audio replacement cancelled because its target or project changed.',
+            );
+            continue;
+          }
+          if (target.kind === 'independent')
+            api.commitAudioEdit({
+              action: 'replace',
+              id: target.id,
+              source: { kind: 'audio-file', sourceId: item.token.sourceId },
+              sourceStartSample: 0,
+            });
+          else
+            api.commit('music-replace', 'Replace Audio', {
+              ...history.present,
+              music: history.present.music.map((v) =>
+                v.id === target.id
+                  ? {
+                      ...v,
+                      sourceId: item.token.sourceId,
+                      sourceStartSample: 0,
+                    }
+                  : v,
+              ),
+            });
+        } else if (item.placement) api.commitPlacement(item.placement);
         else
           api.commit('bin-import', 'Import media to bin', {
             ...history.present,
@@ -1225,10 +1351,9 @@ function createController(initialOptions: HistoryOptions, changed: () => void) {
         };
         next = {
           ...history.present,
-          musicSourceId: token.sourceId,
           music: [music],
         };
-        action = history.present.musicSourceId ? 'music-replace' : 'music-add';
+        action = history.present.music.length ? 'music-replace' : 'music-add';
       }
       if (
         !api.commit(

@@ -47,7 +47,7 @@ it('v3_preserves_windows_and_frozen_audio_only_sources_with_deduplicated_uploads
         source: { kind: 'audio-file' as const, sourceId: audio.sourceId },
       },
     ],
-    musicSourceId: audio.sourceId,
+
     music: [
       {
         id: 'music',

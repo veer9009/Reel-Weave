@@ -29,7 +29,7 @@ describe('project document integrity', () => {
   );
   it('distinguishes unsupported version from unrelated JSON', () => {
     expect(
-      parse({ ...createProjectDocumentFixture(), schemaVersion: 2 }),
+      parse({ ...createProjectDocumentFixture(), schemaVersion: 99 }),
     ).toMatchObject({ ok: false, issue: { code: 'unsupported-version' } });
     expect(parse({ schema_version: 3 })).toMatchObject({
       ok: false,

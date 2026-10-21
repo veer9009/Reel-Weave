@@ -14,6 +14,8 @@ import type {
   PortableVideo1,
   PortableVideo2,
   ProjectDocumentV1,
+  ProjectDocument,
+  ProjectDocumentV2,
   ProjectIssue,
   ProjectResult,
   ProjectSourceV1,
@@ -441,7 +443,7 @@ function independent(value: unknown, path: string): PortableIndependentAudio {
       : {}),
   };
 }
-function validateRanges(d: ProjectDocumentV1, limits: Limits) {
+function validateRanges(d: ProjectDocument, limits: Limits) {
   const sources = new Map(d.sources.map((s) => [s.id, s]));
   if (sources.size !== d.sources.length)
     fail('sources', 'Duplicate source identity.');
@@ -545,7 +547,10 @@ function validateRanges(d: ProjectDocumentV1, limits: Limits) {
     (v) => v.contentOutFrame - v.contentInFrame,
     'edit.video2',
   );
-  if (Boolean(d.edit.musicSourceId) !== Boolean(d.edit.music.length))
+  if (
+    d.schemaVersion === 1 &&
+    Boolean(d.edit.musicSourceId) !== Boolean(d.edit.music.length)
+  )
     fail('edit.musicSourceId', 'Music selection and segments differ.');
   const audioRange = (
     offset: number,
@@ -564,7 +569,11 @@ function validateRanges(d: ProjectDocumentV1, limits: Limits) {
   for (const v of d.edit.music) {
     claim(v);
     const s = ref(v.sourceId, 'audio');
-    if (v.sourceId !== d.edit.musicSourceId || s.mediaType !== 'audio' || !f)
+    if (
+      (d.schemaVersion === 1 && v.sourceId !== d.edit.musicSourceId) ||
+      s.mediaType !== 'audio' ||
+      !f
+    )
       fail('edit.music', 'Incompatible music source.');
     audioRange(
       v.sourceStartSample,
@@ -643,7 +652,7 @@ function validateRanges(d: ProjectDocumentV1, limits: Limits) {
 export function validateProjectDocument(
   input: unknown,
   limits: Limits,
-): ProjectResult<ProjectDocumentV1> {
+): ProjectResult<ProjectDocument> {
   try {
     if (
       !input ||
@@ -658,7 +667,8 @@ export function validateProjectDocument(
       typeof input.schemaVersion === 'number' &&
       Number.isSafeInteger(input.schemaVersion) &&
       input.schemaVersion > 0 &&
-      input.schemaVersion !== 1
+      input.schemaVersion !== 1 &&
+      input.schemaVersion !== 2
     )
       return projectFailure(
         'unsupported-version',
@@ -673,13 +683,14 @@ export function validateProjectDocument(
       'exportSettings',
       'timingFps',
     ]);
-    if (root.schemaVersion !== 1)
+    if (root.schemaVersion !== 1 && root.schemaVersion !== 2)
       fail('schemaVersion', 'Invalid schema version.');
+    const legacy = root.schemaVersion === 1;
     const e = object(root.edit, 'edit', [
       'binSourceIds',
       'video1',
       'video2',
-      'musicSourceId',
+      ...(legacy ? ['musicSourceId'] : []),
       'music',
       'independentAudio',
       'pip',
@@ -703,9 +714,9 @@ export function validateProjectDocument(
     );
     if (!selected.includes('mp4') || new Set(selected).size !== selected.length)
       fail('exportSettings.formats', 'Formats must be unique and include MP4.');
-    const document: ProjectDocumentV1 = {
+    const document: ProjectDocumentV2 = {
       format: 'avstudio-project',
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: list(root.sources, 'sources').map((v, i) =>
         source(v, `sources[${i}]`),
       ),
@@ -719,10 +730,6 @@ export function validateProjectDocument(
         video2: list(e.video2, 'edit.video2').map((v, i) =>
           video2(v, `edit.video2[${i}]`),
         ),
-        musicSourceId:
-          e.musicSourceId === null
-            ? null
-            : id(e.musicSourceId, 'edit.musicSourceId'),
         music: list(e.music, 'edit.music').map((v, i) =>
           music(v, `edit.music[${i}]`),
         ),
@@ -750,13 +757,33 @@ export function validateProjectDocument(
       timingFps:
         root.timingFps === null ? null : fps(root.timingFps, 'timingFps'),
     };
-    validateRanges(document, limits);
-    return { ok: true, value: document };
+    const parsed: ProjectDocument = legacy
+      ? {
+          ...document,
+          schemaVersion: 1,
+          edit: {
+            ...document.edit,
+            musicSourceId:
+              e.musicSourceId === null
+                ? null
+                : id(e.musicSourceId, 'edit.musicSourceId'),
+          },
+        }
+      : document;
+    validateRanges(parsed, limits);
+    return { ok: true, value: parsed };
   } catch (error) {
     return error instanceof InvalidProject
       ? { ok: false, issue: error.issue }
       : projectFailure('invalid', 'Invalid project.', 'project');
   }
+}
+export function migrateProjectDocumentV1(
+  document: ProjectDocumentV1,
+): ProjectDocumentV2 {
+  const edit = { ...document.edit };
+  delete (edit as Partial<typeof edit>).musicSourceId;
+  return { ...document, schemaVersion: 2, edit };
 }
 function scanJson(textValue: string) {
   const stack: { kind: string; keys: Set<string> }[] = [];
@@ -798,7 +825,7 @@ function scanJson(textValue: string) {
 export function parseProjectText(
   textValue: string,
   limits: Limits,
-): ProjectResult<ProjectDocumentV1> {
+): ProjectResult<ProjectDocument> {
   if (new TextEncoder().encode(textValue).byteLength > MAX_PROJECT_BYTES)
     return projectFailure('limit', 'Project exceeds supported limits.');
   const value = textValue.startsWith('\uFEFF') ? textValue.slice(1) : textValue;
@@ -815,7 +842,7 @@ export async function readProjectFile(
   file: File,
   limits: Limits,
   signal: AbortSignal,
-): Promise<ProjectResult<ProjectDocumentV1>> {
+): Promise<ProjectResult<ProjectDocument>> {
   if (signal.aborted) return projectFailure('cancelled', 'Open cancelled.');
   if (file.size > MAX_PROJECT_BYTES)
     return projectFailure('limit', 'Project exceeds supported limits.');
@@ -836,7 +863,7 @@ export async function readProjectFile(
   }
 }
 export function stringifyProjectDocument(
-  document: ProjectDocumentV1,
+  document: ProjectDocument,
   limits: Limits,
 ): ProjectResult<string> {
   const checked = validateProjectDocument(document, limits);

@@ -36,11 +36,15 @@ export function buildAdvancedMergeRequest(
   sources: ProjectSources,
   outputFps: ProjectFps,
   overlays: OverlayState,
+  includeMusic = true,
 ): {
   manifest: AdvancedMergeManifest;
   videoFiles: File[];
   uploads: MergeUploads;
 } {
+  if (includeMusic && requiresV4(s))
+    throw new Error('Multiple music sources require the V4 render contract.');
+  const musicSourceId = s.music[0]?.sourceId;
   const m = materializeSnapshot(s, sources);
   if (!m.clips.length || !m.clips.every(isEditableClip))
     throw new Error('Video source timing unavailable.');
@@ -75,23 +79,25 @@ export function buildAdvancedMergeRequest(
           content_out_frame: v.contentOutFrame,
           content_full_source: v.contentFullSource,
         })),
-      music: s.musicSourceId
-        ? {
-            source_id: s.musicSourceId,
-            segments: s.music.map((v) => ({
-              client_id: v.id,
-              source_id: v.sourceId,
-              timeline_start_frame: v.timelineStartFrame,
-              source_start_sample: v.sourceStartSample,
-              duration_frames: v.durationFrames,
-            })),
-          }
-        : null,
+      music:
+        includeMusic && musicSourceId
+          ? {
+              source_id: musicSourceId,
+              segments: s.music.map((v) => ({
+                client_id: v.id,
+                source_id: v.sourceId,
+                timeline_start_frame: v.timelineStartFrame,
+                source_start_sample: v.sourceStartSample,
+                duration_frames: v.durationFrames,
+              })),
+            }
+          : null,
     },
     uploads: {
-      backgroundAudio: s.musicSourceId
-        ? sources.get(s.musicSourceId)?.file
-        : undefined,
+      backgroundAudio:
+        includeMusic && musicSourceId
+          ? sources.get(musicSourceId)?.file
+          : undefined,
       overlayImage: overlays.image?.file,
       overlayVideo: overlays.video?.file,
     },
@@ -158,18 +164,78 @@ export function validateManifestSize(json: string): void {
   if (new TextEncoder().encode(json).byteLength > 65536)
     throw new Error('Timeline description exceeds the render limit');
 }
+export type V4MergeManifest = Omit<
+  V3MergeManifest,
+  'schema_version' | 'music'
+> & {
+  schema_version: 4;
+  music: null | { segments: NonNullable<V3MergeManifest['music']>['segments'] };
+};
+export type V4MergeRequest = Omit<V3MergeRequest, 'manifest'> & {
+  manifest: V4MergeManifest;
+};
+
+export function requiresV4(s: EditSnapshot): boolean {
+  return new Set(s.music.map((v) => v.sourceId)).size > 1;
+}
+
+const defaultRenderLimits: Limits = {
+  max_clips: 20,
+  max_file_size_mb: 200,
+  max_audio_file_size_mb: 100,
+};
+
 export function buildV3MergeRequest(
   s: EditSnapshot,
   sources: ProjectSources,
   outputFps: ProjectFps,
   overlays: OverlayState,
   exports: readonly ExportFormat[],
-  limits: Limits = {
-    max_clips: 20,
-    max_file_size_mb: 200,
-    max_audio_file_size_mb: 100,
-  },
+  limits: Limits = defaultRenderLimits,
 ): V3MergeRequest {
+  if (requiresV4(s))
+    throw new Error('Multiple music sources require the V4 render contract.');
+  return buildModernMergeRequest(
+    s,
+    sources,
+    outputFps,
+    overlays,
+    exports,
+    limits,
+    3,
+  ) as V3MergeRequest;
+}
+
+export function buildV4MergeRequest(
+  s: EditSnapshot,
+  sources: ProjectSources,
+  outputFps: ProjectFps,
+  overlays: OverlayState,
+  exports: readonly ExportFormat[],
+  limits: Limits = defaultRenderLimits,
+): V4MergeRequest {
+  return buildModernMergeRequest(
+    s,
+    sources,
+    outputFps,
+    overlays,
+    exports,
+    limits,
+    4,
+  ) as V4MergeRequest;
+}
+
+function buildModernMergeRequest(
+  s: EditSnapshot,
+  sources: ProjectSources,
+  outputFps: ProjectFps,
+  overlays: OverlayState,
+  exports: readonly ExportFormat[],
+  limits: Limits,
+  version: 3 | 4,
+): Omit<V3MergeRequest, 'manifest'> & {
+  manifest: V3MergeManifest | V4MergeManifest;
+} {
   if (
     !exports.includes('mp4') ||
     new Set(exports).size !== exports.length ||
@@ -183,7 +249,13 @@ export function buildV3MergeRequest(
     throw new Error(
       projection.renderErrors[0] ?? 'Video 1 is required for every export.',
     );
-  const legacy = buildAdvancedMergeRequest(s, sources, outputFps, overlays);
+  const legacy = buildAdvancedMergeRequest(
+    s,
+    sources,
+    outputFps,
+    overlays,
+    version === 3,
+  );
   const videoIds = [
     ...new Set(
       [
@@ -200,7 +272,7 @@ export function buildV3MergeRequest(
       ...s.independentAudio
         .filter((v) => v.source.kind === 'audio-file')
         .map((v) => v.source.sourceId),
-      ...(s.musicSourceId ? [s.musicSourceId] : []),
+      ...s.music.map((v) => v.sourceId),
     ]),
   ];
   const files = (ids: string[], type: 'video' | 'audio') =>
@@ -291,9 +363,27 @@ export function buildV3MergeRequest(
     )
   )
     throw new Error('Render identifiers exceed the supported limit.');
-  validateManifestSize(JSON.stringify(manifest));
+  const outputManifest: V3MergeManifest | V4MergeManifest =
+    version === 4
+      ? {
+          ...manifest,
+          schema_version: 4,
+          music: s.music.length
+            ? {
+                segments: s.music.map((v) => ({
+                  client_id: v.id,
+                  source_id: v.sourceId,
+                  timeline_start_frame: v.timelineStartFrame,
+                  source_start_sample: v.sourceStartSample,
+                  duration_frames: v.durationFrames,
+                })),
+              }
+            : null,
+        }
+      : manifest;
+  validateManifestSize(JSON.stringify(outputManifest));
   return {
-    manifest,
+    manifest: outputManifest,
     videoFiles: [...videoFiles],
     audioFiles: [...audioFiles],
     uploads: {

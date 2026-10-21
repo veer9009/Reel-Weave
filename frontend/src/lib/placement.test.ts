@@ -70,7 +70,7 @@ it('placement_video2_touching_edges_is_valid_overlap_and_outside_are_atomic', ()
   });
   expect(f.snapshot.video2[0].timelineStartFrame).toBe(40);
 });
-it('video_into_audio_requires_explicit_detach_and_music_source_change_is_explicit', () => {
+it('video_into_audio_requires_explicit_detach_and_music_pieces_keep_independent_sources', () => {
   const f = advancedFixture();
   expect(
     placement.validatePlacement(
@@ -86,7 +86,7 @@ it('video_into_audio_requires_explicit_detach_and_music_source_change_is_explici
   f.sources.markReady(b, { duration: 3, sampleCount: 144000 });
   const snapshot = {
     ...f.snapshot,
-    musicSourceId: a.sourceId,
+
     music: [
       {
         id: 'song',
@@ -105,16 +105,26 @@ it('video_into_audio_requires_explicit_detach_and_music_source_change_is_explici
       limits,
     ),
   ).toHaveProperty('value');
+  const mixed = placement.validatePlacement(
+    snapshot,
+    f.sources,
+    { token: b, track: 'music', timelineStartFrame: 20, durationFrames: 10 },
+    limits,
+  );
+  expect(mixed).toHaveProperty('value');
+  if (!('value' in mixed)) throw new Error(mixed.error.message);
   expect(
-    placement.validatePlacement(
-      snapshot,
-      f.sources,
-      { token: b, track: 'music', timelineStartFrame: 20, durationFrames: 10 },
-      limits,
-    ),
-  ).toMatchObject({
-    error: { message: expect.stringMatching(/Change Music/) },
-  });
+    mixed.value.music.map((v) => [
+      v.sourceId,
+      v.timelineStartFrame,
+      v.durationFrames,
+    ]),
+  ).toEqual([
+    [a.sourceId, 0, 10],
+    [b.sourceId, 20, 10],
+  ]);
+  expect(mixed.value.video1).toEqual(snapshot.video1);
+  expect(snapshot.music).toHaveLength(1);
 });
 it('keyboard_timecodes_share_half_up_project_frame_mapping', () => {
   expect(placement.timecodeFrame('00:01.600', 25)).toEqual({ value: 40 });

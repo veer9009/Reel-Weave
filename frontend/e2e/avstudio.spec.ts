@@ -47,7 +47,7 @@ test('Timeline Tools stay left of uninterrupted tracks on desktop and narrow scr
     await page.setViewportSize({ width, height });
     await toolbar.scrollIntoViewIfNeeded();
     await expect(toolbar).toBeVisible();
-    await expect(toolbar.getByRole('button')).toHaveCount(4);
+    await expect(toolbar.getByRole('button')).toHaveCount(6);
     const bounds = (await toolbar.boundingBox())!;
     const scroll = (await page
       .getByLabel('Scrollable timeline', { exact: true })
@@ -70,7 +70,7 @@ test('Timeline Tools stay left of uninterrupted tracks on desktop and narrow scr
     await expect(page.locator('.timeline-tracks > section')).toHaveCount(5);
     await expect(
       page.locator('.timeline-tracks').getByRole('button', {
-        name: /^(Undo|Redo|Split at playhead|Ripple Delete selected)$/,
+        name: /^(Undo|Redo|Split Video|Ripple Delete selected)$/,
       }),
     ).toHaveCount(0);
     const clip = (await page

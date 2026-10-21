@@ -90,8 +90,7 @@ export function validatePositioned(
         )
           return 'Replacement range exceeds its source.';
       } else {
-        if (!integer(v.sourceStartSample) || v.sourceId !== s.musicSourceId)
-          return 'Invalid music source range.';
+        if (!integer(v.sourceStartSample)) return 'Invalid music source range.';
         const source = sources?.get(v.sourceId);
         if (
           sources &&
@@ -114,8 +113,6 @@ export function validatePositioned(
       }
     }
   }
-  if (Boolean(s.musicSourceId) !== Boolean(s.music.length))
-    return 'Music source and segments must match.';
   if (sources && fps)
     return validateIndependentAudio(s, sources, fps)?.message ?? null;
   return null;
@@ -260,7 +257,6 @@ export function rippleDeletePositioned(
   return result({
     ...s,
     [track]: next,
-    ...(track === 'music' && !next.length ? { musicSourceId: null } : {}),
   });
 }
 export function changeReplacementSourceEdit(

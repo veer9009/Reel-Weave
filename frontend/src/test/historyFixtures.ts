@@ -6,7 +6,6 @@ export function historySnapshot(ids = ['a', 'b']): EditSnapshot {
     binSourceIds: [],
     independentAudio: [],
     video2: [],
-    musicSourceId: null,
     music: [],
     video1: ids.map((id) => ({
       id,
@@ -72,7 +71,6 @@ export function advancedFixture() {
         contentFullSource: false,
       },
     ],
-    musicSourceId: null,
     music: [],
   };
   return { sources, snapshot, base, take };

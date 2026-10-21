@@ -1,4 +1,4 @@
-﻿import {
+import {
   fireEvent,
   render,
   screen,
@@ -37,6 +37,7 @@ it('professional_shell_has_named_regions_and_one_submission', async () => {
   expect(screen.getByLabelText('Inspector')).toBeVisible();
   const submit = screen.getAllByRole('button', { name: 'Render MP4' });
   expect(submit).toHaveLength(1);
+  expect(submit[0].closest('.site-header')).not.toBeNull();
   expect(submit[0]).toBeDisabled();
   expect(submit[0]).toHaveAttribute('aria-describedby', 'render-hint');
   expect(
@@ -238,9 +239,7 @@ describe('AVStudio', { timeout: 15000 }, () => {
       fireEvent.change(screen.getByLabelText('Timeline position'), {
         target: { value: '29' },
       });
-      fireEvent.click(
-        screen.getByRole('button', { name: 'Split at playhead' }),
-      );
+      fireEvent.click(screen.getByRole('button', { name: 'Split Video' }));
       const ids = Array.from(
         document.querySelectorAll<HTMLElement>('.clip-item'),
         (item) => item.dataset.clipId,
@@ -368,7 +367,7 @@ describe('AVStudio', { timeout: 15000 }, () => {
       document.querySelectorAll<HTMLElement>('.clip-item'),
       (item) => item.dataset.clipId,
     );
-    const split = screen.getByRole('button', { name: 'Split at playhead' });
+    const split = screen.getByRole('button', { name: 'Split Video' });
     expect(split).toBeDisabled();
     expect(split).toHaveAttribute(
       'title',
@@ -405,7 +404,7 @@ describe('AVStudio', { timeout: 15000 }, () => {
     fireEvent.change(screen.getByLabelText('Timeline position'), {
       target: { value: '149' },
     });
-    await user.click(screen.getByRole('button', { name: 'Split at playhead' }));
+    await user.click(screen.getByRole('button', { name: 'Split Video' }));
     const items = within(
       screen.getByRole('list', { name: 'Clip order' }),
     ).getAllByRole('listitem');
@@ -478,7 +477,7 @@ describe('AVStudio', { timeout: 15000 }, () => {
     await user.click(
       screen.getByRole('button', { name: 'Preview clip 1: first.mp4' }),
     );
-    const split = screen.getByRole('button', { name: 'Split at playhead' });
+    const split = screen.getByRole('button', { name: 'Split Video' });
     const ids = Array.from(
       document.querySelectorAll<HTMLElement>('.clip-item'),
       (item) => item.dataset.clipId,

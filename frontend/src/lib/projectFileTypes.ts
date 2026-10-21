@@ -130,6 +130,12 @@ export type ProjectDocumentV1 = {
   exportSettings: { formats: ('mp4' | 'mov' | 'wav' | 'mp3')[] };
   timingFps: ProjectFps | null;
 };
+export type PortableEditV2 = Omit<PortableEditV1, 'musicSourceId'>;
+export type ProjectDocumentV2 = Omit<
+  ProjectDocumentV1,
+  'schemaVersion' | 'edit'
+> & { schemaVersion: 2; edit: PortableEditV2 };
+export type ProjectDocument = ProjectDocumentV1 | ProjectDocumentV2;
 export type CapturedSource = Readonly<
   Pick<
     SourceRecord,

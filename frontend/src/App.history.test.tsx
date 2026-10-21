@@ -1,4 +1,4 @@
-﻿import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from '@testing-library/react';
 import App from './App';
@@ -183,9 +183,7 @@ describe('App edit history', { timeout: 30000 }, () => {
       fireEvent.change(screen.getByLabelText('Timeline position'), {
         target: { value: '39' },
       });
-      fireEvent.click(
-        screen.getByRole('button', { name: 'Split at playhead' }),
-      );
+      fireEvent.click(screen.getByRole('button', { name: 'Split Video' }));
       // Put b first so either split piece can be moved to an occupied start.
       fireEvent.click(screen.getByRole('button', { name: 'Move b.mp4 up' }));
       fireEvent.click(screen.getByRole('button', { name: 'Move b.mp4 up' }));
@@ -394,7 +392,7 @@ describe('App edit history', { timeout: 30000 }, () => {
     fireEvent.change(screen.getByLabelText('Timeline position'), {
       target: { value: '19' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Split at playhead' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Split Video' }));
     expect(document.querySelectorAll('.clip-item')).toHaveLength(2);
     undo();
     expect(document.querySelectorAll('.clip-item')).toHaveLength(1);
@@ -668,7 +666,7 @@ describe('App edit history', { timeout: 30000 }, () => {
     fireEvent.change(screen.getByLabelText('Timeline position'), {
       target: { value: '79' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Split at playhead' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Split Video' }));
     expect(
       Array.from(document.querySelectorAll('.clip-thumbnail video'), (v) =>
         v.getAttribute('src'),
@@ -731,7 +729,7 @@ describe('App edit history', { timeout: 30000 }, () => {
     fireEvent.change(screen.getByLabelText('Timeline position'), {
       target: { value: '39' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Split at playhead' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Split Video' }));
     const ids = Array.from(
       document.querySelectorAll<HTMLElement>('.clip-item'),
       (e) => e.dataset.clipId!,

@@ -107,9 +107,7 @@ test('advanced timeline edits render exact picture audio and music', async ({
   await page.getByRole('button', { name: 'Undo', exact: true }).click();
   await firstTake.click();
   await seek(page, 70);
-  await page
-    .getByRole('button', { name: 'Split at playhead', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Split Video', exact: true }).click();
   await expect(
     page
       .getByRole('region', { name: 'VIDEO 2', exact: true })
@@ -193,7 +191,7 @@ test('advanced timeline edits render exact picture audio and music', async ({
   for (const frame of [75, 100]) {
     await seek(page, frame);
     await page
-      .getByRole('button', { name: 'Split at playhead', exact: true })
+      .getByRole('button', { name: 'Split Audio', exact: true })
       .click();
   }
   await page

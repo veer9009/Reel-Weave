@@ -206,13 +206,24 @@ def parse_advanced_manifest(value: dict, file_count: int, max_clips: int) -> Adv
 
 def parse_v3_manifest(value: dict, video_file_count: int, max_clips: int):
     """Parse the explicit V3 contract without legacy correction or defaults."""
+    return _parse_modern_manifest(value, video_file_count, max_clips, version=3)
+
+
+def parse_v4_manifest(value: dict, video_file_count: int, max_clips: int):
+    """Parse per-source music without changing the strict legacy V3 contract."""
+    return _parse_modern_manifest(value, video_file_count, max_clips, version=4)
+
+
+def _parse_modern_manifest(value: dict, video_file_count: int, max_clips: int, *, version: int):
     from .jobs import (
         AudioFileRecipe,
         AudioSourceDescriptor,
         DetachedProvenance,
         IndependentAudioSegment,
+        MultiSourceMusicPlan,
         V3MergePlan,
         V3ReplacementOccurrence,
+        V4MergePlan,
         VideoEditRecipe,
         WindowedVideoOccurrence,
     )
@@ -449,8 +460,10 @@ def parse_v3_manifest(value: dict, video_file_count: int, max_clips: int):
         )
     music = None
     if value["music"] is not None:
-        m = _object(value["music"], {"source_id", "segments"}, "Music")
-        sid = reference(m["source_id"], ac, arefs)
+        m = _object(
+            value["music"], {"source_id", "segments"} if version == 3 else {"segments"}, "Music"
+        )
+        sid = reference(m["source_id"], ac, arefs) if version == 3 else None
         if not isinstance(m["segments"], list) or not m["segments"]:
             _invalid("Music requires segments.")
         music_segments = []
@@ -466,18 +479,23 @@ def parse_v3_manifest(value: dict, video_file_count: int, max_clips: int):
                 },
                 "Music segment",
             )
-            if ident(v["source_id"]) != sid:
+            piece_source = reference(v["source_id"], ac, arefs)
+            if version == 3 and piece_source != sid:
                 _invalid("Music segment source must match music catalog reference.")
             music_segments.append(
                 MusicSegment(
                     identity(v["client_id"]),
-                    sid,
+                    piece_source,
                     integer(v["timeline_start_frame"]),
                     integer(v["source_start_sample"]),
                     integer(v["duration_frames"], 1),
                 )
             )
-        music = MusicPlan(sid, tuple(music_segments))
+        music = (
+            MusicPlan(sid, tuple(music_segments))
+            if version == 3
+            else MultiSourceMusicPlan(tuple(music_segments))
+        )
     if len(segments) + (len(music.segments) if music else 0) > 10 * max_clips:
         _invalid("Combined audio segment count exceeds the render limit.")
     if vrefs != vc or arefs != ac:
@@ -490,7 +508,8 @@ def parse_v3_manifest(value: dict, video_file_count: int, max_clips: int):
         or "mp4" not in exports
     ):
         _invalid("Exports must be unique supported formats including mp4.")
-    return V3MergePlan(
+    plan_type = V3MergePlan if version == 3 else V4MergePlan
+    return plan_type(
         videos,
         clips,
         order,

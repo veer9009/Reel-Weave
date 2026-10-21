@@ -40,6 +40,7 @@ from .jobs import (
     OverlaySettings,
     QueueIsFullError,
     V3MergePlan,
+    V4MergePlan,
 )
 from .media import InvalidMediaError, MediaPipeline
 from .storage import Storage, UnsafePathError
@@ -85,7 +86,7 @@ def _parse_overlay_settings(value: object, kind: str) -> OverlaySettings | None:
 
 def _parse_manifest(
     raw: object, file_count: int, max_clips: int = 10
-) -> MergePlan | AdvancedMergePlan | V3MergePlan:
+) -> MergePlan | AdvancedMergePlan | V3MergePlan | V4MergePlan:
     if not isinstance(raw, str):
         raise ApiError(422, "invalid_manifest", "A JSON edit manifest is required.")
     duplicate_keys = False
@@ -98,7 +99,7 @@ def _parse_manifest(
         result = {}
         for key, item in pairs:
             duplicate_keys = duplicate_keys or key in result
-            saw_v3 = saw_v3 or (key == "schema_version" and type(item) is int and item == 3)
+            saw_v3 = saw_v3 or (key == "schema_version" and type(item) is int and item in (3, 4))
             result[key] = item
         return result
 
@@ -111,8 +112,12 @@ def _parse_manifest(
     version = value.get("schema_version", 1)
     if saw_v3 and duplicate_keys:
         raise ApiError(422, "invalid_manifest", "Duplicate manifest fields are invalid.")
-    if type(version) is not int or version not in (1, 2, 3):
+    if type(version) is not int or version not in (1, 2, 3, 4):
         raise ApiError(422, "invalid_manifest", "Unsupported manifest schema version.")
+    if version == 4:
+        from .manifests import parse_v4_manifest
+
+        return parse_v4_manifest(value, file_count, max_clips)
     if version == 3:
         from .manifests import parse_v3_manifest
 

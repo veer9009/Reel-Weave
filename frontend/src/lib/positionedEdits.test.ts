@@ -151,7 +151,7 @@ it('music_middle_ripple_preserves_source_gap', () => {
   f.sources.markReady(song, { duration: 8 });
   let s: EditSnapshot = {
     ...f.snapshot,
-    musicSourceId: song.sourceId,
+
     music: [
       {
         id: 'song',

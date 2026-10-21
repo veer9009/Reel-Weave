@@ -318,7 +318,7 @@ it('auto_fps_reorder_converts_short_music_before_source_EOF_validation', () => {
     expect(
       h.result.current.commit('music-add', 'Add short song', {
         ...h.result.current.view,
-        musicSourceId: song.sourceId,
+
         music: [
           {
             id: 'music',
@@ -576,7 +576,7 @@ it('removed_song_restores_same_File_and_valid_URL', () => {
     h.result.current.sources.markReady(source, { duration: 1 });
     h.result.current.commit('music-add', 'Add song', {
       ...h.result.current.view,
-      musicSourceId: source.sourceId,
+
       music: [
         {
           id: 'song',

@@ -77,7 +77,7 @@ test('breakpoints_keep_all_actions_and_internal_timeline_scroll', async ({
     const inner = await page.locator('.timeline-inner').boundingBox();
     expect(inner!.width).toBeGreaterThanOrEqual(760);
     const tools = page.getByRole('toolbar', { name: 'Timeline Tools' });
-    await expect(tools.getByRole('button')).toHaveCount(4);
+    await expect(tools.getByRole('button')).toHaveCount(6);
     for (const button of await tools.getByRole('button').all()) {
       const bounds = await button.boundingBox();
       expect(bounds!.width).toBeGreaterThanOrEqual(44);
@@ -226,14 +226,14 @@ test('tools_show_keyboard_tooltips_on_focus', async ({ page }, info) => {
     });
   const split = page
     .getByRole('toolbar', { name: 'Timeline Tools' })
-    .getByRole('button', { name: 'Split at playhead', exact: true });
+    .getByRole('button', { name: 'Split Video', exact: true });
   await expect(split).toBeEnabled();
   await page.keyboard.press('Tab');
   await split.focus();
   await expect(split).toBeFocused();
   expect(
     await split.evaluate((node) => getComputedStyle(node, '::after').content),
-  ).toContain('Split at playhead');
+  ).toContain('Split Video');
 });
 
 test('fixed_labels_survive_horizontal_scroll', async ({ page }, info) => {
@@ -355,7 +355,7 @@ test('queued_processing_failure_and_poll_retry_stay_visible', async ({
   await expect(
     page.getByRole('heading', { name: 'Queued', exact: true }),
   ).toBeVisible();
-  await expect(page.locator('.summary .primary-button')).toBeDisabled();
+  await expect(page.locator('.site-header > .primary-button')).toBeDisabled();
   await page.screenshot({
     path: info.outputPath('queued.png'),
     fullPage: true,

@@ -25,7 +25,7 @@ import type {
 } from '../lib/projectMedia';
 import { projectFailure } from '../lib/projectFileTypes';
 import type {
-  ProjectDocumentV1,
+  ProjectDocument,
   ProjectIssue,
   ProjectResult,
   ProjectSourceV1,
@@ -92,7 +92,7 @@ function createController(initial: UseProjectFilesOptions, notify: () => void) {
     rows: RelinkRow[] = [],
     issue: ProjectIssue | null = null;
   let unused: File[] = [],
-    document: ProjectDocumentV1 | null = null,
+    document: ProjectDocument | null = null,
     prepared: PreparedProject | null = null,
     lock: ProjectOpenLock | null = null;
   let generation = 0,

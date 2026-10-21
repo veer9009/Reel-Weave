@@ -125,7 +125,7 @@ export function ProjectTimeline({
   return (
     <section className="project-timeline panel" aria-label="Sequence timeline">
       <div className="timeline-heading">
-        <h2>Sequence 01</h2>
+        <h1>Sequence 01</h1>
         <span>
           {timeline.items.length} clips ·{' '}
           {formatTimestamp(timeline.durationSeconds)}

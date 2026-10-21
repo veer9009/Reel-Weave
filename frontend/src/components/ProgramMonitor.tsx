@@ -243,12 +243,6 @@ export function ProgramMonitor({
           />
         )}
       </div>
-      {current && failedSource === current.clip.url && (
-        <p role="status">
-          This clip cannot play in this browser. You can still render a valid
-          project.
-        </p>
-      )}
       <div className="program-transport">
         <button
           type="button"
@@ -273,23 +267,35 @@ export function ProgramMonitor({
             : 'No current frame'}
         </output>
       </div>
-      <p className="preview-note">
-        {audioPreview
-          ? audioPreview.status === 'ready'
+      <div
+        className="program-feedback"
+        role="status"
+        aria-label="Preview feedback"
+      >
+        <p className="preview-note">
+          {audioPreview
             ? 'Browser picture and sound preview · approximate'
-            : (audioPreview.message ?? 'Preparing sound preview')
-          : 'Browser picture preview · approximate'}
-      </p>
-      {(audioPreview?.status === 'resume-required' ||
-        audioPreview?.status === 'unsupported' ||
-        audioPreview?.status === 'failed') && (
-        <div role="status">
-          <p>{audioPreview.message}</p>
+            : 'Browser picture preview · approximate'}
+        </p>
+        {current && failedSource === current.clip.url && (
+          <p>
+            This clip cannot play in this browser. You can still render a valid
+            project.
+          </p>
+        )}
+        <p className="audio-preview-status">
+          {audioPreview && audioPreview.status !== 'ready'
+            ? (audioPreview.message ?? 'Preparing sound preview')
+            : ''}
+        </p>
+        {(audioPreview?.status === 'resume-required' ||
+          audioPreview?.status === 'unsupported' ||
+          audioPreview?.status === 'failed') && (
           <button type="button" onClick={onToggle}>
             Resume Audio
           </button>
-        </div>
-      )}
+        )}
+      </div>
     </section>
   );
 }

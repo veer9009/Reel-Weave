@@ -254,6 +254,9 @@ export function BackgroundAudioTrack({
         </div>
       )}
       <div className="audio-mix-controls">
+        <p className="preview-note">
+          Volume and mute affect every segment on their audio bus.
+        </p>
         {audio && onReplace && (
           <label>
             Replace song

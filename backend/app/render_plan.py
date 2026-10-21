@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -12,8 +12,10 @@ from .jobs import (
     AudioRecipe,
     ClipEdit,
     ExportFormat,
+    MultiSourceMusicPlan,
     MusicPlan,
     V3MergePlan,
+    V4MergePlan,
     VideoEditRecipe,
 )
 from .media import InvalidMediaError, MediaPipeline
@@ -64,10 +66,11 @@ class ResolvedRenderPlan:
     total_frames: int
     video_edits: tuple[ResolvedVideoEdit, ...]
     slices: tuple[ResolvedSlice, ...]
-    music: MusicPlan | None
+    music: MusicPlan | MultiSourceMusicPlan | None
     music_sample_count: int | None
     audio_slices: tuple[ResolvedAudioSlice, ...] = ()
     exports: tuple[ExportFormat, ...] = ("mp4",)
+    music_sample_counts: dict[str, int] = field(default_factory=dict)
 
 
 def resolve_render_plan(
@@ -162,7 +165,7 @@ def resolve_render_plan(
 
 
 def resolve_v3_render_plan(
-    plan: V3MergePlan,
+    plan: V3MergePlan | V4MergePlan,
     video_sources: dict[str, VideoSourceInfo],
     audio_sample_counts: dict[str, int],
     recipe_sample_counts: dict[VideoEditRecipe, int],
@@ -337,7 +340,22 @@ def resolve_v3_render_plan(
         tuple(edits),
         tuple(picture),
         plan.music,
-        audio_sample_counts.get(plan.music.source_id) if plan.music else None,
+        audio_sample_counts.get(plan.music.source_id)
+        if isinstance(plan.music, MusicPlan)
+        else None,
         tuple(audio),
         plan.exports,
+        {s.source_id: audio_sample_counts[s.source_id] for s in plan.music.segments}
+        if plan.music
+        else {},
     )
+
+
+def resolve_v4_render_plan(
+    plan: V4MergePlan,
+    video_sources: dict[str, VideoSourceInfo],
+    audio_sample_counts: dict[str, int],
+    recipe_sample_counts: dict[VideoEditRecipe, int],
+) -> ResolvedRenderPlan:
+    """V4 shares authoritative picture/ownership rules; music is source-indexed."""
+    return resolve_v3_render_plan(plan, video_sources, audio_sample_counts, recipe_sample_counts)

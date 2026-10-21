@@ -1,4 +1,4 @@
-﻿import { formatTimestamp } from '../lib/clips';
+import { formatTimestamp } from '../lib/clips';
 import type { Clip } from '../lib/clips';
 import type { TimelineProjection } from '../lib/timeline';
 type Props = {
@@ -7,13 +7,37 @@ type Props = {
   disabled: boolean;
   busy: boolean;
   onMerge: () => void;
+  showAction?: boolean;
 };
+export function RenderAction({
+  disabled,
+  busy,
+  onMerge,
+}: Pick<Props, 'disabled' | 'busy' | 'onMerge'>) {
+  return (
+    <button
+      type="button"
+      className="primary-button"
+      disabled={disabled}
+      aria-describedby="render-hint"
+      onClick={onMerge}
+      title={
+        disabled
+          ? 'Review Delivery settings before rendering.'
+          : 'Render the selected formats (MP4 included)'
+      }
+    >
+      {busy ? 'Rendering MP4' : 'Render MP4'}
+    </button>
+  );
+}
 export function MergeSummary({
   clips,
   timeline,
   disabled,
   busy,
   onMerge,
+  showAction = true,
 }: Props) {
   const hint =
     clips.length < 1
@@ -44,15 +68,9 @@ export function MergeSummary({
         </div>
       </dl>
       <p>Includes active overlays and configured original/background audio.</p>
-      <button
-        type="button"
-        className="primary-button"
-        disabled={disabled}
-        aria-describedby="render-hint"
-        onClick={onMerge}
-      >
-        {busy ? 'Rendering MP4' : 'Render MP4'}
-      </button>
+      {showAction && (
+        <RenderAction disabled={disabled} busy={busy} onMerge={onMerge} />
+      )}
       <p id="render-hint">{hint}</p>
     </section>
   );

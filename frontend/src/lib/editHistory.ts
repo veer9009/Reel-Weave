@@ -27,7 +27,6 @@ export type EditSnapshot = {
   independentAudio: readonly IndependentAudioSegment[];
   video1: readonly Video1Occurrence[];
   video2: readonly Video2Occurrence[];
-  musicSourceId: string | null;
   music: readonly MusicOccurrence[];
   pip: PipOccurrence | null;
   audio: AudioSettings;
@@ -97,7 +96,6 @@ export function normalizeSnapshot(
       originalAudio: v.originalAudio ?? 'linked',
       trim: { ...v.trim },
     })),
-    musicSourceId: s.musicSourceId ?? null,
     music: (s.music ?? []).map((v) => ({ ...v })),
     video1: s.video1.map((v) => ({
       id: v.id,

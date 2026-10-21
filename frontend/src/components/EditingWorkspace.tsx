@@ -36,6 +36,8 @@ import { IndependentAudioEditor } from './IndependentAudioTrack';
 import type { IndependentAudioActions } from './IndependentAudioTrack';
 import { canDetach } from '../lib/audioTimeline';
 import type { AudioTarget } from '../lib/audioTimeline';
+import { audioSplitIssue } from '../lib/audioSplit';
+import type { AudioSplitTarget } from '../lib/audioSplit';
 import type { EditHistoryController } from '../hooks/useEditHistory';
 type Props = TrimTransactions & {
   transportController?: EditHistoryController;
@@ -381,12 +383,35 @@ export function EditingWorkspace(props: Props) {
                 : splitPlan.error.message
               : null;
   const canSplit = Boolean(
+    !selectedIndependent &&
+    selectedTrack !== 'music' &&
     (selectedIndependent
       ? props.audioActions
       : selectedPositioned
         ? props.onSplitPositioned
-        : props.onSplitAtPlayhead) && !splitReason,
+        : props.onSplitAtPlayhead) &&
+    !splitReason,
   );
+  const audioTarget: AudioSplitTarget | null = selectedIndependent
+    ? { kind: 'independent', id: selectedIndependent.id }
+    : selection.kind === 'music'
+      ? { kind: 'music', id: selection.id }
+      : null;
+  const audioSplitReason =
+    props.audioActions && advanced
+      ? (audioSplitIssue({
+          snapshot: props.audioActions.snapshot,
+          sources: props.audioActions.sources,
+          projection: advanced,
+          target: audioTarget,
+          frame: playback.frame,
+          editingLocked,
+          gestureActive: Boolean(props.gestureActive),
+          modalOpen: props.historyControls?.shortcutsAllowed === false,
+          limits: { max_clips: props.maxClips ?? 20, max_file_size_mb: 200 },
+        })?.message ??
+        (props.audioActions.onSplit ? null : 'Audio split is unavailable.'))
+      : 'Select an editable audio segment. Detach linked audio first.';
   const version2Sources = clips.filter(isEditableClip);
   const version2 = version2Sources.find((clip) => clip.id === version2Id);
   const canReplace =
@@ -578,7 +603,7 @@ export function EditingWorkspace(props: Props) {
           </button>
         </div>
       )}
-      <h1>Sequence 01</h1>
+
       {(['image', 'video'] as const).map(
         (kind) =>
           overlays[kind] &&
@@ -759,6 +784,39 @@ export function EditingWorkspace(props: Props) {
                 />
               )}
               {selectedTrack === 'music' && positionedInspection}
+              {selectedTrack === 'music' &&
+                selectedPositioned &&
+                props.audioActions && (
+                  <div className="audio-piece-actions">
+                    <label>
+                      Replace Audio
+                      <input
+                        type="file"
+                        aria-label="Replace Audio"
+                        accept=".wav,.mp3,.aac,.m4a"
+                        disabled={editingLocked || Boolean(props.gestureActive)}
+                        onChange={(event) => {
+                          const file = event.target.files?.[0];
+                          if (file)
+                            props.audioActions?.onReplaceMusicFile?.(
+                              selectedPositioned.id,
+                              file,
+                            );
+                          event.target.value = '';
+                        }}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      disabled={editingLocked || Boolean(props.gestureActive)}
+                      onClick={() =>
+                        props.audioActions?.onLiftMusic?.(selectedPositioned.id)
+                      }
+                    >
+                      Lift selected music
+                    </button>
+                  </div>
+                )}
               {props.audioContent}
             </>
           }
@@ -797,7 +855,7 @@ export function EditingWorkspace(props: Props) {
               onClick={() => props.historyControls?.undo()}
             >
               <Undo2 size={16} aria-hidden="true" />
-              <span className="sr-only">Undo</span>
+              <span>Undo</span>
             </button>
             <button
               type="button"
@@ -809,14 +867,14 @@ export function EditingWorkspace(props: Props) {
               onClick={() => props.historyControls?.redo()}
             >
               <Redo2 size={16} aria-hidden="true" />
-              <span className="sr-only">Redo</span>
+              <span>Redo</span>
             </button>
             <button
               type="button"
               className="secondary-button"
               disabled={!canSplit}
-              aria-label="Split at playhead"
-              title={splitReason ?? 'Split at playhead'}
+              aria-label="Split Video"
+              title={splitReason ?? 'Split Video at playhead'}
               aria-describedby={!canSplit ? 'split-reason' : undefined}
               onClick={() => {
                 if (!canSplit || playback.frame === null) return;
@@ -853,7 +911,36 @@ export function EditingWorkspace(props: Props) {
               }}
             >
               <Scissors size={16} aria-hidden="true" />
-              <span className="sr-only">Split at playhead</span>
+              <span>Split Video</span>
+            </button>
+            <button
+              type="button"
+              className="secondary-button timeline-audio-split-button"
+              aria-label="Split Audio"
+              disabled={Boolean(audioSplitReason)}
+              title={audioSplitReason ?? 'Split selected audio at the playhead'}
+              aria-describedby={
+                audioSplitReason ? 'split-audio-reason' : undefined
+              }
+              onClick={() => {
+                if (audioSplitReason || !audioTarget || playback.frame === null)
+                  return;
+                const result = props.audioActions?.onSplit?.(
+                  audioTarget,
+                  playback.frame,
+                );
+                if (result && 'value' in result) {
+                  focusAfterDelete.current =
+                    'timeline-segment-' + result.value.rightId;
+                  setSelection({
+                    kind: audioTarget.kind,
+                    id: result.value.rightId,
+                  });
+                }
+              }}
+            >
+              <Scissors size={16} aria-hidden="true" />
+              <span>Split Audio</span>
             </button>
             <button
               type="button"
@@ -898,13 +985,19 @@ export function EditingWorkspace(props: Props) {
               }
             >
               <Trash2 size={16} aria-hidden="true" />
-              <span className="sr-only">Ripple Delete selected</span>
+              <span>Ripple Delete</span>
             </button>
           </>
         }
         videoToolbarHelp={
           <>
             <small>Ctrl+Z · Ctrl+Y / Ctrl+Shift+Z</small>
+            <p
+              id="split-audio-reason"
+              tabIndex={audioSplitReason ? 0 : undefined}
+            >
+              {audioSplitReason ?? ''}
+            </p>
             {detachToolbarReason && (
               <p id="detach-audio-reason">{detachToolbarReason}</p>
             )}

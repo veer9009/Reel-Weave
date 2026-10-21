@@ -5,13 +5,16 @@ import type { CandidateEvidence, ProjectMediaVerifier } from './projectMedia';
 import { checkRelinkCandidate } from './projectMedia';
 import type {
   PortableAudioRecipe,
-  PortableEditV1,
-  ProjectDocumentV1,
+  PortableEditV2,
+  ProjectDocument,
   ProjectResult,
   ProjectSourceV1,
 } from './projectFileTypes';
 import { projectFailure } from './projectFileTypes';
-import { validateProjectDocument } from './projectFileJson';
+import {
+  validateProjectDocument,
+  migrateProjectDocumentV1,
+} from './projectFileJson';
 import { createProjectSources } from './projectSources';
 import type { SourceKind, SourceMetadata } from './projectSources';
 import { materializeSnapshot, validateRestoration } from './historyProjection';
@@ -23,7 +26,7 @@ export type AcceptedRelink = {
   renamedConfirmed: boolean;
 };
 export function projectSourceRoles(
-  document: ProjectDocumentV1,
+  document: ProjectDocument,
 ): ReadonlyMap<string, ReadonlySet<SourceKind>> {
   const roles = new Map<string, Set<SourceKind>>(
     document.sources.map((s) => [s.id, new Set()]),
@@ -63,7 +66,7 @@ export async function serializeProjectCapture(
   verifier: ProjectMediaVerifier,
   limits: Limits,
   signal: AbortSignal,
-): Promise<ProjectResult<ProjectDocumentV1>> {
+): Promise<ProjectResult<ProjectDocument>> {
   try {
     const s = capture.envelope;
     const context = s.projectContext;
@@ -132,7 +135,7 @@ export async function serializeProjectCapture(
         });
       }
     }
-    const edit: PortableEditV1 = {
+    const edit: PortableEditV2 = {
       binSourceIds: [...s.binSourceIds],
       video1: s.video1.map((v) => {
         if (!v.trim) throw new Error('Missing trim.');
@@ -165,7 +168,6 @@ export async function serializeProjectCapture(
         contentOutFrame: v.contentOutFrame,
         contentFullSource: v.contentFullSource,
       })),
-      musicSourceId: s.musicSourceId,
       music: s.music.map((v) => ({
         id: v.id,
         sourceId: v.sourceId,
@@ -207,9 +209,9 @@ export async function serializeProjectCapture(
       fpsSelection: s.fpsSelection,
     };
     const image = context.imageOverlay;
-    const document: ProjectDocumentV1 = {
+    const document: ProjectDocument = {
       format: 'avstudio-project',
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources,
       edit,
       imageOverlay: image
@@ -236,13 +238,17 @@ export async function serializeProjectCapture(
   }
 }
 export function prepareRelinkedProject(
-  document: ProjectDocumentV1,
+  document: ProjectDocument,
   matches: ReadonlyMap<string, AcceptedRelink>,
   limits: Limits,
   newId: () => string,
 ): ProjectResult<PreparedProject> {
   const checked = validateProjectDocument(document, limits);
   if (!checked.ok) return checked;
+  document =
+    checked.value.schemaVersion === 1
+      ? migrateProjectDocumentV1(checked.value)
+      : checked.value;
   const sources = createProjectSources();
   try {
     const roles = projectSourceRoles(document);
@@ -339,7 +345,6 @@ export function prepareRelinkedProject(
         sourceId: src(v.sourceId),
         trim: { ...v.trim },
       })),
-      musicSourceId: e.musicSourceId ? src(e.musicSourceId) : null,
       music: e.music.map((v) => ({
         ...v,
         id: occ(v.id),

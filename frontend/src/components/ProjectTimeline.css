@@ -426,3 +426,79 @@
   min-height: 44px;
   margin: 4px;
 }
+
+.timeline-workspace.has-tools {
+  grid-template-columns: 64px minmax(0, 1fr);
+}
+.timeline-tools {
+  padding: 5px;
+  border-radius: 4px;
+  gap: 4px;
+}
+.timeline-tools .secondary-button {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  width: 52px;
+  min-width: 52px;
+  height: 56px;
+  min-height: 56px;
+  gap: 3px;
+  padding: 3px;
+  font-size: 10px;
+  line-height: 1.15;
+  white-space: normal;
+  border-radius: 4px;
+  background: #0c1926;
+}
+.timeline-tools .secondary-button:hover:not(:disabled) {
+  border-color: #00bfff;
+  background: #102b40;
+}
+.timeline-tools-help {
+  display: block;
+  block-size: 80px;
+  overflow-y: auto;
+  margin-block: 6px;
+  scrollbar-gutter: stable;
+}
+.timeline-tools-help p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+}
+.timeline-playhead {
+  background: #00bfff;
+}
+.timeline-track {
+  border-color: var(--line);
+}
+.timeline-tools button[title]:is(:hover, :focus-visible)::after {
+  background: #0c1926;
+  border-color: #3c6c8a;
+}
+
+.timeline-heading h1 {
+  margin: 0;
+  color: #e7edf6;
+  font-size: 14px;
+}
+.timeline-tools .secondary-button {
+  height: 44px;
+  min-height: 44px;
+  gap: 2px;
+  padding: 1px;
+}
+.timeline-tools .secondary-button span {
+  font-size: 10px;
+  line-height: 10px;
+}
+.timeline-tools-help {
+  block-size: 40px;
+}
+.timeline-scroll {
+  max-block-size: 340px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}

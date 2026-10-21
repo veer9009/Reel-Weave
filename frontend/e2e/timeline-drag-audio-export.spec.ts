@@ -63,13 +63,9 @@ test('bin overwrite detach replacement audio and four real downloads preserve th
     .getByRole('button', { name: 'Preview clip 1: base.mp4', exact: true })
     .click();
   await seek(page, 60);
-  await page
-    .getByRole('button', { name: 'Split at playhead', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Split Video', exact: true }).click();
   await seek(page, 120);
-  await page
-    .getByRole('button', { name: 'Split at playhead', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Split Video', exact: true }).click();
   await page
     .getByLabel('Import video to bin', { exact: true })
     .setInputFiles(media.takeA);

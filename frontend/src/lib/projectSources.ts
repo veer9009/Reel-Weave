@@ -327,7 +327,6 @@ export function collectReachableSources(
     s.video1.forEach((v) => ids.add(v.sourceId));
     s.video2?.forEach((v) => ids.add(v.sourceId));
     s.music?.forEach((v) => ids.add(v.sourceId));
-    if (s.musicSourceId) ids.add(s.musicSourceId);
     if (s.pip) ids.add(s.pip.sourceId);
   };
   add(h.present);

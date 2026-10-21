@@ -170,7 +170,7 @@ it('replacement_add_split_ripple_and_undo_preserve_separate_PIP_track', async ()
   fireEvent.change(screen.getByLabelText('Timeline position'), {
     target: { value: '60' },
   });
-  fireEvent.click(screen.getByRole('button', { name: 'Split at playhead' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Split Video' }));
   expect(
     within(screen.getByRole('region', { name: 'VIDEO 2' })).getAllByRole(
       'button',
@@ -214,11 +214,11 @@ it('render_after_undo_redo_submits_exact_music_segments_and_unique_current_sourc
   fireEvent.change(screen.getByLabelText('Timeline position'), {
     target: { value: '25' },
   });
-  fireEvent.click(screen.getByRole('button', { name: 'Split at playhead' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Split Audio' }));
   fireEvent.change(screen.getByLabelText('Timeline position'), {
     target: { value: '40' },
   });
-  fireEvent.click(screen.getByRole('button', { name: 'Split at playhead' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Split Audio' }));
   fireEvent.click(
     screen.getByRole('button', {
       name: /Select Background music.*frames 25–39/,
@@ -282,11 +282,11 @@ it('music_middle_split_delete_ripples_only_music', async () => {
   fireEvent.change(screen.getByLabelText('Timeline position'), {
     target: { value: '25' },
   });
-  fireEvent.click(screen.getByRole('button', { name: 'Split at playhead' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Split Audio' }));
   fireEvent.change(screen.getByLabelText('Timeline position'), {
     target: { value: '40' },
   });
-  fireEvent.click(screen.getByRole('button', { name: 'Split at playhead' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Split Audio' }));
   fireEvent.click(
     screen.getByRole('button', {
       name: /Select Background music.*frames 25–39/,

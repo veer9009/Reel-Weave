@@ -23,6 +23,11 @@ it.each(['pointer', 'keyboard', 'cancel'] as const)(
       onVolumeEnd: vi.fn(),
     };
     render(<BackgroundAudioTrack {...props} />);
+    expect(
+      screen.getByText(
+        'Volume and mute affect every segment on their audio bus.',
+      ),
+    ).toBeVisible();
     const range = screen.getByLabelText('Original audio volume', {
       selector: 'input',
     });

@@ -10,10 +10,18 @@ import type {
   IndependentAudioSegment,
 } from '../lib/audioTimeline';
 import { resolveAudioOwnership } from '../lib/audioTimeline';
+import type { AudioSplitTarget } from '../lib/audioSplit';
+import type { EditResult } from '../lib/positionedEdits';
 import { TimelineDropZone } from './MediaBin';
 import type { SourcePlacementActions } from './MediaBin';
 
 export type IndependentAudioActions = {
+  onSplit?: (
+    target: AudioSplitTarget,
+    frame: number,
+  ) => EditResult<{ leftId: string; rightId: string }>;
+  onReplaceMusicFile?: (id: string, file: File) => void;
+  onLiftMusic?: (id: string) => void;
   snapshot: EditSnapshot;
   sources: ProjectSources;
   onEdit: (edit: AudioSegmentEdit) => boolean;

@@ -1318,3 +1318,78 @@ input[type='range'] {
 .site-header {
   flex-wrap: wrap;
 }
+
+/* Approved cinematic workspace: existing regions and media lifecycles retained. */
+:root {
+  color: #e7edf6;
+  background: #050c14;
+  --muted: #a7b7ce;
+  --line: #203446;
+  --purple: #00bfff;
+  --card: #09131e;
+}
+.app {
+  background: #050c14;
+}
+.panel {
+  border-radius: 5px;
+  background: var(--card);
+  box-shadow: none;
+}
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid #00bfff;
+  outline-offset: 3px;
+}
+button:disabled {
+  opacity: 0.65;
+}
+.primary-button {
+  background: #087fff;
+  border: 1px solid #319cff;
+  box-shadow: none;
+}
+.site-header {
+  border-bottom: 1px solid var(--line);
+}
+.site-header .header-note {
+  color: var(--muted);
+}
+input,
+select,
+textarea {
+  color: #e7edf6;
+  background-color: #0c1926;
+}
+@media (min-width: 900px) {
+  .site-header {
+    height: 56px;
+    min-height: 56px;
+  }
+}
+
+.site-header .project-file-controls {
+  margin-inline-start: auto;
+}
+.site-header > .primary-button {
+  min-height: 44px;
+  height: 44px;
+  width: 144px;
+  flex: none;
+  padding: 6px 12px;
+  margin: 0;
+}
+@media (max-width: 899px) {
+  .site-header {
+    height: auto;
+    min-height: 56px;
+    padding-block: 8px;
+  }
+  .site-header .project-file-controls {
+    margin-inline-start: 0;
+    max-width: 100%;
+  }
+}

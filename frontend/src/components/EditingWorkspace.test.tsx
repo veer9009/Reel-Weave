@@ -10,6 +10,80 @@ import { buildAdvancedTimeline } from '../lib/advancedTimeline';
 import { detachAudio } from '../lib/audioTimeline';
 import type { IndependentAudioActions } from './IndependentAudioTrack';
 
+it('keeps a visible Split Audio control with a contextual disabled reason', () => {
+  render(<EditingWorkspace {...splitWorkspaceProps()} />);
+  const tools = screen.getByRole('toolbar', { name: 'Timeline Tools' });
+  const split = within(tools).getByRole('button', { name: 'Split Audio' });
+  expect(split).toBeVisible();
+  expect(split).toHaveTextContent('Split Audio');
+  expect(split).toBeDisabled();
+  expect(split).toHaveAccessibleDescription(/select.*audio/i);
+});
+
+it('splits selected editable audio only at an interior playhead and never invokes picture split', () => {
+  const f = advancedFixture();
+  const source = f.sources.register(new File(['pcm'], 'voice.wav'), 'audio');
+  f.sources.markReady(source, { duration: 10, sampleCount: 480000 });
+  const snapshot = {
+    ...f.snapshot,
+    independentAudio: [
+      {
+        id: 'voice',
+        timelineStartFrame: 0,
+        durationFrames: 40,
+        sourceStartSample: 4800,
+        source: { kind: 'audio-file' as const, sourceId: source.sourceId },
+      },
+    ],
+  };
+  const projection = buildAdvancedTimeline(snapshot, f.sources, {
+    image: null,
+    video: null,
+  });
+  const splitAudio = vi.fn(() => ({
+    value: { leftId: 'left', rightId: 'right' },
+  }));
+  const props = splitWorkspaceProps(projection.base.items.map((v) => v.clip));
+  const actions = {
+    snapshot,
+    sources: f.sources,
+    onSplit: splitAudio,
+    onDetach: () => false,
+    onEdit: () => false,
+    onSave: () => false,
+    onReplaceFile() {},
+    onBegin: () => null,
+    onPreview: () => false,
+    onEnd() {},
+    onError() {},
+  };
+  render(
+    <EditingWorkspace
+      {...props}
+      timeline={projection.base}
+      advanced={projection}
+      audioActions={actions}
+    />,
+  );
+  const split = screen.getByRole('button', { name: 'Split Audio' });
+  fireEvent.click(
+    screen.getByRole('button', {
+      name: /Original\/Replacement Audio voice.wav:/,
+    }),
+  );
+  expect(split).toBeDisabled();
+  fireEvent.change(screen.getByLabelText('Timeline position'), {
+    target: { value: '20' },
+  });
+  expect(split).toBeEnabled();
+  fireEvent.click(split);
+  expect(splitAudio).toHaveBeenCalledExactlyOnceWith(
+    { kind: 'independent', id: 'voice' },
+    20,
+  );
+  expect(props.onSplitAtPlayhead).not.toHaveBeenCalled();
+});
+
 it(
   'visible Detach Audio tool requires a ready linked Video 1 selection and invokes the existing action',
   { timeout: 15000 },
@@ -364,18 +438,19 @@ it('Timeline Tools keeps all five actions outside uninterrupted tracks even with
       name: 'Timeline Tools',
     });
     const button = within(toolbar).getByRole('button', {
-      name: 'Split at playhead',
+      name: 'Split Video',
     });
     expect(button).toBeVisible();
-    expect(button).toHaveTextContent('Split at playhead');
+    expect(button).toHaveTextContent('Split Video');
     expect(toolbar).toHaveAttribute('aria-orientation', 'vertical');
     expect(toolbar.closest('.timeline-tracks')).toBeNull();
     expect(toolbar.closest('.timeline-scroll')).toBeNull();
-    expect(within(toolbar).getAllByRole('button')).toHaveLength(5);
+    expect(within(toolbar).getAllByRole('button')).toHaveLength(6);
     for (const name of [
       'Undo',
       'Redo',
-      'Split at playhead',
+      'Split Video',
+      'Split Audio',
       'Ripple Delete selected',
       'Detach Audio',
     ]) {
@@ -394,7 +469,7 @@ it('Timeline Tools keeps all five actions outside uninterrupted tracks even with
     expect(tracks.querySelector('[role="toolbar"]')).toBeNull();
     expect(
       screen.getAllByRole('button', {
-        name: 'Split at playhead',
+        name: 'Split Video',
         hidden: true,
       }),
     ).toHaveLength(1);
@@ -413,7 +488,7 @@ it('Split toolbar disables invalid cuts and exposes the nearby helper without in
     name: 'Timeline Tools',
   });
   const button = within(toolbar).getByRole('button', {
-    name: 'Split at playhead',
+    name: 'Split Video',
   });
   const assertDisabled = () => {
     expect(button).toBeDisabled();
@@ -460,7 +535,7 @@ it('Split toolbar enables a valid selected-clip playhead and invokes the existin
     name: 'Timeline Tools',
   });
   const button = within(toolbar).getByRole('button', {
-    name: 'Split at playhead',
+    name: 'Split Video',
   });
   fireEvent.click(
     screen.getByRole('button', { name: 'Preview clip 2: b.mp4' }),

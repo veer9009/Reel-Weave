@@ -1,6 +1,6 @@
 import type { ClipEdit, Limits, MergeManifest } from './clips';
 import type { buildAdvancedMergeRequest } from './advancedManifest';
-import type { V3MergeRequest } from './advancedManifest';
+import type { V3MergeRequest, V4MergeRequest } from './advancedManifest';
 import { validateManifestSize } from './advancedManifest';
 
 export type ExportFormat = 'mp4' | 'mov' | 'wav' | 'mp3';
@@ -125,7 +125,7 @@ export function submitAdvancedMerge(
 }
 
 export function submitV3Merge(
-  render: V3MergeRequest,
+  render: V3MergeRequest | V4MergeRequest,
   signal?: AbortSignal,
 ): Promise<Job> {
   const json = JSON.stringify(render.manifest);
@@ -139,4 +139,11 @@ export function submitV3Merge(
   if (render.uploads.overlayVideo)
     body.append('overlay_video', render.uploads.overlayVideo);
   return request<Job>('/api/merge', { method: 'POST', body, signal });
+}
+
+export function submitV4Merge(
+  render: V4MergeRequest,
+  signal?: AbortSignal,
+): Promise<Job> {
+  return submitV3Merge(render, signal);
 }

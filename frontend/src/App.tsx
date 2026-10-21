@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { TriangleAlert } from 'lucide-react';
 import { useMemo } from 'react';
 import { UploadCard } from './components/UploadCard';
@@ -8,7 +8,7 @@ import type { IndependentAudioActions } from './components/IndependentAudioTrack
 import { editIndependentAudio } from './lib/audioTimeline';
 import type { PlacementDraft } from './lib/placement';
 import type { TimelineSelection } from './lib/timeline';
-import { MergeSummary } from './components/MergeSummary';
+import { MergeSummary, RenderAction } from './components/MergeSummary';
 import { JobResult } from './components/JobResult';
 import { ExportOptions } from './components/ExportOptions';
 import { ProjectFileControls } from './components/ProjectFileControls';
@@ -54,6 +54,8 @@ import type { Health, Job, ExportFormat } from './lib/api';
 import {
   buildAdvancedMergeRequest,
   buildV3MergeRequest,
+  buildV4MergeRequest,
+  requiresV4,
   requiresV3,
 } from './lib/advancedManifest';
 import { isEditableClip, moveClip, validateSelection } from './lib/clips';
@@ -168,7 +170,6 @@ export default function App() {
     video1: history.view.video1,
     pip: history.view.pip,
     video2: history.view.video2,
-    musicSourceId: history.view.musicSourceId,
     music: history.view.music,
     independentAudio: history.view.independentAudio,
   });
@@ -245,8 +246,9 @@ export default function App() {
     [projectionKey, sources],
   );
   const clips = projected.clips;
-  const musicToken = history.view.musicSourceId
-    ? (history.sources.get(history.view.musicSourceId)?.token ?? null)
+  const selectedMusicSourceId = history.view.music[0]?.sourceId;
+  const musicToken = selectedMusicSourceId
+    ? (history.sources.get(selectedMusicSourceId)?.token ?? null)
     : null;
   const musicSource = musicToken
     ? history.sources.get(musicToken.sourceId)
@@ -581,6 +583,16 @@ export default function App() {
     onError: setHistoryError,
   };
   const audioActions: IndependentAudioActions = {
+    onSplit: (target, frame) => history.splitAudio(target, frame),
+    onReplaceMusicFile: (id, file) => {
+      history.replaceAudioPiece({ kind: 'music', id }, file);
+    },
+    onLiftMusic: (id) => {
+      history.commit('music-remove', 'Lift music', {
+        ...history.history.present,
+        music: history.history.present.music.filter((v) => v.id !== id),
+      });
+    },
     snapshot: history.view,
     sources,
     onEdit: (edit) => {
@@ -637,7 +649,7 @@ export default function App() {
       return true;
     },
     onReplaceFile: (id, file) => {
-      history.importToBin(file, 'audio', undefined, id);
+      history.replaceAudioPiece({ kind: 'independent', id }, file);
     },
     onBegin: (id, edge) =>
       history.begin(edge ? 'independent-trim' : 'independent-move', id),
@@ -715,7 +727,6 @@ export default function App() {
     history.cancelTimelineSources();
     history.commit('music-remove', 'Remove music', {
       ...history.history.present,
-      musicSourceId: null,
       music: [],
     });
     setJob(null);
@@ -1107,8 +1118,8 @@ export default function App() {
     let releaseOwner = () => {};
     try {
       const v3 = requiresV3(history.history.present, exportFormats);
-      const render = v3
-        ? buildV3MergeRequest(
+      const render = requiresV4(history.history.present)
+        ? buildV4MergeRequest(
             history.history.present,
             sources,
             outputFps,
@@ -1116,19 +1127,27 @@ export default function App() {
             [...exportFormats],
             limits,
           )
-        : buildAdvancedMergeRequest(
-            history.history.present,
-            sources,
-            outputFps,
-            overlays,
-          );
+        : v3
+          ? buildV3MergeRequest(
+              history.history.present,
+              sources,
+              outputFps,
+              overlays,
+              [...exportFormats],
+              limits,
+            )
+          : buildAdvancedMergeRequest(
+              history.history.present,
+              sources,
+              outputFps,
+              overlays,
+            );
       const ids = new Set(
         render.manifest.video_sources.map((v) => v.source_id),
       );
       if ('audio_sources' in render.manifest)
         render.manifest.audio_sources.forEach((v) => ids.add(v.source_id));
-      if (history.history.present.musicSourceId)
-        ids.add(history.history.present.musicSourceId);
+      history.history.present.music.forEach((v) => ids.add(v.sourceId));
       if (history.history.present.pip)
         ids.add(history.history.present.pip.sourceId);
       if (imageToken) ids.add(imageToken.sourceId);
@@ -1257,6 +1276,11 @@ export default function App() {
               : 'Processing unavailable'
             : 'Connecting to backend'}
         </span>
+        <RenderAction
+          disabled={!canMerge}
+          busy={active}
+          onMerge={() => void merge()}
+        />
       </header>
       {historyError && !pendingReplacement && (
         <div role="alert" className="error-banner">
@@ -1549,14 +1573,16 @@ export default function App() {
             onMetadata={(duration) => {
               if (
                 musicToken &&
-                musicToken.sourceId === history.history.present.musicSourceId
+                musicToken.sourceId ===
+                  history.history.present.music[0]?.sourceId
               )
                 history.sourceReady(musicToken, { duration });
             }}
             onMetadataError={() => {
               if (
                 musicToken &&
-                musicToken.sourceId === history.history.present.musicSourceId
+                musicToken.sourceId ===
+                  history.history.present.music[0]?.sourceId
               )
                 history.sourceError(musicToken);
             }}
@@ -1634,6 +1660,7 @@ export default function App() {
               }
             />
             <MergeSummary
+              showAction={false}
               clips={clips}
               timeline={timeline}
               disabled={!canMerge}

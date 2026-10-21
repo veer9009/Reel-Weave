@@ -236,7 +236,7 @@ test.beforeEach(async ({ page }) => {
           frame !== null && frame >= item.startFrame && frame <= item.endFrame,
       );
       const button = document.querySelector<HTMLButtonElement>(
-        '[aria-label="Split at playhead"]',
+        '[aria-label="Split Video"]',
       );
       const describedBy = button?.getAttribute('aria-describedby') ?? null;
       const reason =
@@ -337,11 +337,11 @@ test.beforeEach(async ({ page }) => {
       (event) => {
         if (!(event.target instanceof Element)) return;
         const name = event.target.closest('button')?.getAttribute('aria-label');
-        if (name === 'Split at playhead') w.startMatchedPostWindow?.();
+        if (name === 'Split Video') w.startMatchedPostWindow?.();
         if (
           name === 'Play preview' ||
           name === 'Pause preview' ||
-          name === 'Split at playhead'
+          name === 'Split Video'
         )
           w.avstudioSetupMarker?.('browser-click:' + name);
       },
@@ -960,9 +960,7 @@ for (const speed of ['1', '0.75', '0.5'])
               const onSplit = (event: MouseEvent) => {
                 if (
                   !(event.target instanceof Element) ||
-                  !event.target.closest(
-                    'button[aria-label="Split at playhead"]',
-                  )
+                  !event.target.closest('button[aria-label="Split Video"]')
                 )
                   return;
                 document.removeEventListener('click', onSplit);
@@ -977,7 +975,7 @@ for (const speed of ['1', '0.75', '0.5'])
         if (journey === 'split') {
           await waitForEligibleSplit(page, 'initial');
           await page
-            .getByRole('button', { name: 'Split at playhead', exact: true })
+            .getByRole('button', { name: 'Split Video', exact: true })
             .click();
         }
         const after = await page.evaluate(() => {
@@ -1155,7 +1153,7 @@ for (const speed of ['1', '0.75', '0.5'])
             };
           });
           await page
-            .getByRole('button', { name: 'Split at playhead', exact: true })
+            .getByRole('button', { name: 'Split Video', exact: true })
             .click();
           await expect
             .poll(() =>

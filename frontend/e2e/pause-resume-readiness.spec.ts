@@ -175,7 +175,7 @@ test('record pause/resume readiness before and after a running split', async ({
       if (phase === 'after-split') {
         await mark('manual-sequence:split');
         await page
-          .getByRole('button', { name: 'Split at playhead', exact: true })
+          .getByRole('button', { name: 'Split Video', exact: true })
           .click();
       }
       await mark(`manual-sequence:${phase}:pause`);

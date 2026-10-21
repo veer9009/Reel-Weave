@@ -183,6 +183,20 @@ class V3MergePlan:
 
 
 @dataclass(frozen=True, slots=True)
+class MultiSourceMusicPlan:
+    segments: tuple[MusicSegment, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class V4MergePlan(V3MergePlan):
+    music: MultiSourceMusicPlan | None
+    schema_version: Literal[4] = 4
+
+
+ModernMergePlan = V3MergePlan | V4MergePlan
+
+
+@dataclass(frozen=True, slots=True)
 class ExportState:
     status: Literal["queued", "processing", "ready", "failed"] = "queued"
     error: str | None = None
@@ -197,7 +211,7 @@ class Job:
     output_dir: Path
     result_path: Path
     advanced_plan: AdvancedMergePlan | None = None
-    v3_plan: V3MergePlan | None = None
+    v3_plan: ModernMergePlan | None = None
     audio_source_paths: dict[str, Path] = field(default_factory=dict)
     decoded_audio_paths: dict[str, Path] = field(default_factory=dict)
     recipe_audio_paths: dict[VideoEditRecipe, Path] = field(default_factory=dict)

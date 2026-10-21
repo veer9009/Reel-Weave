@@ -222,7 +222,7 @@ test('trace rendered positions across pause/resume before and after split', asyn
       if (phase === 'after-split') {
         await mark('manual-sequence:split');
         await page
-          .getByRole('button', { name: 'Split at playhead', exact: true })
+          .getByRole('button', { name: 'Split Video', exact: true })
           .click();
       }
       await mark(`manual-sequence:${phase}:pause`);

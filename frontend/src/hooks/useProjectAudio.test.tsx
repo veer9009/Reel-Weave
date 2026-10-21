@@ -74,7 +74,7 @@ function setup() {
         source: { kind: 'audio-file', sourceId: file.sourceId },
       },
     ],
-    musicSourceId: file.sourceId,
+
     music: [
       {
         id: 'song',
@@ -134,6 +134,57 @@ const ready = (element: HTMLMediaElement, duration = 6) => {
   element.dispatchEvent(new Event('loadedmetadata'));
   element.dispatchEvent(new Event('canplay'));
 };
+it.each(['independentAudio', 'music'] as const)(
+  'a continuous %s split retains native voices without seeking or reloading',
+  async (lane) => {
+    const h = setup();
+    await act(async () => {
+      await h.result.current.resumeAudio();
+      elements.forEach((e) => ready(e));
+    });
+    const voices = [...elements];
+    voices.forEach((e) => {
+      e.currentTime = 1.02;
+    });
+    const writes = voices.map((e) => vi.spyOn(e, 'currentTime', 'set'));
+    const loads = voices.map((e) => vi.spyOn(e, 'load'));
+    const pauses = voices.map((e) => vi.spyOn(e, 'pause'));
+    const original = h.props.snapshot[lane][0];
+    const snapshot = {
+      ...h.props.snapshot,
+      [lane]: [
+        { ...original, id: 'split-left', durationFrames: 25 },
+        {
+          ...original,
+          id: 'split-right',
+          timelineStartFrame: 25,
+          durationFrames: 125,
+          sourceStartSample: 48000,
+        },
+      ],
+    };
+    h.rerender({
+      ...h.props,
+      snapshot,
+      projection: buildAdvancedTimeline(snapshot, h.sources, {
+        image: null,
+        video: null,
+      }),
+      transport: {
+        ...h.props.transport,
+        frame: 25,
+        generation: 2,
+        captureAnchor: () => ({
+          ...h.props.transport.captureAnchor(),
+          projectSeconds: 1.02,
+        }),
+      },
+    });
+    expect(elements).toEqual(voices);
+    for (const call of [...writes, ...loads, ...pauses])
+      expect(call).not.toHaveBeenCalled();
+  },
+);
 it('play_intent_gates_transport_before_the_audio_context_is_created', () => {
   const h = setup();
   expect(h.props.transport.suspend).toHaveBeenCalled();
@@ -151,33 +202,66 @@ it('initial_context_readiness_releases_the_gate_registered_before_creation', asy
 });
 it('resuming_a_prepared_voice_does_not_seek_to_elapsed_render_time', async () => {
   const h = setup();
-  h.rerender({ ...h.props, transport: { ...h.props.transport, playing: false, status: 'preparing' } });
+  h.rerender({
+    ...h.props,
+    transport: { ...h.props.transport, playing: false, status: 'preparing' },
+  });
   await act(async () => {
     await h.result.current.resumeAudio();
     elements.forEach((e) => ready(e));
   });
   const writes = elements.map((e) => vi.spyOn(e, 'currentTime', 'set'));
-  h.rerender({ ...h.props, transport: { ...h.props.transport,
-    captureAnchor: () => ({ ...h.props.transport.captureAnchor(), projectSeconds: 0.08 }) } });
+  h.rerender({
+    ...h.props,
+    transport: {
+      ...h.props.transport,
+      captureAnchor: () => ({
+        ...h.props.transport.captureAnchor(),
+        projectSeconds: 0.08,
+      }),
+    },
+  });
   for (const write of writes) expect(write).not.toHaveBeenCalled();
 });
 it('audio_ownership_uses_the_live_position_when_the_rendered_frame_precedes_a_split', async () => {
   const h = setup();
   const first = h.props.snapshot.video1[0];
-  const snapshot = { ...h.props.snapshot, independentAudio: [], music: [],
-    video1: [{ ...first, trim: { startFrame: 0, endFrame: 24 } },
-      { ...first, id: 'right', trim: { startFrame: 25, endFrame: 149 } }] };
-  const props = { ...h.props, snapshot,
-    projection: buildAdvancedTimeline(snapshot, h.sources, { image: null, video: null }) };
+  const snapshot = {
+    ...h.props.snapshot,
+    independentAudio: [],
+    music: [],
+    video1: [
+      { ...first, trim: { startFrame: 0, endFrame: 24 } },
+      { ...first, id: 'right', trim: { startFrame: 25, endFrame: 149 } },
+    ],
+  };
+  const props = {
+    ...h.props,
+    snapshot,
+    projection: buildAdvancedTimeline(snapshot, h.sources, {
+      image: null,
+      video: null,
+    }),
+  };
   h.rerender(props);
   await act(async () => {
     await h.result.current.resumeAudio();
     elements.forEach((e) => ready(e));
   });
-  const voice = elements[0], url = voice.getAttribute('src');
+  const voice = elements[0],
+    url = voice.getAttribute('src');
   voice.currentTime = 1.01;
-  h.rerender({ ...props, transport: { ...props.transport, frame: 24,
-    captureAnchor: () => ({ ...props.transport.captureAnchor(), projectSeconds: 1.01 }) } });
+  h.rerender({
+    ...props,
+    transport: {
+      ...props.transport,
+      frame: 24,
+      captureAnchor: () => ({
+        ...props.transport.captureAnchor(),
+        projectSeconds: 1.01,
+      }),
+    },
+  });
   expect(voice.getAttribute('src')).toBe(url);
   expect(elements).toHaveLength(1);
 });
@@ -221,14 +305,12 @@ it.each(['independentAudio', 'music'] as const)(
         }),
       },
     });
-    expect(elements[lane === 'independentAudio' ? 0 : 1].currentTime).toBeCloseTo(
-      4.01,
-      5,
-    );
-    expect(elements[lane === 'independentAudio' ? 1 : 0].currentTime).toBeCloseTo(
-      1.01,
-      5,
-    );
+    expect(
+      elements[lane === 'independentAudio' ? 0 : 1].currentTime,
+    ).toBeCloseTo(4.01, 5);
+    expect(
+      elements[lane === 'independentAudio' ? 1 : 0].currentTime,
+    ).toBeCloseTo(1.01, 5);
   },
 );
 it('live_replacement_boundaries_switch_original_ownership_exclusively_and_keep_music', async () => {
@@ -559,9 +641,11 @@ it('an_old_generation_play_rejection_cannot_pause_a_continuous_successor', async
     transport: { ...h.props.transport, generation: 2 },
   });
   await act(async () => {
-    rejects.slice().forEach((reject) =>
-      reject(new DOMException('Interrupted old trial', 'AbortError')),
-    );
+    rejects
+      .slice()
+      .forEach((reject) =>
+        reject(new DOMException('Interrupted old trial', 'AbortError')),
+      );
   });
   expect(h.props.transport.pause).not.toHaveBeenCalled();
   expect(h.result.current.status).not.toBe('failed');
@@ -575,7 +659,7 @@ it('frozen_video_recipe_uses_its_own_speed_sample_offset_and_source_after_owner_
     snapshot: EditSnapshot = {
       ...h.props.snapshot,
       fpsSelection: '60',
-      musicSourceId: null,
+
       music: [],
       independentAudio: [
         {
@@ -676,7 +760,7 @@ it('detached_silence_has_no_base_or_PIP_fallback_and_repeated_source_changes_kee
         originalAudio: 'detached',
       })),
       independentAudio: [],
-      musicSourceId: null,
+
       music: [],
     };
   h.rerender({ ...h.props, snapshot });

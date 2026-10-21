@@ -323,20 +323,23 @@ def render_v3_picture(pipeline, job, plan) -> Path:
 
 
 def render_audio_master(pipeline, job, plan) -> Path:
-    from .audio_composition import build_music_graph, build_original_graph
+    from .audio_composition import build_original_graph, build_segmented_music_graph
     from .jobs import AudioFileRecipe
 
     args = command(pipeline)
     indexes = {}
+    file_indexes = {}
     for s in plan.audio_slices:
         if s.source is not None and s.source not in indexes:
-            indexes[s.source] = len(indexes)
             path = (
                 job.decoded_audio_paths[s.source.source_id]
                 if isinstance(s.source, AudioFileRecipe)
                 else job.recipe_audio_paths[s.source]
             )
-            args += media_input(path)
+            if path not in file_indexes:
+                file_indexes[path] = len(file_indexes)
+                args += media_input(path)
+            indexes[s.source] = file_indexes[path]
     original = build_original_graph(plan.audio_slices, indexes, plan.output_fps, plan.total_frames)
     filters = [original.filter_complex]
     original_gain = 0 if job.audio_mix.original_muted else job.audio_mix.original_volume
@@ -345,10 +348,15 @@ def render_audio_master(pipeline, job, plan) -> Path:
     k = 48000 // plan.output_fps
     total = plan.total_frames * k
     if plan.music:
-        music_index = len(indexes)
-        args += media_input(job.decoded_audio_paths[plan.music.source_id])
-        music = build_music_graph(
-            plan.music.segments, plan.output_fps, plan.total_frames, music_index
+        music_indexes = {}
+        for segment in plan.music.segments:
+            path = job.decoded_audio_paths[segment.source_id]
+            if path not in file_indexes:
+                file_indexes[path] = len(file_indexes)
+                args += media_input(path)
+            music_indexes[segment.source_id] = file_indexes[path]
+        music = build_segmented_music_graph(
+            plan.music.segments, plan.output_fps, plan.total_frames, music_indexes
         )
         filters.append(music.filter_complex)
         filters.append(f"{music.output_label}volume={music_gain:g}[musicgain]")
