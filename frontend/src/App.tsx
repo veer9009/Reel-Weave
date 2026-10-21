@@ -57,6 +57,7 @@ import {
   requiresV3,
 } from './lib/advancedManifest';
 import { isEditableClip, moveClip, validateSelection } from './lib/clips';
+import { moveVideo1Insert } from './lib/rippleInsert';
 import type {
   AudioSettings,
   Clip,
@@ -936,6 +937,38 @@ export default function App() {
       `${clips[from]?.file.name ?? 'Clip'} moved to position ${to + 1}.`,
     );
   }
+  function insertVideo1(id: string, frame: number) {
+    if (active || completed) return;
+    const lineage = new Map<string, string>();
+    const result = moveVideo1Insert(
+      history.history.present,
+      history.sources,
+      id,
+      frame,
+      limits,
+      (derivedFrom) => {
+        const id = crypto.randomUUID();
+        lineage.set(id, derivedFrom);
+        return id;
+      },
+    );
+    if ('error' in result) {
+      setHistoryError(result.error.message);
+      return;
+    }
+    if (
+      !history.commit(
+        lineage.size ? 'split' : 'reorder',
+        'Ripple insert Video 1 clip',
+        result.value,
+        lineage,
+      )
+    )
+      return;
+    setJob(null);
+    setError(null);
+    setAnnouncement('Video 1 clip inserted.');
+  }
   function splitAtPlayhead(targetId: string, frame: number) {
     if (active || completed) return;
     if (clips.length + history.view.video2.length >= limits.max_clips) {
@@ -1354,6 +1387,7 @@ export default function App() {
         editingLocked={editingLocked}
         onPipDrop={(file) => selectOverlay('video', file)}
         onMove={reorder}
+        onInsert={insertVideo1}
         onTrim={saveTrim}
         onTrimBegin={(id) => history.begin('trim', id)}
         onTrimPreview={(token, id, trim) =>

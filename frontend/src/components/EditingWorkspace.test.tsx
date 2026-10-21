@@ -10,6 +10,111 @@ import { buildAdvancedTimeline } from '../lib/advancedTimeline';
 import { detachAudio } from '../lib/audioTimeline';
 import type { IndependentAudioActions } from './IndependentAudioTrack';
 
+it(
+  'visible Detach Audio tool requires a ready linked Video 1 selection and invokes the existing action',
+  { timeout: 15000 },
+  () => {
+    const f = advancedFixture();
+    const projection = buildAdvancedTimeline(f.snapshot, f.sources, {
+      image: null,
+      video: null,
+    });
+    const detach = vi.fn(() => true);
+    const audioActions: IndependentAudioActions = {
+      snapshot: f.snapshot,
+      sources: f.sources,
+      onDetach: detach,
+      onEdit: () => false,
+      onSave: () => false,
+      onReplaceFile: () => {},
+      onBegin: () => null,
+      onPreview: () => false,
+      onEnd: () => {},
+      onError: () => {},
+    };
+    const props = {
+      ...splitWorkspaceProps(projection.base.items.map((v) => v.clip)),
+      timeline: projection.base,
+      advanced: projection,
+      audioActions,
+    };
+    const view = render(<EditingWorkspace {...props} />);
+    const button = within(
+      screen.getByRole('toolbar', { name: 'Timeline Tools' }),
+    ).getByRole('button', { name: 'Detach Audio' });
+    expect(button).toBeVisible();
+    expect(button).toHaveTextContent('Detach Audio');
+    expect(button.querySelector('.sr-only')).toBeNull();
+    expect(button).toBeDisabled();
+    expect(button).toHaveAccessibleDescription(
+      /Select a ready Video 1 clip with linked original audio/,
+    );
+    fireEvent.click(button);
+    expect(detach).not.toHaveBeenCalled();
+    fireEvent.click(
+      screen.getByRole('button', { name: /Select Video 2 take.mp4/ }),
+    );
+    expect(button).toBeDisabled();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Preview clip 1: base.mp4' }),
+    );
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    expect(detach).toHaveBeenCalledExactlyOnceWith({
+      track: 'video1',
+      id: 'base',
+    });
+    for (const locked of [
+      { editingLocked: true },
+      { gestureActive: true },
+      {
+        historyControls: {
+          canUndo: false,
+          canRedo: false,
+          shortcutsAllowed: false,
+          undo: () => false,
+          redo: () => false,
+        },
+      },
+      {
+        clips: props.clips.map((v) => ({
+          ...v,
+          metadataStatus: 'loading' as const,
+        })),
+      },
+    ]) {
+      view.rerender(<EditingWorkspace {...props} {...locked} />);
+      expect(button).toBeDisabled();
+      fireEvent.click(button);
+      expect(detach).toHaveBeenCalledTimes(1);
+    }
+    let serial = 0;
+    const detached = detachAudio(
+      f.snapshot,
+      f.sources,
+      projection,
+      { track: 'video1', id: 'base' },
+      () => `detached-${++serial}`,
+    );
+    if ('error' in detached) throw new Error(detached.error.message);
+    const after = buildAdvancedTimeline(detached.value, f.sources, {
+      image: null,
+      video: null,
+    });
+    view.rerender(
+      <EditingWorkspace
+        {...props}
+        clips={after.base.items.map((v) => v.clip)}
+        timeline={after.base}
+        advanced={after}
+        audioActions={{ ...audioActions, snapshot: detached.value }}
+      />,
+    );
+    expect(button).toBeDisabled();
+    expect(button).toHaveAccessibleDescription(/already has detached audio/);
+  },
+);
+
 it('audio_keyboard_lift_stays_distinct_from_explicit_ripple', () => {
   const f = advancedFixture();
   const initial = buildAdvancedTimeline(f.snapshot, f.sources, {
@@ -249,7 +354,7 @@ it.each(['input', 'textarea', 'select'] as const)(
   },
 );
 
-it('Timeline Tools keeps all four actions outside uninterrupted tracks even with the inspector closed', () => {
+it('Timeline Tools keeps all five actions outside uninterrupted tracks even with the inspector closed', () => {
   const props = splitWorkspaceProps([]);
   const view = render(<EditingWorkspace {...props} />);
   const assertVisibleToolbar = () => {
@@ -266,12 +371,13 @@ it('Timeline Tools keeps all four actions outside uninterrupted tracks even with
     expect(toolbar).toHaveAttribute('aria-orientation', 'vertical');
     expect(toolbar.closest('.timeline-tracks')).toBeNull();
     expect(toolbar.closest('.timeline-scroll')).toBeNull();
-    expect(within(toolbar).getAllByRole('button')).toHaveLength(4);
+    expect(within(toolbar).getAllByRole('button')).toHaveLength(5);
     for (const name of [
       'Undo',
       'Redo',
       'Split at playhead',
       'Ripple Delete selected',
+      'Detach Audio',
     ]) {
       const tool = within(toolbar).getByRole('button', { name });
       expect(tool).toHaveAttribute('title');

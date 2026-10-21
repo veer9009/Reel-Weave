@@ -75,6 +75,16 @@
   min-height: 44px;
   padding: 0;
 }
+.timeline-tools .timeline-detach-button {
+  flex-direction: column;
+  gap: 3px;
+  height: auto;
+  min-height: 64px;
+  padding: 4px 2px;
+  font-size: 10px;
+  line-height: 1.15;
+  white-space: normal;
+}
 .timeline-tools-help {
   display: flex;
   flex-wrap: wrap;

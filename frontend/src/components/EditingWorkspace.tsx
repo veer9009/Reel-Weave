@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useState, useRef } from 'react';
-import { Scissors, Undo2, Redo2, Trash2 } from 'lucide-react';
+import { Scissors, Undo2, Redo2, Trash2, Unlink } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type {
   AudioSettings,
@@ -83,6 +83,7 @@ type Props = TrimTransactions & {
   onFpsSelectionChange: (fps: ProjectFpsSelection) => void;
   onPipDrop?: (file: File) => void;
   onMove?: (from: number, to: number) => void;
+  onInsert?: (id: string, frame: number) => void;
   onTrim?: (id: string, trim: ClipTrim) => void;
   onDeleteClip?: (id: string) => void;
   onSplitAtPlayhead?: (targetId: string, frame: number) => string | void;
@@ -509,6 +510,19 @@ export function EditingWorkspace(props: Props) {
       )}
     </>
   );
+  const canDetachVideo1 = Boolean(selectedClipId && canDetachSelected);
+  const detachToolbarReason = canDetachVideo1
+    ? null
+    : 'Select a ready Video 1 clip with linked original audio.' +
+      (selection.kind === 'clip' &&
+      detachEligibility &&
+      'error' in detachEligibility
+        ? ` ${detachEligibility.error.message}`
+        : editingLocked ||
+            props.gestureActive ||
+            props.historyControls?.shortcutsAllowed === false
+          ? ' Finish the current operation before detaching audio.'
+          : '');
   const detachAction = (
     <>
       <button
@@ -843,6 +857,25 @@ export function EditingWorkspace(props: Props) {
             </button>
             <button
               type="button"
+              className="secondary-button timeline-detach-button"
+              disabled={!canDetachVideo1}
+              title={
+                detachToolbarReason ??
+                'Detach original audio (optional shortcut: Ctrl+Alt+L)'
+              }
+              aria-describedby={
+                detachToolbarReason ? 'detach-audio-reason' : undefined
+              }
+              aria-keyshortcuts="Control+Alt+L"
+              onClick={() => {
+                if (canDetachVideo1) detachSelected();
+              }}
+            >
+              <Unlink size={16} aria-hidden="true" />
+              <span>Detach Audio</span>
+            </button>
+            <button
+              type="button"
               className="secondary-button"
               disabled={
                 editingLocked ||
@@ -872,6 +905,9 @@ export function EditingWorkspace(props: Props) {
         videoToolbarHelp={
           <>
             <small>Ctrl+Z · Ctrl+Y / Ctrl+Shift+Z</small>
+            {detachToolbarReason && (
+              <p id="detach-audio-reason">{detachToolbarReason}</p>
+            )}
             {!canSplit && (
               <p id="split-reason">
                 Select a Video 1 clip, then click inside it to choose the cut
@@ -909,6 +945,7 @@ export function EditingWorkspace(props: Props) {
         onSelect={setSelection}
         onPipDrop={props.onPipDrop}
         onMove={props.onMove}
+        onInsert={props.onInsert}
         onTrim={props.onTrim}
         onTrimBegin={props.onTrimBegin}
         onTrimPreview={props.onTrimPreview}

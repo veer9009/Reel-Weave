@@ -904,8 +904,13 @@ describe('AVStudio', { timeout: 15000 }, () => {
     ).toHaveTextContent('Frames 9–89');
   });
   it('dragging a later Video 1 clip before an earlier clip updates displayed order', async () => {
+    vi.stubGlobal('DragEvent', MouseEvent);
     render(<App />);
     await selectTwo();
+    vi.spyOn(
+      screen.getByLabelText('Video 1 source drop target'),
+      'getBoundingClientRect',
+    ).mockReturnValue({ left: 100, width: 180 } as DOMRect);
     const later = screen.getByRole('button', {
       name: 'Preview clip 2: second.mov',
     });
@@ -920,8 +925,8 @@ describe('AVStudio', { timeout: 15000 }, () => {
     };
     expect(later.draggable).toBe(true);
     fireEvent.dragStart(later, { dataTransfer });
-    fireEvent.dragOver(earlier, { dataTransfer });
-    fireEvent.drop(earlier, { dataTransfer });
+    fireEvent.dragOver(earlier, { dataTransfer, clientX: 100 });
+    fireEvent.drop(earlier, { dataTransfer, clientX: 100 });
     const list = screen.getByRole('list', { name: 'Clip order' });
     expect(within(list).getAllByRole('listitem')[0]).toHaveTextContent(
       'second.mov',
@@ -931,8 +936,13 @@ describe('AVStudio', { timeout: 15000 }, () => {
     );
   });
   it('Video 1 drag order reaches the timeline and existing render manifest', async () => {
+    vi.stubGlobal('DragEvent', MouseEvent);
     render(<App />);
     const user = await selectTwo();
+    vi.spyOn(
+      screen.getByLabelText('Video 1 source drop target'),
+      'getBoundingClientRect',
+    ).mockReturnValue({ left: 100, width: 180 } as DOMRect);
     const later = screen.getByRole('button', {
       name: 'Preview clip 2: second.mov',
     });
@@ -950,7 +960,7 @@ describe('AVStudio', { timeout: 15000 }, () => {
       dropEffect: '',
     };
     fireEvent.dragStart(later, { dataTransfer });
-    fireEvent.drop(earlier, { dataTransfer });
+    fireEvent.drop(earlier, { dataTransfer, clientX: 100 });
     const lane = screen.getByRole('region', { name: 'VIDEO 1' });
     expect(
       within(lane)

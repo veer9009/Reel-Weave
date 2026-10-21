@@ -21,6 +21,7 @@ import type { SourcePlacementActions } from './MediaBin';
 import { IndependentAudioTrack } from './IndependentAudioTrack';
 import type { IndependentAudioActions } from './IndependentAudioTrack';
 import type { AudioTarget } from '../lib/audioTimeline';
+import { dropFrame } from '../lib/placement';
 type Props = TrimTransactions & {
   audioActions?: IndependentAudioActions;
   onVideoContextMenu?: (target: AudioTarget, x: number, y: number) => void;
@@ -42,6 +43,7 @@ type Props = TrimTransactions & {
   onSelect: (selection: TimelineSelection) => void;
   onPipDrop?: (file: File) => void;
   onMove?: (from: number, to: number) => void;
+  onInsert?: (id: string, frame: number) => void;
   onTrim?: (id: string, trim: ClipTrim) => void;
 };
 export function ProjectTimeline({
@@ -65,6 +67,7 @@ export function ProjectTimeline({
   onSelect,
   onPipDrop,
   onMove,
+  onInsert,
   onTrim,
   onTrimBegin,
   onTrimPreview,
@@ -361,7 +364,21 @@ export function ProjectTimeline({
                 onEnd={positionedActions?.onEnd}
                 onError={(message) => positionedActions?.onError(message)}
               />
-              <section className="timeline-track" aria-label="VIDEO 1">
+              <section
+                className="timeline-track"
+                aria-label="VIDEO 1"
+                onDragOverCapture={(event) => {
+                  if (
+                    !onInsert ||
+                    !draggedClip.current ||
+                    !event.dataTransfer.types.includes(clipDragType)
+                  )
+                    return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  event.dataTransfer.dropEffect = disabled ? 'none' : 'move';
+                }}
+              >
                 <h3 id="video1-header" tabIndex={-1}>
                   Video 1
                 </h3>
@@ -371,6 +388,29 @@ export function ProjectTimeline({
                   displayFrames={displayFrames}
                   disabled={disabled}
                   label="Video 1 source drop target"
+                  onLegacyDrop={(event) => {
+                    const id = draggedClip.current;
+                    draggedClip.current = null;
+                    setClipDropTarget(null);
+                    if (
+                      disabled ||
+                      !onInsert ||
+                      !id ||
+                      !event.dataTransfer.types.includes(clipDragType)
+                    )
+                      return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    const result = dropFrame(
+                      event.clientX,
+                      rect.left,
+                      rect.width / Math.max(1, displayFrames),
+                    );
+                    if ('error' in result)
+                      placement?.onError(result.error.message);
+                    else onInsert(id, result.value);
+                  }}
                 >
                   {timeline.items.length ? (
                     timeline.items.map((item, index) => (
@@ -405,9 +445,9 @@ export function ProjectTimeline({
                             }
                           }}
                           className={`timeline-block video-block${clipDropTarget === item.clip.id && !disabled ? ' clip-drop-target' : ''}`}
-                          draggable={!disabled && Boolean(onMove)}
+                          draggable={!disabled && Boolean(onInsert || onMove)}
                           onDragStart={(event) => {
-                            if (disabled || !onMove) {
+                            if (disabled || (!onInsert && !onMove)) {
                               event.preventDefault();
                               return;
                             }
@@ -421,7 +461,7 @@ export function ProjectTimeline({
                           onDragOver={(event) => {
                             if (
                               disabled ||
-                              !onMove ||
+                              (!onInsert && !onMove) ||
                               !draggedClip.current ||
                               !event.dataTransfer.types.includes(clipDragType)
                             )
@@ -437,6 +477,7 @@ export function ProjectTimeline({
                             setClipDropTarget(null);
                           }}
                           onDrop={(event) => {
+                            if (onInsert) return; // The lane resolves the exact frame.
                             const sourceId = draggedClip.current;
                             draggedClip.current = null;
                             setClipDropTarget(null);

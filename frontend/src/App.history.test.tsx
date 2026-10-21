@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from '@testing-library/react';
 import App from './App';
+import { within } from '@testing-library/react';
 import type { MergeManifest } from './lib/clips';
 import type { AdvancedMergeManifest } from './lib/advancedManifest';
 import * as sourceModule from './lib/projectSources';
@@ -54,6 +55,181 @@ const undo = () =>
 const redo = () =>
   fireEvent.click(screen.getByRole('button', { name: 'Redo' }));
 describe('App edit history', { timeout: 30000 }, () => {
+  it('visible Timeline Tools button detaches the selected Video 1 audio without a keyboard shortcut', async () => {
+    render(<App />);
+    await ready(['a.mp4']);
+    const button = within(
+      screen.getByRole('toolbar', { name: 'Timeline Tools' }),
+    ).getByRole('button', { name: 'Detach Audio' });
+    expect(button).toBeDisabled();
+    const picture = screen.getByRole('button', {
+      name: 'Preview clip 1: a.mp4',
+    });
+    fireEvent.click(picture);
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    expect(
+      screen.getByRole('button', {
+        name: /Original\/Replacement Audio.*a.mp4.*Detached/,
+      }),
+    ).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Preview clip 1: a.mp4' })).toBe(
+      picture,
+    );
+    fireEvent.click(picture);
+    expect(button).toBeDisabled();
+    expect(button).toHaveAccessibleDescription(/already has detached audio/);
+  });
+  it('ripple insertion inside occupied picture preserves the playhead source frame through Undo/Redo', async () => {
+    vi.stubGlobal('DragEvent', MouseEvent);
+    render(<App />);
+    await ready(['a.mp4', 'b.mp4', 'c.mp4']);
+    const moved = screen.getByRole('button', { name: 'Preview clip 3: c.mp4' });
+    fireEvent.click(moved);
+    fireEvent.change(screen.getByLabelText('Timeline position'), {
+      target: { value: '17' },
+    });
+    const lane = screen.getByLabelText('Video 1 source drop target');
+    vi.spyOn(lane, 'getBoundingClientRect').mockReturnValue({
+      left: 100,
+      width: 180,
+    } as DOMRect);
+    const dataTransfer = {
+      types: ['application/x-avstudio-clip'],
+      setData: vi.fn(),
+    };
+    fireEvent.dragStart(moved, { dataTransfer });
+    fireEvent.drop(lane, { dataTransfer, clientX: 110 });
+    expect(screen.getByLabelText('Timeline position')).toHaveValue('77');
+    expect(
+      screen.getByRole('button', { name: 'Preview clip 2: c.mp4' }),
+    ).toHaveAttribute('aria-pressed', 'true');
+    undo();
+    expect(screen.getByLabelText('Timeline position')).toHaveValue('17');
+    redo();
+    expect(screen.getByLabelText('Timeline position')).toHaveValue('77');
+  });
+  it.each([0, 60])(
+    'ripple inserts an existing clip at frame %i with one Undo/Redo step',
+    async (frame) => {
+      vi.stubGlobal('DragEvent', MouseEvent);
+      render(<App />);
+      await ready(['a.mp4', 'b.mp4', 'c.mp4']);
+      const moved = screen.getByRole('button', {
+        name: 'Preview clip 3: c.mp4',
+      });
+      fireEvent.click(moved);
+      fireEvent.change(screen.getByLabelText('Timeline position'), {
+        target: { value: '17' },
+      });
+      const ids = Array.from(
+        document.querySelectorAll<HTMLElement>('.clip-item'),
+        (e) => e.dataset.clipId!,
+      );
+      const lane = screen.getByLabelText('Video 1 source drop target');
+      vi.spyOn(lane, 'getBoundingClientRect').mockReturnValue({
+        left: 100,
+        width: 180,
+      } as DOMRect);
+      const dataTransfer = {
+        types: ['application/x-avstudio-clip'],
+        setData: vi.fn(),
+        dropEffect: 'none',
+      };
+      fireEvent.dragStart(moved, { dataTransfer });
+      fireEvent.dragOver(lane, { dataTransfer, clientX: 100 + frame });
+      expect(dataTransfer.dropEffect).toBe('move');
+      fireEvent.drop(lane, { dataTransfer, clientX: 100 + frame });
+      const order = () =>
+        Array.from(
+          document.querySelectorAll<HTMLElement>('.clip-item'),
+          (e) => e.dataset.clipId!,
+        );
+      const expected =
+        frame === 0 ? [ids[2], ids[0], ids[1]] : [ids[0], ids[2], ids[1]];
+      expect(order()).toEqual(expected);
+      // Existing reorder history keeps the playhead on the same source frame.
+      expect(screen.getByLabelText('Timeline position')).toHaveValue(
+        frame === 0 ? '77' : '17',
+      );
+      expect(
+        screen.getByRole('button', {
+          name: new RegExp(`Preview clip ${frame === 0 ? 1 : 2}: c.mp4`),
+        }),
+      ).toHaveAttribute('aria-pressed', 'true');
+      undo();
+      expect(order()).toEqual(ids);
+      redo();
+      expect(order()).toEqual(expected);
+      fireEvent.click(screen.getByRole('button', { name: 'Render MP4' }));
+      await screen.findByText('Delivery failed');
+      expect(JSON.parse(String(submitted!.get('manifest'))).order).toEqual(
+        expected,
+      );
+    },
+  );
+  it.each([1, 2])(
+    'ripple inserts split piece %i at occupied frame zero without changing source edits',
+    async (piece) => {
+      vi.stubGlobal('DragEvent', MouseEvent);
+      render(<App />);
+      await ready();
+      fireEvent.change(screen.getByLabelText('Speed for a.mp4'), {
+        target: { value: '0.5' },
+      });
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Preview clip 1: a.mp4' }),
+      );
+      fireEvent.change(screen.getByLabelText('Timeline position'), {
+        target: { value: '39' },
+      });
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Split at playhead' }),
+      );
+      // Put b first so either split piece can be moved to an occupied start.
+      fireEvent.click(screen.getByRole('button', { name: 'Move b.mp4 up' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Move b.mp4 up' }));
+      const ids = Array.from(
+        document.querySelectorAll<HTMLElement>('.clip-item'),
+        (e) => e.dataset.clipId!,
+      );
+      const moved = screen.getByRole('button', {
+        name: `Preview clip ${piece + 1}: a.mp4`,
+      });
+      const lane = screen.getByLabelText('Video 1 source drop target');
+      vi.spyOn(lane, 'getBoundingClientRect').mockReturnValue({
+        left: 100,
+        width: 180,
+      } as DOMRect);
+      const dataTransfer = {
+        types: ['application/x-avstudio-clip'],
+        setData: vi.fn(),
+      };
+      fireEvent.dragStart(moved, { dataTransfer });
+      fireEvent.drop(
+        screen.getByRole('button', { name: 'Preview clip 1: b.mp4' }),
+        { dataTransfer, clientX: 100 },
+      );
+      const expected = [ids[piece], ...ids.filter((_, i) => i !== piece)];
+      expect(
+        Array.from(
+          document.querySelectorAll<HTMLElement>('.clip-item'),
+          (e) => e.dataset.clipId!,
+        ),
+      ).toEqual(expected);
+      fireEvent.click(screen.getByRole('button', { name: 'Render MP4' }));
+      await screen.findByText('Delivery failed');
+      const manifest = JSON.parse(
+        String(submitted!.get('manifest')),
+      ) as AdvancedMergeManifest;
+      expect(manifest.order).toEqual(expected);
+      expect(manifest.clips[0]).toMatchObject({
+        start_frame: piece === 1 ? 0 : 20,
+        end_frame: piece === 1 ? 19 : 59,
+        speed: 0.5,
+      });
+    },
+  );
   it('detach_shortcut_focuses_audio_and_delete_lifts_without_touching_picture_or_ctrl_L', async () => {
     render(<App />);
     await ready(['a.mp4']);
