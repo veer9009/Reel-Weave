@@ -23,7 +23,22 @@ export type ExpectedAudioEvent = {
   sourceStartSample: number;
   gain: number;
 };
-type Chunk = { at: number; left: number[]; right: number[] };
+type Chunk = {
+  at: number;
+  left: number[];
+  right: number[];
+  observation?: {
+    pictureTime: number;
+    frame: number;
+    contextTime: number;
+    renderTime: number;
+    observedAt: number;
+    outputContextTime: number;
+    outputPerformanceTime: number;
+    presented?: { time: number; at: number };
+    voices: { time: number; duration: number; paused: boolean }[];
+  };
+};
 export type PreviewPcm = {
   sampleRate: number;
   channels: Float32Array[];
@@ -225,8 +240,60 @@ export async function installPreviewCapture(page: Page) {
   await page.addInitScript(() => {
     const capture = { buses: [] as { chunks: Chunk[] }[], rate: 48000 };
     Object.assign(window, { avstudioCapturedAudio: capture });
+    const clock: {
+      at: number;
+      time: number;
+      paused: boolean;
+      gains: number[];
+    }[] = [];
+    const gains: GainNode[] = [];
+    Object.assign(window, { avstudioCaptureClock: clock });
+    const observeClock = () => {
+      const picture = document.querySelector<HTMLVideoElement>(
+        '[aria-label="Uploaded clip preview"]',
+      );
+      if (picture)
+        clock.push({
+          at: performance.now(),
+          time: picture.currentTime,
+          paused: picture.paused || picture.seeking,
+          gains: gains.map((gain) => gain.gain.value),
+        });
+      requestAnimationFrame(observeClock);
+    };
+    requestAnimationFrame(observeClock);
+    const voices = new Set<HTMLMediaElement>();
+    const presented = new WeakMap<
+      HTMLVideoElement,
+      { time: number; at: number }
+    >();
+    const watching = new WeakSet<HTMLVideoElement>();
+    const watch = (picture: HTMLVideoElement) => {
+      if (watching.has(picture)) return;
+      watching.add(picture);
+      const observe: VideoFrameRequestCallback = (_now, metadata) => {
+        presented.set(picture, {
+          time: metadata.mediaTime,
+          at: metadata.expectedDisplayTime,
+        });
+        picture.requestVideoFrameCallback(observe);
+      };
+      picture.requestVideoFrameCallback(observe);
+    };
+    const nativePlay = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function (this: HTMLMediaElement) {
+      if (this instanceof HTMLAudioElement) voices.add(this);
+      if (this instanceof HTMLVideoElement) watch(this);
+      return nativePlay.call(this);
+    };
     const native = AudioNode.prototype.connect;
-    let internal = false;
+    const pending = new Map<BaseAudioContext, Promise<void>>();
+    const recorded = new WeakSet<AudioNode>();
+    const resume = AudioContext.prototype.resume;
+    AudioContext.prototype.resume = async function () {
+      await pending.get(this);
+      return resume.call(this);
+    };
     AudioNode.prototype.connect = function (
       this: AudioNode,
       ...args: unknown[]
@@ -235,32 +302,113 @@ export async function installPreviewCapture(page: Page) {
         native as unknown as (...args: unknown[]) => AudioNode
       ).apply(this, args);
       if (
-        !internal &&
         this instanceof GainNode &&
-        args[0] === this.context.destination
+        args[0] === this.context.destination &&
+        !recorded.has(this)
       ) {
-        internal = true;
+        recorded.add(this);
+        gains.push(this as GainNode);
         const ctx = this.context as AudioContext;
-        const node = ctx.createScriptProcessor(1024, 2, 2),
-          bus = { chunks: [] as Chunk[] };
+        const bus = { chunks: [] as Chunk[] };
         capture.buses.push(bus);
         capture.rate = ctx.sampleRate;
-        node.onaudioprocess = (event) => {
-          const picture = document.querySelector<HTMLVideoElement>(
-            '[aria-label="Uploaded clip preview"]',
+        // PCM collection runs independently of React and main-thread callbacks.
+        // The audible destination stays connected; this parallel sink is silent.
+        let ready = pending.get(ctx);
+        if (!ready) {
+          const url = URL.createObjectURL(
+            new Blob(
+              [
+                `
+            class ParityCapture extends AudioWorkletProcessor {
+              constructor() {
+                super(); this.offset = 0;
+                this.left = new Float32Array(1024);
+                this.right = new Float32Array(1024);
+              }
+              process(inputs, outputs) {
+                const size = outputs[0]?.[0]?.length || 128;
+                const left = inputs[0]?.[0] || new Float32Array(size);
+                const right = inputs[0]?.[1] || left;
+                if (this.offset === 0) this.at = currentFrame / sampleRate;
+                this.left.set(left, this.offset);
+                this.right.set(right, this.offset);
+                this.offset += left.length;
+                if (this.offset === 1024) {
+                  this.port.postMessage({ time: this.at, left: this.left, right: this.right });
+                  this.offset = 0;
+                }
+                return true;
+              }
+            }
+            registerProcessor('parity-capture', ParityCapture);
+          `,
+              ],
+              { type: 'text/javascript' },
+            ),
           );
-          if (picture && !picture.paused)
-            bus.chunks.push({
-              at: picture.currentTime + event.playbackTime - ctx.currentTime,
-              left: Array.from(event.inputBuffer.getChannelData(0)),
-              right: Array.from(event.inputBuffer.getChannelData(1)),
-            });
-          for (let i = 0; i < event.outputBuffer.numberOfChannels; i++)
-            event.outputBuffer.getChannelData(i).fill(0);
-        };
-        native.call(this, node);
-        native.call(node, ctx.destination);
-        internal = false;
+          ready = ctx.audioWorklet
+            .addModule(url)
+            .finally(() => URL.revokeObjectURL(url));
+          pending.set(ctx, ready);
+        }
+        const connected = ready.then(() => {
+          const node = new AudioWorkletNode(ctx, 'parity-capture', {
+            outputChannelCount: [2],
+          });
+          node.port.onmessage = (
+            event: MessageEvent<{
+              time: number;
+              left: Float32Array;
+              right: Float32Array;
+            }>,
+          ) => {
+            const picture = document.querySelector<HTMLVideoElement>(
+              '[aria-label="Uploaded clip preview"]',
+            );
+            if (picture && !picture.paused) {
+              const pictureTime = picture.currentTime;
+              const contextTime = ctx.currentTime;
+              const output = ctx.getOutputTimestamp();
+              const observedAt = performance.now();
+              bus.chunks.push({
+                // Map rendered PCM to the native picture cursor at its audible
+                // output time; the render clock runs ahead of the output device.
+                at:
+                  pictureTime +
+                  (output.performanceTime! - observedAt) / 1000 +
+                  event.data.time -
+                  output.contextTime!,
+                left: Array.from(event.data.left),
+                right: Array.from(event.data.right),
+                observation: {
+                  pictureTime,
+                  contextTime,
+                  renderTime: event.data.time,
+                  observedAt,
+                  outputContextTime: output.contextTime!,
+                  outputPerformanceTime: output.performanceTime!,
+                  presented: presented.get(picture),
+                  frame: Number(
+                    document.querySelector<HTMLInputElement>(
+                      '[aria-label="Timeline position"]',
+                    )?.value,
+                  ),
+                  voices: [...voices]
+                    .filter((voice) => voice.getAttribute('src'))
+                    .map((voice) => ({
+                      time: voice.currentTime,
+                      duration: voice.duration,
+                      paused: voice.paused,
+                    })),
+                },
+              });
+            }
+          };
+          native.call(this, node);
+          native.call(node, ctx.destination);
+        });
+        pending.set(ctx, connected);
       }
       return result;
     } as typeof native;
@@ -292,6 +440,12 @@ export async function capturePreviewPcm(
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
   });
+  await page.waitForFunction(() => {
+    const picture = document.querySelector<HTMLVideoElement>(
+      '[aria-label="Uploaded clip preview"]',
+    );
+    return picture && !picture.seeking && picture.currentTime === 0;
+  });
   await page.getByRole('button', { name: 'Play preview', exact: true }).click();
   await page.waitForFunction((end) => {
     const v = document.querySelector<HTMLVideoElement>(
@@ -300,8 +454,11 @@ export async function capturePreviewPcm(
     return Boolean(v && v.currentTime >= end);
   }, durationFrames / fps);
   await page
-    .getByRole('button', { name: 'Pause preview', exact: true })
-    .click();
+    .getByRole('button', { name: /^(Play|Pause) preview$/ })
+    .evaluate((button) => {
+      // Playback can naturally finish between the cursor check and this task.
+      if (button.getAttribute('aria-label') === 'Pause preview') button.click();
+    });
   const data = await page.evaluate(() => {
     const c = (
       window as unknown as {
@@ -344,7 +501,7 @@ export function decodedAudio(path: string) {
       '-ar',
       '48000',
       '-ac',
-      '1',
+      '2',
       '-f',
       'f32le',
       '-',
@@ -357,7 +514,11 @@ export function decodedAudio(path: string) {
     output.stdout.byteOffset,
     output.stdout.byteLength,
   );
-  return Float32Array.from({ length: output.stdout.length / 4 }, (_, i) =>
-    view.getFloat32(i * 4, true),
+  // Explicit arithmetic average avoids FFmpeg's format/layout-dependent
+  // stereo downmix matrices (AAC layout metadata differs from raw WAV).
+  return Float32Array.from(
+    { length: output.stdout.length / 8 },
+    (_, i) =>
+      (view.getFloat32(i * 8, true) + view.getFloat32(i * 8 + 4, true)) / 2,
   );
 }

@@ -189,7 +189,7 @@ it(
   },
 );
 
-it('audio_keyboard_lift_stays_distinct_from_explicit_ripple', () => {
+it('audio_keyboard_ripple_delete_stays_distinct_from_explicit_lift', () => {
   const f = advancedFixture();
   const initial = buildAdvancedTimeline(f.snapshot, f.sources, {
     image: null,
@@ -236,7 +236,10 @@ it('audio_keyboard_lift_stays_distinct_from_explicit_ripple', () => {
   );
   for (const key of ['Delete', 'Backspace']) {
     fireEvent.keyDown(document, { key });
-    expect(edit).toHaveBeenLastCalledWith({ action: 'lift', id: 'ui-audio-1' });
+    expect(edit).toHaveBeenLastCalledWith({
+      action: 'ripple-delete',
+      id: 'ui-audio-1',
+    });
   }
   const tools = screen.getByRole('toolbar', { name: 'Timeline Tools' });
   fireEvent.click(
@@ -246,6 +249,8 @@ it('audio_keyboard_lift_stays_distinct_from_explicit_ripple', () => {
     action: 'ripple-delete',
     id: 'ui-audio-1',
   });
+  fireEvent.click(screen.getByRole('button', { name: 'Lift selected audio' }));
+  expect(edit).toHaveBeenLastCalledWith({ action: 'lift', id: 'ui-audio-1' });
 });
 
 it('detach_shortcut_guards_typing_repeat_IME_modal_and_locks_and_context_menu_restores_focus', () => {

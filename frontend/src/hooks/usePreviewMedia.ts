@@ -23,8 +23,10 @@ type Options = {
   sources?: ProjectSources;
   onSuspend?: (token: number) => void;
   onReady?: (token: number) => void;
+  onHold?: (listener: (projectSeconds: number) => void) => () => void;
   onFailure?: (source: string) => void;
   onPresented?: (seconds: number, presentedAt: number) => void;
+  onPictureClock?: (read: () => number | null) => () => void;
 };
 export function usePreviewMedia(options: Options) {
   const [, render] = useState(0);
@@ -32,6 +34,7 @@ export function usePreviewMedia(options: Options) {
     let latest = options,
       previousPlaying = options.playing;
     let pausedTime: number | undefined;
+    let holdRevision = 0;
     const elements: (HTMLVideoElement | null)[] = [null, null],
       slots: Slot[] = [
         {
@@ -351,8 +354,7 @@ export function usePreviewMedia(options: Options) {
         if (
           resumed &&
           o.onSuspend &&
-          Math.abs(e.currentTime - positionTime) >
-            0.04 * current.clip.speed
+          Math.abs(e.currentTime - positionTime) > 0.04 * current.clip.speed
         )
           request!.needsPosition = true;
         if (request!.needsPosition) {
@@ -377,8 +379,15 @@ export function usePreviewMedia(options: Options) {
         if (o.playing && !needsReady) {
           if (e.paused) {
             const token = request!.token,
-              url = slots[index].url;
-            void e.play().catch(() => {
+              url = slots[index].url,
+              startedAtHold = holdRevision;
+            void e.play().catch((error: unknown) => {
+              if (
+                error instanceof DOMException &&
+                error.name === 'AbortError' &&
+                startedAtHold !== holdRevision
+              )
+                return;
               if (
                 latest.playing &&
                 request?.token === token &&
@@ -421,7 +430,9 @@ export function usePreviewMedia(options: Options) {
       onSeeked: (e: SyntheticEvent<HTMLVideoElement>) => readyEvent(index, e),
       onWaiting: () => {
         const o = latest;
-        if (index === active && o.playing && request && !request.waiting) {
+        // The transport checks live intent; a render can still say preparing
+        // when a native decoder starts waiting again.
+        if (index === active && request && !request.waiting) {
           request.waiting = true;
           o.onSuspend?.(request.token);
         }
@@ -437,6 +448,34 @@ export function usePreviewMedia(options: Options) {
     return {
       updateOptions(next: Options) {
         latest = next;
+      },
+      readProjectSeconds() {
+        const element = elements[active];
+        if (
+          !element ||
+          !request ||
+          request.index !== active ||
+          !latest.current ||
+          element.getAttribute('src') !== latest.current.clip.url ||
+          element.seeking ||
+          element.readyState < 2
+        )
+          return null;
+        return (element.currentTime - request.origin) / request.speed;
+      },
+      hold(projectSeconds: number) {
+        holdRevision++;
+        const current = latest.current;
+        if (current) {
+          const seconds =
+            latest.projectSeconds ??
+            (latest.frame ?? 0) / (latest.projection?.base.fps ?? 25);
+          pausedTime =
+            current.sourceTime +
+            (projectSeconds - seconds) * current.clip.speed;
+        }
+        previousPlaying = false;
+        elements[active]?.pause();
       },
       get slots() {
         return slots;
@@ -478,6 +517,13 @@ export function usePreviewMedia(options: Options) {
     api.updateOptions(options);
     api.sync();
   }, [api, options]);
+  const onHold = options.onHold;
+  useLayoutEffect(() => onHold?.(api.hold), [api, onHold]);
+  const onPictureClock = options.onPictureClock;
+  useLayoutEffect(
+    () => onPictureClock?.(api.readProjectSeconds),
+    [api, onPictureClock],
+  );
   useEffect(() => {
     api.resume();
     const off = options.sources?.onBeforeClear(api.stop);

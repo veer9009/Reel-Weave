@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import { usePreviewMedia } from './usePreviewMedia';
 import { advancedFixture } from '../test/historyFixtures';
@@ -7,6 +7,324 @@ import {
   resolveProgramFrame,
 } from '../lib/advancedTimeline';
 import { useProjectPlayback } from './useProjectPlayback';
+it('maps the mounted native picture clock through a trimmed slow recipe and unbinds it', () => {
+  const f = advancedFixture();
+  const snapshot = {
+    ...f.snapshot,
+    video2: [],
+    video1: f.snapshot.video1.map((clip) => ({
+      ...clip,
+      speed: 0.75 as const,
+      trim: { startFrame: 10, endFrame: 100 },
+    })),
+  };
+  const projection = buildAdvancedTimeline(snapshot, f.sources, {
+    image: null,
+    video: null,
+  });
+  const current = resolveProgramFrame(projection, 25)!;
+  let read!: () => number | null;
+  const unbind = vi.fn();
+  const bind = (reader: () => number | null) => {
+    read = reader;
+    return unbind;
+  };
+  function Harness() {
+    const media = usePreviewMedia({
+      current,
+      projection,
+      frame: 25,
+      projectSeconds: 1,
+      playing: false,
+      onPictureClock: bind,
+    });
+    return (
+      <>
+        {media.slots.map((slot, index) => (
+          <video
+            key={index}
+            ref={media.bind[index]}
+            src={slot.url}
+            aria-label={`Clock ${index}`}
+            {...media.events[index]}
+          />
+        ))}
+      </>
+    );
+  }
+  const view = render(<Harness />);
+  const video = screen.getByLabelText('Clock 0') as HTMLVideoElement;
+  Object.defineProperties(video, {
+    readyState: { configurable: true, value: 4 },
+    seeking: { configurable: true, value: false },
+  });
+  video.currentTime = current.sourceTime + 0.375;
+  expect(read()).toBeCloseTo(1.5, 6);
+  Object.defineProperty(video, 'seeking', { configurable: true, value: true });
+  expect(read()).toBeNull();
+  view.unmount();
+  expect(unbind).toHaveBeenCalledOnce();
+});
+it('waiting while paused cannot consume the next Play readiness gate', () => {
+  const f = advancedFixture();
+  const projection = buildAdvancedTimeline(
+    { ...f.snapshot, video2: [] },
+    f.sources,
+    { image: null, video: null },
+  );
+  let transport!: ReturnType<typeof useProjectPlayback>;
+  function Harness() {
+    transport = useProjectPlayback(projection.base, 0, projection);
+    const media = usePreviewMedia({
+      current: resolveProgramFrame(projection, 0),
+      projection,
+      frame: 0,
+      playing: transport.playing,
+      generation: transport.generation,
+      onSuspend: transport.suspend,
+      onReady: transport.ready,
+      onHold: transport.onHold,
+    });
+    return (
+      <>
+        {media.slots.map((slot, index) => (
+          <video
+            key={index}
+            ref={media.bind[index]}
+            src={slot.url}
+            aria-label={`Paused picture ${index}`}
+            {...media.events[index]}
+          />
+        ))}
+      </>
+    );
+  }
+  render(<Harness />);
+  const video = screen.getByLabelText('Paused picture 0') as HTMLVideoElement;
+  Object.defineProperties(video, {
+    duration: { configurable: true, value: 6 },
+    readyState: { configurable: true, value: 1 },
+    seeking: { configurable: true, value: false },
+    paused: { configurable: true, value: true },
+  });
+  fireEvent.waiting(video);
+  expect(transport.getSnapshot().status).toBe('paused');
+  act(() => transport.toggle());
+  expect(transport.getSnapshot().intent).toBe(true);
+  expect(transport.getSnapshot().status).toBe('preparing');
+  Object.defineProperty(video, 'readyState', { configurable: true, value: 4 });
+  fireEvent.canPlay(video);
+  expect(transport.getSnapshot().status).toBe('playing');
+});
+it.each(['AbortError', 'NotAllowedError', 'NotSupportedError'])(
+  'controlled picture hold preserves truthful %s handling',
+  async (errorName) => {
+    const f = advancedFixture();
+    const projection = buildAdvancedTimeline(
+      { ...f.snapshot, video2: [] },
+      f.sources,
+      { image: null, video: null },
+    );
+    const onFailure = vi.fn();
+    let hold!: (seconds: number) => void;
+    const onHold = (listener: (seconds: number) => void) => {
+      hold = listener;
+      return () => {};
+    };
+    function Harness() {
+      const media = usePreviewMedia({
+        current: resolveProgramFrame(projection, 0),
+        projection,
+        frame: 0,
+        playing: true,
+        onHold,
+        onFailure,
+      });
+      return (
+        <>
+          {media.slots.map((slot, index) => (
+            <video
+              key={index}
+              ref={media.bind[index]}
+              src={slot.url}
+              aria-label={`Picture ${index}`}
+              {...media.events[index]}
+            />
+          ))}
+        </>
+      );
+    }
+    const view = render(<Harness />);
+    const video = screen.getByLabelText('Picture 0') as HTMLVideoElement;
+    Object.defineProperties(video, {
+      duration: { configurable: true, value: 6 },
+      readyState: { configurable: true, value: 4 },
+      seeking: { configurable: true, value: false },
+      paused: { configurable: true, value: true },
+    });
+    let rejectPlay!: (error: DOMException) => void;
+    const play = vi
+      .spyOn(video, 'play')
+      .mockImplementationOnce(() => {
+        Object.defineProperty(video, 'paused', {
+          configurable: true,
+          value: false,
+        });
+        return new Promise<void>((_resolve, reject) => {
+          rejectPlay = reject;
+        });
+      })
+      .mockResolvedValue(undefined);
+    vi.spyOn(video, 'pause').mockImplementation(() => {
+      Object.defineProperty(video, 'paused', {
+        configurable: true,
+        value: true,
+      });
+      rejectPlay?.(new DOMException('Native play interrupted', errorName));
+    });
+    view.rerender(<Harness />);
+    expect(play).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      hold(0);
+    });
+    if (errorName === 'AbortError') {
+      expect(onFailure).not.toHaveBeenCalled();
+      view.rerender(<Harness />);
+      expect(play).toHaveBeenCalledTimes(2);
+    } else expect(onFailure).toHaveBeenCalledTimes(1);
+  },
+);
+it('native waiting holds live playback even while the rendered playing flag is false', () => {
+  const f = advancedFixture();
+  const projection = buildAdvancedTimeline(
+    { ...f.snapshot, video2: [] },
+    f.sources,
+    { image: null, video: null },
+  );
+  let transport!: ReturnType<typeof useProjectPlayback>;
+  function Harness() {
+    transport = useProjectPlayback(projection.base, 0, projection);
+    const media = usePreviewMedia({
+      current: resolveProgramFrame(projection, 0),
+      projection,
+      frame: 0,
+      projectSeconds: 0,
+      playing: false,
+      generation: transport.generation,
+      positionRevision: 0,
+      onSuspend: transport.suspend,
+      onReady: transport.ready,
+      onHold: transport.onHold,
+    });
+    return (
+      <>
+        <button onClick={transport.toggle}>Play intent</button>
+        {media.slots.map((slot, index) => (
+          <video
+            key={index}
+            ref={media.bind[index]}
+            src={slot.url}
+            aria-label={
+              index === media.active ? 'Active picture' : 'Upcoming picture'
+            }
+            {...media.events[index]}
+          />
+        ))}
+      </>
+    );
+  }
+  render(<Harness />);
+  const video = screen.getByLabelText('Active picture') as HTMLVideoElement;
+  Object.defineProperties(video, {
+    duration: { configurable: true, value: 6 },
+    readyState: { configurable: true, value: 4 },
+    seeking: { configurable: true, value: false },
+    paused: { configurable: true, value: true },
+  });
+  vi.spyOn(video, 'pause').mockImplementation(() => {
+    Object.defineProperty(video, 'paused', { configurable: true, value: true });
+  });
+  fireEvent.loadedMetadata(video);
+  fireEvent.click(screen.getByRole('button', { name: 'Play intent' }));
+  Object.defineProperties(video, {
+    readyState: { configurable: true, value: 1 },
+    paused: { configurable: true, value: false },
+  });
+  fireEvent.waiting(video);
+  expect(transport.getSnapshot().intent).toBe(true);
+  expect(transport.getSnapshot().status).toBe('preparing');
+  expect(video.paused).toBe(true);
+});
+it('an audio readiness hold freezes native picture even when hold and ready are batched', async () => {
+  const f = advancedFixture();
+  const projection = buildAdvancedTimeline(
+    { ...f.snapshot, video2: [] },
+    f.sources,
+    { image: null, video: null },
+  );
+  vi.spyOn(performance, 'now').mockReturnValue(100);
+  const pausedAtGate: boolean[] = [];
+  function Harness() {
+    const transport = useProjectPlayback(projection.base, 0, projection);
+    const media = usePreviewMedia({
+      current: resolveProgramFrame(projection, transport.frame ?? 0),
+      projection,
+      frame: transport.frame,
+      projectSeconds: transport.captureAnchor().projectSeconds,
+      playing: transport.playing,
+      generation: transport.generation,
+      positionRevision: transport.positionRevision,
+      onSuspend: transport.suspend,
+      onReady: transport.ready,
+      onHold: transport.onHold,
+    });
+    return (
+      <>
+        <button onClick={transport.toggle}>Play</button>
+        <button
+          onClick={() => {
+            transport.suspend(-999);
+            pausedAtGate.push(video.paused);
+            transport.ready(-999);
+          }}
+        >
+          Audio handoff
+        </button>
+        {media.slots.map((slot, index) => (
+          <video
+            key={index}
+            ref={media.bind[index]}
+            src={slot.url}
+            aria-label={
+              index === media.active ? 'Active picture' : 'Upcoming picture'
+            }
+            {...media.events[index]}
+          />
+        ))}
+      </>
+    );
+  }
+  render(<Harness />);
+  const video = screen.getByLabelText('Active picture') as HTMLVideoElement;
+  Object.defineProperties(video, {
+    duration: { configurable: true, value: 6 },
+    readyState: { configurable: true, value: 4 },
+    seeking: { configurable: true, value: false },
+    paused: { configurable: true, value: false },
+  });
+  vi.spyOn(video, 'pause').mockImplementation(() => {
+    Object.defineProperty(video, 'paused', { configurable: true, value: true });
+  });
+  fireEvent.loadedMetadata(video);
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Play' }));
+  });
+  Object.defineProperty(video, 'paused', { configurable: true, value: false });
+  video.currentTime = 0.2;
+  fireEvent.click(screen.getByRole('button', { name: 'Audio handoff' }));
+  expect(pausedAtGate).toEqual([true]);
+  expect(video.currentTime).toBe(0);
+});
 it.each([false, true])(
   'same_file_picture_boundary_handles_legacy_rounding_%s',
   (legacySplit) => {
@@ -87,53 +405,56 @@ it.each([false, true])(
     else expect(video.currentTime).toBe(4);
   },
 );
-it.each([0, 2])('readiness_resume_realigns_picture_to_the_frozen_position_not_render_delay_%s', (resumeFrame) => {
-  const f = advancedFixture(),
-    projection = buildAdvancedTimeline(
-      { ...f.snapshot, video2: [] },
-      f.sources,
-      { image: null, video: null },
-    );
-  function Harness({ playing }: { playing: boolean }) {
-    const media = usePreviewMedia({
-      current: resolveProgramFrame(projection, playing ? resumeFrame : 0),
-      projection,
-      frame: playing ? resumeFrame : 0,
-      playing,
-      generation: 1,
-      positionRevision: 0,
-      onSuspend: () => {},
-      onReady: () => {},
+it.each([0, 2])(
+  'readiness_resume_realigns_picture_to_the_frozen_position_not_render_delay_%s',
+  (resumeFrame) => {
+    const f = advancedFixture(),
+      projection = buildAdvancedTimeline(
+        { ...f.snapshot, video2: [] },
+        f.sources,
+        { image: null, video: null },
+      );
+    function Harness({ playing }: { playing: boolean }) {
+      const media = usePreviewMedia({
+        current: resolveProgramFrame(projection, playing ? resumeFrame : 0),
+        projection,
+        frame: playing ? resumeFrame : 0,
+        playing,
+        generation: 1,
+        positionRevision: 0,
+        onSuspend: () => {},
+        onReady: () => {},
+      });
+      return (
+        <>
+          {media.slots.map((slot, index) => (
+            <video
+              key={index}
+              ref={media.bind[index]}
+              src={slot.url}
+              aria-label={
+                index === media.active ? 'Active picture' : 'Upcoming picture'
+              }
+              {...media.events[index]}
+            />
+          ))}
+        </>
+      );
+    }
+    const view = render(<Harness playing={true} />),
+      video = screen.getByLabelText('Active picture') as HTMLVideoElement;
+    Object.defineProperties(video, {
+      duration: { configurable: true, value: 6 },
+      readyState: { configurable: true, value: 4 },
+      seeking: { configurable: true, value: false },
     });
-    return (
-      <>
-        {media.slots.map((slot, index) => (
-          <video
-            key={index}
-            ref={media.bind[index]}
-            src={slot.url}
-            aria-label={
-              index === media.active ? 'Active picture' : 'Upcoming picture'
-            }
-            {...media.events[index]}
-          />
-        ))}
-      </>
-    );
-  }
-  const view = render(<Harness playing={true} />),
-    video = screen.getByLabelText('Active picture') as HTMLVideoElement;
-  Object.defineProperties(video, {
-    duration: { configurable: true, value: 6 },
-    readyState: { configurable: true, value: 4 },
-    seeking: { configurable: true, value: false },
-  });
-  fireEvent.loadedMetadata(video);
-  view.rerender(<Harness playing={false} />);
-  video.currentTime = 0.2;
-  view.rerender(<Harness playing={true} />);
-  expect(video.currentTime).toBe(0);
-});
+    fireEvent.loadedMetadata(video);
+    view.rerender(<Harness playing={false} />);
+    video.currentTime = 0.2;
+    view.rerender(<Harness playing={true} />);
+    expect(video.currentTime).toBe(0);
+  },
+);
 it('a_new_picture_request_retires_the_previous_unready_gate', () => {
   vi.spyOn(URL, 'createObjectURL').mockImplementation(
     (blob) => `blob:${(blob as File).name}`,

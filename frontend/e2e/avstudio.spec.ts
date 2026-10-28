@@ -55,12 +55,19 @@ test('Timeline Tools stay left of uninterrupted tracks on desktop and narrow scr
     expect(bounds.x + bounds.width).toBeLessThanOrEqual(scroll.x);
     const buttons = await toolbar.getByRole('button').all();
     let previousBottom = bounds.y;
+    let previousRight = bounds.x;
+    let previousTop = bounds.y;
     for (const button of buttons) {
       const tool = (await button.boundingBox())!;
       expect(tool.width).toBeGreaterThanOrEqual(44);
       expect(tool.height).toBeGreaterThanOrEqual(44);
-      expect(tool.y).toBeGreaterThanOrEqual(previousBottom);
+      expect(
+        tool.y >= previousBottom ||
+          (tool.y === previousTop && tool.x >= previousRight),
+      ).toBe(true);
       previousBottom = tool.y + tool.height;
+      previousTop = tool.y;
+      previousRight = tool.x + tool.width;
     }
     expect(
       await page.evaluate(
@@ -171,13 +178,16 @@ test('responsive workspace and keyboard access', async ({ page }) => {
   ).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(
-    page.getByRole('button', { name: 'Browse files' }),
+    page.getByRole('button', { name: 'Import Media', exact: true }),
   ).toBeFocused();
   const chooser = page.waitForEvent('filechooser');
   await page.keyboard.press('Enter');
   await chooser;
   const disclosure = page.locator('summary').filter({ hasText: 'Overlay/PIP' });
+  await expect(disclosure.locator('..')).not.toHaveAttribute('open');
   await disclosure.focus();
+  await page.keyboard.press('Enter');
+  await expect(disclosure.locator('..')).toHaveAttribute('open', '');
   await page.keyboard.press('Enter');
   await expect(disclosure.locator('..')).not.toHaveAttribute('open');
   await page.keyboard.press('Enter');

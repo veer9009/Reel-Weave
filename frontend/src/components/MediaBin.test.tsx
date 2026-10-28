@@ -3,6 +3,28 @@ import { expect, it, vi } from 'vitest';
 import { advancedFixture } from '../test/historyFixtures';
 import { MediaBin, TimelineDropZone } from './MediaBin';
 import { SOURCE_DRAG_MIME, sourceDragData } from '../lib/placement';
+it('Import Media dispatches mixed video and audio files to their existing import handlers', () => {
+  const onImport = vi.fn();
+  render(
+    <MediaBin
+      sources={[]}
+      disabled={false}
+      fps={null}
+      onImport={onImport}
+      onRemove={() => {}}
+      onPlace={() => false}
+    />,
+  );
+  const video = new File(['video'], 'Take.MOV', { type: 'video/quicktime' });
+  const audio = new File(['audio'], 'Music.wav', { type: 'audio/wav' });
+  fireEvent.change(screen.getByLabelText('Import Media'), {
+    target: { files: [video, audio] },
+  });
+  expect(onImport.mock.calls).toEqual([
+    [video, 'video'],
+    [audio, 'audio'],
+  ]);
+});
 it('compact_bin_keeps_source_specific_actions_and_loading_errors', () => {
   const f = advancedFixture();
   const source = f.sources.get(f.base.sourceId)!;

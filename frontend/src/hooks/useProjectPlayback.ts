@@ -25,6 +25,8 @@ export function useProjectPlayback(
       positionRevision: 0,
     };
     const readiness = new Set<number>();
+    const holds = new Set<(projectSeconds: number) => void>();
+    let pictureClock: (() => number | null) | null = null;
     const available = () => {
       const t = runtime.timeline;
       return t.status === 'ready' && t.totalFrames > 0 && t.fps !== null;
@@ -63,6 +65,32 @@ export function useProjectPlayback(
     };
     const controller = {
       getSnapshot: () => runtime,
+      isLastReadinessToken(token: number) {
+        return runtime.intent && readiness.size === 1 && readiness.has(token);
+      },
+      bindPictureClock(read: () => number | null) {
+        pictureClock = read;
+        return () => {
+          if (pictureClock === read) pictureClock = null;
+        };
+      },
+      captureSoundSeconds() {
+        const seconds =
+          runtime.intent && runtime.status === 'playing'
+            ? pictureClock?.()
+            : null;
+        return seconds !== null &&
+          seconds !== undefined &&
+          Number.isFinite(seconds)
+          ? seconds
+          : controller.captureAnchor().projectSeconds;
+      },
+      onHold(listener: (projectSeconds: number) => void) {
+        holds.add(listener);
+        return () => {
+          holds.delete(listener);
+        };
+      },
       captureAnchor(): TransportAnchor {
         const r = runtime,
           position = available()
@@ -220,9 +248,27 @@ export function useProjectPlayback(
         if (r.pending === null) readiness.clear();
         if (readiness.has(token)) return;
         readiness.add(token);
-        settle();
+        // A predicted display timestamp may run ahead of the decoded picture.
+        // Holding that prediction would force a forward seek when we resume.
+        const pictureSeconds = r.status === 'playing' ? pictureClock?.() : null;
+        if (
+          pictureSeconds !== null &&
+          pictureSeconds !== undefined &&
+          Number.isFinite(pictureSeconds)
+        ) {
+          r.position = Math.max(
+            0,
+            Math.min(
+              r.timeline.totalFrames - 1,
+              pictureSeconds * (r.timeline.fps ?? 1),
+            ),
+          );
+          r.started = performance.now();
+        } else settle();
         r.pending = token;
         r.status = 'preparing';
+        // Native decoders must stop even if React batches hold and ready.
+        for (const hold of holds) hold(r.position / (r.timeline.fps ?? 1));
         publish();
       },
       ready(token: number) {

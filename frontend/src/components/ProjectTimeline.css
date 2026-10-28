@@ -502,3 +502,221 @@
   overflow-y: auto;
   scrollbar-gutter: stable;
 }
+
+/* Keep track geometry in project-frame space; compact only vertical chrome. */
+.editing-workspace > .project-timeline {
+  padding: 10px;
+}
+.timeline-heading h1 {
+  font-size: 13px;
+}
+.timeline-settings {
+  margin: 2px 0;
+  gap: 12px;
+  justify-content: flex-start;
+}
+.timeline-settings select {
+  min-height: 28px;
+  padding: 3px 8px;
+  margin-left: 6px;
+  font-size: 12px;
+  border-color: #507b9a;
+}
+.timeline-tools-help {
+  flex: none;
+  block-size: 24px;
+  margin-block: 2px;
+}
+.timeline-track h3,
+.track-heading {
+  padding: 8px 10px;
+  background: #0c1926;
+  border-right: 1px solid var(--line);
+  color: #d2ddeb;
+  font-weight: 600;
+}
+.timeline-track h3 small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+}
+.frame-ruler {
+  height: 44px;
+  background: #0b1824;
+  border-bottom: 1px solid var(--line);
+}
+.frame-ruler > span {
+  padding-top: 4px;
+  color: #a7b7ce;
+  font-family: Consolas, monospace;
+}
+.frame-ruler input {
+  min-height: 24px;
+}
+.track-content {
+  height: 48px;
+  background: #070f19;
+}
+.overlay-lanes {
+  height: 56px;
+}
+.overlay-sublane {
+  height: 28px;
+}
+#independent-audio-header {
+  font-size: 11px;
+}
+.track-content > span,
+.overlay-sublane > span {
+  padding: 8px 10px;
+  font-size: 11px;
+}
+.timeline-block {
+  border-radius: 3px;
+  color: #eff7ff;
+  box-shadow: inset 0 0 0 1px #5e9eb6;
+}
+.audio-block {
+  box-shadow: inset 0 0 0 1px #5f9e89;
+}
+.timeline-block.invalid {
+  box-shadow: inset 0 0 0 1px #fb7185;
+}
+.duration-boundary {
+  padding-top: 6px;
+}
+.timeline-tools {
+  background: #0b1824;
+  gap: 2px;
+  padding: 3px;
+}
+.timeline-tools-title {
+  display: none;
+}
+.timeline-tools .secondary-button {
+  border-color: #507b9a;
+}
+@media (min-width: 1280px) {
+  .editing-workspace > .project-timeline {
+    min-height: 0;
+    height: max(390px, calc(100dvh - var(--panel-height) - 88px));
+    display: flex;
+    flex-direction: column;
+  }
+  .timeline-workspace {
+    flex: 1;
+    min-height: 0;
+    align-items: start;
+  }
+  .timeline-scroll {
+    max-block-size: 100%;
+    height: 100%;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+  }
+}
+
+/* Readable reference-style timeline with the existing left tool rail. */
+.project-timeline {
+  --track-label-width: 144px;
+}
+.ruler-row,
+.timeline-track {
+  grid-template-columns: var(--track-label-width) 1fr;
+}
+.timeline-tools-help p {
+  margin-bottom: 6px;
+}
+.editing-workspace > .project-timeline {
+  background: #0a1522;
+  border-color: #2d455e;
+  box-shadow:
+    inset 0 1px 0 #c0ddff0a,
+    0 4px 16px #00000026;
+}
+.timeline-heading h1 {
+  padding-left: 10px;
+  border-left: 3px solid #19baff;
+  color: #edf5ff;
+  font-size: 14px;
+  line-height: 20px;
+}
+.timeline-workspace.has-tools {
+  grid-template-columns: 86px minmax(0, 1fr);
+}
+.timeline-tools {
+  width: 86px;
+  padding: 3px;
+  border-color: #304c65;
+  background: #101f30;
+  box-shadow: inset 0 1px 0 #c0ddff0a;
+}
+.timeline-tools .secondary-button {
+  width: 76px;
+  min-width: 76px;
+  gap: 3px;
+  border-color: #507b9a;
+  background: #10283d;
+  color: #e3f1ff;
+}
+.timeline-tools .secondary-button span {
+  font-size: 11px;
+  line-height: 12px;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.timeline-tools .secondary-button:disabled {
+  color: #b7c9dd;
+  opacity: 0.7;
+}
+.timeline-track h3,
+.track-heading {
+  color: #dceafa;
+  background: #102033;
+  font-size: 12px;
+  border-right-color: #34516a;
+}
+.timeline-track > h3 {
+  /* Keep sticky label text painted during native-video and viewport updates. */
+  transform: translateZ(0);
+}
+#independent-audio-header {
+  font-size: 12px;
+}
+.frame-ruler {
+  background: #0d1c2b;
+  box-shadow: inset 0 -1px 0 #30475e;
+}
+.track-content {
+  background: #08121f;
+}
+.timeline-block {
+  color: #eff7ff;
+  background: #153f62;
+  box-shadow:
+    inset 0 0 0 1px #518cbe,
+    inset 0 2px 0 #bddfff14;
+  font-size: 12px;
+}
+.timeline-block small {
+  font-size: 11px;
+}
+.audio-block {
+  background: #124b43;
+  box-shadow:
+    inset 0 0 0 1px #4c9b89,
+    inset 0 2px 0 #bbffdf12;
+}
+.timeline-block[aria-pressed='true'] {
+  outline-color: #27c5ff;
+  box-shadow:
+    inset 0 0 0 1px #a6eaff,
+    0 0 8px #00aaff33;
+}
+.timeline-block.invalid {
+  box-shadow: inset 0 0 0 1px #fb7185;
+}
+.timeline-playhead {
+  box-shadow: 0 0 5px #00bfff55;
+}

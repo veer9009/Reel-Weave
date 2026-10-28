@@ -37,12 +37,20 @@ export function Inspector({
         )
       : null;
     if (details) {
-      details.open = true;
+      container.current
+        ?.querySelectorAll<HTMLDetailsElement>('details[data-section]')
+        .forEach((item) => {
+          item.open = item === details;
+        });
       details.scrollIntoView?.({ block: 'nearest', behavior: 'auto' });
     }
   }, [selection]);
   return (
     <aside className="inspector" aria-label="Inspector" ref={container}>
+      <div className="workspace-panel-heading">
+        <h2>Inspector</h2>
+        <span>Properties</span>
+      </div>
       {[
         ['clip', 'Clip', clipContent],
         ['replacement', 'Video 2 — Replacement', replacementContent],
@@ -50,7 +58,7 @@ export function Inspector({
         ['audio', 'Audio', audioContent],
         ['delivery', 'Delivery', deliveryContent],
       ].map(([id, label, content]) => (
-        <details key={id as string} data-section={id} open>
+        <details key={id as string} data-section={id} open={id === 'clip'}>
           <summary>{label}</summary>
           <div className="inspector-content">{content}</div>
         </details>

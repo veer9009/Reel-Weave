@@ -40,6 +40,7 @@ it('professional_shell_has_named_regions_and_one_submission', async () => {
   expect(submit[0].closest('.site-header')).not.toBeNull();
   expect(submit[0]).toBeDisabled();
   expect(submit[0]).toHaveAttribute('aria-describedby', 'render-hint');
+  fireEvent.click(screen.getByText('Delivery', { selector: 'summary' }));
   expect(
     screen.getByText('Add at least one video clip to render'),
   ).toBeVisible();
@@ -62,11 +63,12 @@ it('append_and_reuse_imports_remain_distinct', async () => {
   );
   expect(screen.getByLabelText('Import video to bin')).toBeEnabled();
   expect(screen.getByLabelText('Import audio to bin')).toBeEnabled();
+  expect(screen.getByRole('button', { name: 'Import Media' })).toBeEnabled();
   expect(
-    screen.getByText(
+    screen.queryByText(
       'Files are uploaded to the configured backend when rendering.',
     ),
-  ).toBeVisible();
+  ).toBeNull();
 });
 function serve(
   mode: 'success' | 'error' | 'network' | 'failed' | 'pollError' = 'success',
@@ -335,11 +337,13 @@ describe('AVStudio', { timeout: 15000 }, () => {
     expect(screen.getByRole('button', { name: 'Render MP4' })).toBeDisabled();
     expect(screen.getByLabelText('Inspect clip')).toHaveValue('');
     expect(screen.getByLabelText('Timeline position')).toBeDisabled();
+    fireEvent.click(screen.getByText('Overlay/PIP', { selector: 'summary' }));
     expect(
       within(screen.getByRole('region', { name: 'Overlays' })).getByText(
         'pip.mp4',
       ),
     ).toBeVisible();
+    fireEvent.click(screen.getByText('Audio', { selector: 'summary' }));
     expect(
       within(
         screen.getByRole('region', { name: 'Background audio' }),
@@ -1204,6 +1208,27 @@ describe('AVStudio', { timeout: 15000 }, () => {
     'structural overlay edits preserve preview intent without changing schedules',
     { timeout: 15000 },
     async () => {
+      // jsdom lacks Web Audio. Exercise overlay intent with a supported browser
+      // boundary rather than racing the unsupported-audio pause.
+      vi.stubGlobal(
+        'AudioContext',
+        class {
+          state = 'running';
+          currentTime = 1;
+          destination = {};
+          async resume() {}
+          async close() {}
+          createGain() {
+            return { gain: { value: 1 }, connect() {}, disconnect() {} };
+          }
+          createMediaElementSource() {
+            return { connect() {}, disconnect() {} };
+          }
+          createStereoPanner() {
+            return { pan: { value: 0 }, connect() {}, disconnect() {} };
+          }
+        },
+      );
       render(<App />);
       const user = await selectTwo();
       await user.upload(
@@ -1383,6 +1408,7 @@ describe('AVStudio', { timeout: 15000 }, () => {
       .mockReturnValueOnce('blob:new-logo');
     render(<App />);
     const user = await selectTwo();
+    await user.click(screen.getByText('Overlay/PIP', { selector: 'summary' }));
     const invalid = new File(['text'], 'logo.gif', { type: 'image/gif' });
     const unrestrictedUser = userEvent.setup({ applyAccept: false });
     await unrestrictedUser.upload(
@@ -1681,6 +1707,7 @@ describe('AVStudio', { timeout: 15000 }, () => {
   it('manages one background-audio track and sends the manifest with ordered files', async () => {
     render(<App />);
     const user = await selectTwo();
+    await user.click(screen.getByText('Audio', { selector: 'summary' }));
     const audioFile = new File(['music'], 'theme.mp3', { type: 'audio/mpeg' });
     await user.upload(
       screen.getByLabelText(/choose background audio/i),

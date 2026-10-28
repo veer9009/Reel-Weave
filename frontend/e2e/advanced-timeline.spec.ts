@@ -141,6 +141,9 @@ test('advanced timeline edits render exact picture audio and music', async ({
     await seek(page, frame);
     const preview = page.getByLabel('Uploaded clip preview', { exact: true });
     await expect(preview).toBeVisible();
+    if (frame === 40) await expect(preview).not.toHaveAttribute('src', baseUrl);
+    if (frame === 99) await expect(preview).toHaveAttribute('src', takeUrl);
+    if (frame === 100) await expect(preview).toHaveAttribute('src', baseUrl);
     const url = (await preview.getAttribute('src'))!;
     if (frame === 39) baseUrl = url;
     if (frame === 40) {

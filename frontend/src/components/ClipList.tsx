@@ -63,7 +63,7 @@ export function ClipList({
       {!clips.length ? (
         <div className="empty-clips">
           <strong>No video clips</strong>
-          <p>
+          <p className="sr-only">
             Add at least one clip to render an MP4. Use the arrow buttons to
             arrange them.
           </p>

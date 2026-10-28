@@ -1264,6 +1264,15 @@ export default function App() {
           />
           <span className="compact-brand-name">AVStudio</span>
         </a>
+        <div className="header-sequence" aria-label="Current sequence">
+          <span className="workspace-mode">EDIT</span>
+          <div>
+            <strong>Sequence 01</strong>
+            <span>
+              {clips.length} clips · {timeline.fps ?? 'Auto'} FPS
+            </span>
+          </div>
+        </div>
         <ProjectFileControls
           controller={projectFiles}
           availability={fileAvailability}
@@ -1435,11 +1444,6 @@ export default function App() {
         }}
         mediaContent={
           <>
-            <UploadCard
-              disabled={!health || editingLocked}
-              limits={limits}
-              onSelect={selectFiles}
-            />
             <MediaBin
               sources={[
                 ...history.view.binSourceIds,
@@ -1470,6 +1474,11 @@ export default function App() {
               onPlace={placeMedia}
               onDragDraft={setActiveDragDraft}
               onPip={(file) => selectOverlay('video', file)}
+            />
+            <UploadCard
+              disabled={!health || editingLocked}
+              limits={limits}
+              onSelect={selectFiles}
             />
             {history.pendingBinImports.map(
               ({ token, mediaType, placement, replaceId }) => (
@@ -1531,7 +1540,7 @@ export default function App() {
           </>
         }
         clipContent={
-          <p>
+          <p className="sr-only">
             Use the media list to trim, change speed, move or remove a clip.
             Source details follow the selected clip.
           </p>

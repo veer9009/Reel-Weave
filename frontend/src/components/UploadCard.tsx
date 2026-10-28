@@ -37,12 +37,12 @@ export function UploadCard({ disabled, limits, onSelect }: Props) {
           if (!disabled) onSelect(Array.from(e.dataTransfer.files));
         }}
       >
-        <h3>Drop video clips</h3>
-        <p>Files are uploaded to the configured backend when rendering.</p>
+        <h3 className="sr-only">Drop video clips</h3>
         <button
           className="browse-button"
           type="button"
           disabled={disabled}
+          title="Add video clips directly to Video 1, or drop them here"
           onClick={() => input.current?.click()}
         >
           <FolderOpen aria-hidden="true" />
@@ -64,7 +64,7 @@ export function UploadCard({ disabled, limits, onSelect }: Props) {
         />
       </div>
       <div className="upload-meta">
-        <div className="file-types">
+        <div className="file-types sr-only">
           {['MP4', 'MOV', 'WEBM', 'MKV'].map((type) => (
             <span key={type} className="file-type">
               {type}

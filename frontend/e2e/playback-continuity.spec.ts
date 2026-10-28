@@ -1634,6 +1634,7 @@ for (const speed of ['1', '0.75', '0.5'])
           nativePicture: number;
           nativeOriginal: number;
           frequency: number;
+          renderAhead: number;
           error: number;
           energy: number[];
         }[],
@@ -1753,15 +1754,22 @@ for (const speed of ['1', '0.75', '0.5'])
           const output = evidence.buses.map(measure),
             sound = output[0];
           if (sound?.frequency && sound.energy > 0.000001) {
-            // The chirp's instantaneous source frequency is 440 + 400*t Hz.
-            // Centre the real analyser window at the current output sample time.
+            // The analyser reads render-ahead PCM. Convert its window centre
+            // to audible device time, just like the edit-parity worklet probe.
+            const ctx = evidence.contexts[0];
+            const stamp = ctx.getOutputTimestamp();
+            const audibleContextTime =
+              stamp.contextTime +
+              (performance.now() - stamp.performanceTime) / 1000;
+            const renderAhead = Math.max(
+              0,
+              ctx.currentTime - audibleContextTime,
+            );
             const source =
               (sound.frequency - 440) / 400 +
-              (sound.window * original.playbackRate) / 2;
-            const pictureTime =
-              frame.mediaTime +
-              (Math.max(0, performance.now() - frame.displayTime) / 1000) *
-                picture.playbackRate;
+              (sound.window * original.playbackRate) / 2 -
+              renderAhead * original.playbackRate;
+            const pictureTime = picture.currentTime;
             evidence.samples.push({
               frame: Number(
                 document.querySelector<HTMLInputElement>(
@@ -1779,6 +1787,7 @@ for (const speed of ['1', '0.75', '0.5'])
               nativePicture: picture.currentTime,
               nativeOriginal: original.currentTime,
               frequency: sound.frequency,
+              renderAhead,
               error: Math.abs(pictureTime - source) / original.playbackRate,
               energy: output.map((v) => v.energy),
             });
@@ -1807,6 +1816,9 @@ for (const speed of ['1', '0.75', '0.5'])
     await page
       .getByLabel('Choose background audio', { exact: true })
       .setInputFiles(media.music);
+    await page
+      .locator('.inspector details[data-section="audio"] > summary')
+      .click();
     await expect(
       page.getByRole('button', { name: 'Remove song.wav', exact: true }),
     ).toBeVisible();

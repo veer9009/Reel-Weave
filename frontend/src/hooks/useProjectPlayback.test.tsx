@@ -3,6 +3,45 @@ import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TimelineProjection } from '../lib/timeline';
 import { useProjectPlayback } from './useProjectPlayback';
+it('reads native picture time for sound while preserving the frozen transport during holds', () => {
+  vi.spyOn(performance, 'now').mockReturnValue(1000);
+  const { result } = renderHook(() => useProjectPlayback(ready, 0));
+  let dispose!: () => void;
+  act(() => {
+    dispose = result.current.bindPictureClock(() => 0.5);
+    result.current.toggle();
+  });
+  expect(result.current.captureSoundSeconds()).toBe(0.5);
+  act(() => result.current.suspend(42));
+  expect(result.current.captureSoundSeconds()).toBe(
+    result.current.captureAnchor().projectSeconds,
+  );
+  act(() => {
+    result.current.ready(42);
+    dispose();
+  });
+  expect(result.current.captureSoundSeconds()).toBe(
+    result.current.captureAnchor().projectSeconds,
+  );
+});
+it('freezes a readiness hold at the mounted picture rather than its extrapolated clock', () => {
+  let now = 1000;
+  vi.spyOn(performance, 'now').mockImplementation(() => now);
+  const { result } = renderHook(() => useProjectPlayback(ready, 0));
+  const held = vi.fn();
+  act(() => {
+    result.current.bindPictureClock(() => 0.5);
+    result.current.onHold(held);
+    result.current.toggle();
+  });
+  now = 2000;
+  expect(result.current.captureAnchor().projectSeconds).toBe(1);
+  act(() => result.current.suspend(42));
+  expect(held).toHaveBeenCalledWith(0.5);
+  expect(result.current.captureAnchor().projectSeconds).toBe(0.5);
+  act(() => result.current.ready(42));
+  expect(result.current.captureAnchor().projectSeconds).toBe(0.5);
+});
 const ready: TimelineProjection = {
   status: 'ready',
   fps: 25,

@@ -1,6 +1,14 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
+import {
+  FolderPlus,
+  Trash2,
+  Film,
+  Music2,
+  PictureInPicture2,
+} from 'lucide-react';
 import type { DragEvent, ReactNode, Ref } from 'react';
 import type { ProjectFps, Limits } from '../lib/clips';
+import { formatDuration } from '../lib/clips';
 import type { SourceRecord, ProjectSources } from '../lib/projectSources';
 import type { EditSnapshot } from '../lib/editHistory';
 import type { PlacementDraft } from '../lib/placement';
@@ -34,15 +42,51 @@ export function MediaBin({
   onPip?: (file: File) => void;
 }) {
   const [selected, setSelected] = useState<SourceRecord | null>(null);
+  const importInput = useRef<HTMLInputElement>(null);
   return (
     <section className="panel media-bin" aria-label="Project media bin">
-      <h2>Media Bin</h2>
+      <div className="media-bin-heading">
+        <h2>
+          Media Bin{' '}
+          <span className="count" aria-hidden="true">
+            {sources.length}
+          </span>
+        </h2>
+        <button
+          type="button"
+          className="import-media-button"
+          disabled={disabled}
+          onClick={() => importInput.current?.click()}
+          title="Import video or audio sources"
+        >
+          <FolderPlus aria-hidden="true" /> Import Media
+        </button>
+      </div>
+      <input
+        ref={importInput}
+        hidden
+        tabIndex={-1}
+        aria-label="Import Media"
+        type="file"
+        multiple
+        disabled={disabled}
+        accept=".mp4,.mov,.webm,.mkv,.mp3,.wav,.aac,.m4a"
+        onChange={(event) => {
+          for (const file of event.target.files ?? [])
+            onImport(
+              file,
+              /\.(mp3|wav|aac|m4a)$/i.test(file.name) ? 'audio' : 'video',
+            );
+          event.target.value = '';
+        }}
+      />
       {(['video', 'audio'] as const).map((type) => (
-        <label key={type}>
+        <label key={type} className="sr-only">
           Import {type} to bin
           <input
             aria-label={`Import ${type} to bin`}
             type="file"
+            tabIndex={-1}
             multiple
             disabled={disabled}
             accept={
@@ -55,68 +99,119 @@ export function MediaBin({
           />
         </label>
       ))}
-      {sources.map((source) => (
-        <article
-          className="media-bin-source"
-          key={source.token.sourceId}
-          draggable={!disabled && source.status === 'ready'}
-          aria-label={`${source.mediaType} source ${source.file.name}`}
-          onDragStart={(e) => {
-            if (disabled || source.status !== 'ready') {
-              e.preventDefault();
-              return;
-            }
-            const draft: PlacementDraft = {
-              token: source.token,
-              track: source.mediaType === 'video' ? 'video1' : 'independent',
-              timelineStartFrame: 0,
-            };
-            e.dataTransfer.clearData();
-            e.dataTransfer.setData(SOURCE_DRAG_MIME, sourceDragData(draft));
-            e.dataTransfer.effectAllowed = 'copy';
-            onDragDraft?.(draft);
-          }}
-          onDragEnd={() => onDragDraft?.(null)}
-        >
-          <strong title={source.file.name}>{source.file.name}</strong>
-          <span>
-            {source.mediaType === 'video' ? 'Video source' : 'Audio source'}
-          </span>
-          {source.status === 'loading' && (
-            <p role="status">Reading metadata for {source.file.name}…</p>
-          )}
-          {source.status === 'error' && (
-            <p role="status">Metadata unavailable. Re-import this source.</p>
-          )}
-          <button
-            type="button"
-            disabled={disabled || source.status !== 'ready'}
-            aria-label={`Place ${source.file.name} on track`}
-            onClick={() => setSelected(source)}
+      <div className="media-source-grid">
+        {sources.map((source) => (
+          <article
+            className="media-bin-source"
+            key={source.token.sourceId}
+            draggable={!disabled && source.status === 'ready'}
+            aria-label={`${source.mediaType} source ${source.file.name}`}
+            onDragStart={(e) => {
+              if (disabled || source.status !== 'ready') {
+                e.preventDefault();
+                return;
+              }
+              const draft: PlacementDraft = {
+                token: source.token,
+                track: source.mediaType === 'video' ? 'video1' : 'independent',
+                timelineStartFrame: 0,
+              };
+              e.dataTransfer.clearData();
+              e.dataTransfer.setData(SOURCE_DRAG_MIME, sourceDragData(draft));
+              e.dataTransfer.effectAllowed = 'copy';
+              onDragDraft?.(draft);
+            }}
+            onDragEnd={() => onDragDraft?.(null)}
           >
-            Place on Track
-          </button>
-          {onPip && source.mediaType === 'video' && (
-            <button
-              type="button"
-              aria-label={`Use ${source.file.name} as PIP`}
-              disabled={disabled || source.status !== 'ready'}
-              onClick={() => onPip(source.file)}
+            <div
+              className={`media-source-symbol media-source-${source.mediaType}`}
+              aria-hidden="true"
             >
-              Use as PIP
-            </button>
-          )}
-          <button
-            type="button"
-            disabled={disabled}
-            aria-label={`Remove ${source.file.name} from bin`}
-            onClick={() => onRemove(source.token.sourceId)}
-          >
-            Remove from bin
-          </button>
-        </article>
-      ))}
-      {!sources.length && <p>No reusable sources yet.</p>}
+              {source.mediaType === 'video' &&
+                source.url &&
+                source.status === 'ready' && (
+                  <video
+                    className="media-source-thumbnail"
+                    src={source.url}
+                    muted
+                    playsInline
+                    preload="metadata"
+                    disablePictureInPicture
+                    onLoadedMetadata={(event) => {
+                      const video = event.currentTarget;
+                      if (Number.isFinite(video.duration) && video.duration > 0)
+                        video.currentTime = Math.min(0.1, video.duration / 2);
+                    }}
+                  />
+                )}
+              {source.mediaType === 'audio' ? (
+                <Music2 size={21} />
+              ) : (
+                <Film size={21} />
+              )}
+            </div>
+            <strong title={source.file.name}>{source.file.name}</strong>
+            <span>
+              {source.mediaType === 'video' ? 'Video' : 'Audio'}
+              {(source.duration ?? source.metadata?.duration) !== undefined && (
+                <>
+                  {' '}
+                  ·{' '}
+                  {formatDuration(source.duration ?? source.metadata?.duration)}
+                </>
+              )}
+            </span>
+            {source.status === 'loading' && (
+              <p role="status">Reading metadata for {source.file.name}…</p>
+            )}
+            {source.status === 'error' && (
+              <p role="status">Metadata unavailable. Re-import this source.</p>
+            )}
+            <div className="media-source-actions">
+              <button
+                type="button"
+                disabled={disabled || source.status !== 'ready'}
+                aria-label={`Place ${source.file.name} on track`}
+                onClick={() => setSelected(source)}
+              >
+                Place
+              </button>
+              {onPip && source.mediaType === 'video' && (
+                <button
+                  type="button"
+                  aria-label={`Use ${source.file.name} as PIP`}
+                  title={`Use ${source.file.name} as PIP`}
+                  disabled={disabled || source.status !== 'ready'}
+                  onClick={() => onPip(source.file)}
+                >
+                  <PictureInPicture2 size={14} aria-hidden="true" />
+                  <span className="sr-only">Use as PIP</span>
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={disabled}
+                aria-label={`Remove ${source.file.name} from bin`}
+                title={`Remove ${source.file.name} from bin`}
+                onClick={() => onRemove(source.token.sourceId)}
+              >
+                <Trash2 size={14} aria-hidden="true" />
+              </button>
+            </div>
+          </article>
+        ))}
+      </div>
+      {!sources.length && (
+        <div className="media-bin-empty">
+          <FolderPlus size={32} aria-hidden="true" />
+          <strong>No media imported</strong>
+          <span>
+            Import video or audio to build your library.
+            <br />
+            Drag a source to a track or choose Place.
+          </span>
+        </div>
+      )}
       {selected && (
         <SourcePlacementDialog
           source={selected}

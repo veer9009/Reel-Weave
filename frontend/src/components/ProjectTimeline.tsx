@@ -124,40 +124,42 @@ export function ProjectTimeline({
     selection.kind === 'overlay' && selection.overlayKind === kind;
   return (
     <section className="project-timeline panel" aria-label="Sequence timeline">
-      <div className="timeline-heading">
-        <h1>Sequence 01</h1>
-        <span>
-          {timeline.items.length} clips ·{' '}
-          {formatTimestamp(timeline.durationSeconds)}
-        </span>
-      </div>
-      <div className="timeline-settings">
-        <label>
-          Timeline FPS{' '}
-          <select
-            aria-label="Timeline FPS"
-            value={fpsSelection}
-            disabled={disabled}
-            onChange={(event) =>
-              onFpsSelectionChange(event.target.value as ProjectFpsSelection)
-            }
-          >
-            <option value="auto">Auto (first uploaded clip)</option>
-            {[24, 25, 30, 50, 60].map((fps) => (
-              <option key={fps} value={fps}>
-                {fps} FPS
-              </option>
-            ))}
-          </select>
-        </label>
-        <output aria-label="Effective timeline FPS">
-          {timeline.fps === null
-            ? 'Waiting for source FPS'
-            : `${timeline.fps} FPS${fpsSelection === 'auto' && timeline.items[0]?.clip.metadata.source === 'browser' ? ' · estimated source' : ''}`}
-        </output>
-        <p>
-          Source trims use source frames; overlay ranges use project frames.
-        </p>
+      <div className="timeline-header">
+        <div className="timeline-heading">
+          <h1>Sequence 01</h1>
+          <span>
+            {timeline.items.length} clips ·{' '}
+            {formatTimestamp(timeline.durationSeconds)}
+          </span>
+        </div>
+        <div className="timeline-settings">
+          <label>
+            Timeline FPS{' '}
+            <select
+              aria-label="Timeline FPS"
+              value={fpsSelection}
+              disabled={disabled}
+              onChange={(event) =>
+                onFpsSelectionChange(event.target.value as ProjectFpsSelection)
+              }
+            >
+              <option value="auto">Auto</option>
+              {[24, 25, 30, 50, 60].map((fps) => (
+                <option key={fps} value={fps}>
+                  {fps} FPS
+                </option>
+              ))}
+            </select>
+          </label>
+          <output aria-label="Effective timeline FPS">
+            {timeline.fps === null
+              ? 'Waiting for source FPS'
+              : `${timeline.fps} FPS${fpsSelection === 'auto' && timeline.items[0]?.clip.metadata.source === 'browser' ? ' · estimated source' : ''}`}
+          </output>
+          <p className="sr-only">
+            Source trims use source frames; overlay ranges use project frames.
+          </p>
+        </div>
       </div>
       {timeline.status === 'unavailable' && (
         <p role="status">Timeline timing unavailable</p>
@@ -201,9 +203,12 @@ export function ProjectTimeline({
                   ].map((tick) => (
                     <span
                       key={tick}
+                      title={`Frame ${tick}`}
                       style={{ left: `${(tick / displayFrames) * 100}%` }}
                     >
-                      {tick} f
+                      {timeline.fps
+                        ? formatTimestamp(tick / timeline.fps)
+                        : `${tick} f`}
                     </span>
                   ))}
                 <input
@@ -231,7 +236,7 @@ export function ProjectTimeline({
                 className="timeline-playhead"
                 aria-hidden="true"
                 style={{
-                  left: `calc(120px + (100% - 120px) * ${displayFrames ? (frame ?? 0) / displayFrames : 0})`,
+                  left: `calc(var(--track-label-width, 120px) + (100% - var(--track-label-width, 120px)) * ${displayFrames ? (frame ?? 0) / displayFrames : 0})`,
                 }}
               />
               <section className="timeline-track" aria-label="Overlay/PIP">

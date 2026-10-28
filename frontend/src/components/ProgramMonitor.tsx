@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Play, Pause } from 'lucide-react';
+import { Play, Pause, Clapperboard } from 'lucide-react';
 import { usePreviewMedia } from '../hooks/usePreviewMedia';
 import type { ProjectPlayback } from '../hooks/useProjectPlayback';
 import type { ProjectSources } from '../lib/projectSources';
@@ -141,8 +141,10 @@ export function ProgramMonitor({
     positionRevision: transport?.positionRevision,
     sources,
     onPresented: transport?.observePicture,
+    onPictureClock: transport?.bindPictureClock,
     onSuspend: transport?.suspend,
     onReady: transport?.ready,
+    onHold: transport?.onHold,
     onFailure: () => {
       if (!current) return;
       if (current.track === 'video2')
@@ -172,7 +174,12 @@ export function ProgramMonitor({
   }, [pipVisible, overlays.video?.url]);
   return (
     <section className="program-monitor panel" aria-label="Program preview">
-      <h2>Program</h2>
+      <h2>
+        Program{' '}
+        <span className="monitor-sequence" aria-hidden="true">
+          / Sequence 01
+        </span>
+      </h2>
       <p className="program-status" role="status">
         {transport?.status === 'preparing'
           ? 'Preparing Preview'
@@ -204,6 +211,7 @@ export function ProgramMonitor({
         ))}
         {(!current || replacementUnavailable) && (
           <p>
+            {!current && <Clapperboard size={36} aria-hidden="true" />}
             {replacementUnavailable
               ? 'Replacement preview is unavailable at source EOF or after a decode error. Re-trim or replace this take.'
               : timeline.status === 'unavailable'
@@ -261,18 +269,43 @@ export function ProgramMonitor({
         >
           {playing ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}
         </button>
-        <output aria-label="Current time and frame" aria-live="off">
+        <output
+          aria-label="Current time and frame"
+          aria-live="off"
+          title={
+            frame !== null
+              ? `Frame ${frame} / ${timeline.totalFrames - 1}`
+              : undefined
+          }
+        >
           {frame !== null && timeline.fps
-            ? `${formatTimestamp(frame / timeline.fps)} · Frame ${frame} / ${timeline.totalFrames - 1}`
+            ? `${formatTimestamp(frame / timeline.fps)} / ${formatTimestamp(timeline.durationSeconds)}`
             : 'No current frame'}
+          {frame !== null && (
+            <span className="sr-only">
+              {' '}
+              · Frame {frame} / {timeline.totalFrames - 1}
+            </span>
+          )}
         </output>
+        <span className="program-frame-readout" aria-hidden="true">
+          {frame !== null
+            ? `F ${frame} / ${timeline.totalFrames - 1}`
+            : '16:9 · Program'}
+        </span>
       </div>
       <div
         className="program-feedback"
         role="status"
         aria-label="Preview feedback"
       >
-        <p className="preview-note">
+        <p
+          className={
+            audioPreview && audioPreview.status !== 'ready'
+              ? 'preview-note sr-only'
+              : 'preview-note'
+          }
+        >
           {audioPreview
             ? 'Browser picture and sound preview · approximate'
             : 'Browser picture preview · approximate'}

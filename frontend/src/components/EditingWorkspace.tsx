@@ -28,6 +28,7 @@ import { placementLength } from '../lib/advancedTimeline';
 import type { PositionedTrack } from '../lib/positionedEdits';
 import { ProjectTimeline } from './ProjectTimeline';
 import './EditingWorkspace.css';
+import './StudioLayout.css';
 import type { HistoryControls } from '../lib/editHistory';
 import type { TrimTransactions } from './TimelineTrimHandle';
 import { useHistoryShortcuts } from '../hooks/useHistoryShortcuts';
@@ -149,6 +150,7 @@ export function EditingWorkspace(props: Props) {
     structuralRevision,
     props.advanced,
   );
+  const audioStartSerial = useRef(0);
   const audioPreview = useProjectAudio({
     snapshot: props.audioActions?.snapshot,
     sources: props.audioActions?.sources,
@@ -292,7 +294,7 @@ export function EditingWorkspace(props: Props) {
     if (editingLocked || props.gestureActive) return;
     if (selectedIndependent) {
       props.audioActions?.onEdit({
-        action: 'lift',
+        action: 'ripple-delete',
         id: selectedIndependent.id,
       });
       return;
@@ -625,6 +627,10 @@ export function EditingWorkspace(props: Props) {
       )}
       <div className="workspace-panels">
         <section className="media-panel" aria-label="Media">
+          <div className="workspace-panel-heading">
+            <h2>Media</h2>
+            <span>Project sources</span>
+          </div>
           {props.mediaContent}
           {props.onAddReplacement && (
             <label className="replacement-upload">
@@ -654,9 +660,16 @@ export function EditingWorkspace(props: Props) {
           playing={playback.playing}
           onSeek={playback.seek}
           onToggle={() => {
-            if (!playback.playingIntent && props.audioActions)
-              void audioPreview.resumeAudio();
+            const startingAudio = !playback.playingIntent && props.audioActions;
             playback.toggle();
+            if (startingAudio) {
+              // Register before child media effects can start the picture.
+              // The audio hook retains its own decoder/readiness gate.
+              const token =
+                -Number.MAX_SAFE_INTEGER + ++audioStartSerial.current;
+              playback.suspend(token);
+              void audioPreview.resumeAudio().then(() => playback.ready(token));
+            }
           }}
         />
         <Inspector
@@ -673,36 +686,38 @@ export function EditingWorkspace(props: Props) {
           }
           clipContent={
             <>
-              {selection.kind === 'clip' && detachAction}
-              <label>
-                Inspect clip
-                <select
-                  aria-label="Inspect clip"
-                  value={selection.kind === 'clip' ? selection.id : ''}
-                  onChange={(event) =>
-                    setSelection(
-                      event.target.value
-                        ? { kind: 'clip', id: event.target.value }
-                        : { kind: 'none' },
-                    )
-                  }
-                >
-                  <option value="">Choose a clip</option>
-                  {clips.map((clip) => (
-                    <option key={clip.id} value={clip.id}>
-                      {clip.file.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <div className="clip-inspection-heading">
+                <label>
+                  Inspect clip
+                  <select
+                    aria-label="Inspect clip"
+                    value={selection.kind === 'clip' ? selection.id : ''}
+                    onChange={(event) =>
+                      setSelection(
+                        event.target.value
+                          ? { kind: 'clip', id: event.target.value }
+                          : { kind: 'none' },
+                      )
+                    }
+                  >
+                    <option value="">Choose a clip</option>
+                    {clips.map((clip) => (
+                      <option key={clip.id} value={clip.id}>
+                        {clip.file.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {selection.kind === 'clip' && detachAction}
+              </div>
               {selectedClip ? (
-                <>
+                <div className="clip-source-details">
                   <p>Selected: {selectedClip.file.name}</p>
                   {selectedClip.metadata && (
                     <p>
                       Source: {selectedClip.metadata.width} ×{' '}
                       {selectedClip.metadata.height} ·{' '}
-                      {selectedClip.metadata.fps} FPS
+                      {Number(selectedClip.metadata.fps.toFixed(3))} FPS
                       {selectedClip.metadata.source === 'browser'
                         ? ' (browser estimate)'
                         : ''}
@@ -715,12 +730,15 @@ export function EditingWorkspace(props: Props) {
                       {selectedClip.speed ?? 1}x
                     </p>
                   )}
-                </>
+                </div>
               ) : (
                 <p>Select a timeline clip to inspect it.</p>
               )}
               {props.clipContent}
-              <div aria-label="Video 1 version replacement">
+              <div
+                className="version-replacement"
+                aria-label="Video 1 version replacement"
+              >
                 <label>
                   Version 2 source
                   <select
@@ -763,7 +781,7 @@ export function EditingWorkspace(props: Props) {
                 >
                   Replace after playhead
                 </button>
-                <p>
+                <p className="sr-only">
                   Select a Video 1 clip and place the playhead strictly inside
                   it. The target keeps the cut frame and the donor Video 1
                   occurrence supplies the matching source time. The donor is
@@ -991,7 +1009,7 @@ export function EditingWorkspace(props: Props) {
         }
         videoToolbarHelp={
           <>
-            <small>Ctrl+Z · Ctrl+Y / Ctrl+Shift+Z</small>
+            <small className="sr-only">Ctrl+Z · Ctrl+Y / Ctrl+Shift+Z</small>
             <p
               id="split-audio-reason"
               tabIndex={audioSplitReason ? 0 : undefined}

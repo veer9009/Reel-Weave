@@ -19,8 +19,16 @@ it('all_inspector_sections_remain_reachable_without_selection', () => {
     'Overlay/PIP',
     'Audio',
     'Delivery',
-  ])
-    expect(screen.getByText(label).closest('details')).toHaveAttribute('open');
+  ]) {
+    const summary = screen.getByText(label);
+    expect(summary).toBeVisible();
+    if (label !== 'Clip') {
+      expect(summary.closest('details')).not.toHaveAttribute('open');
+      fireEvent.click(summary);
+      // jsdom does not implement the native summary toggle.
+      summary.closest('details')!.open = true;
+    }
+  }
   expect(screen.getByLabelText('Source frame')).toBeVisible();
   expect(screen.getByRole('button', { name: 'Render MP4' })).toBeVisible();
 });

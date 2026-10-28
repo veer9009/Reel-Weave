@@ -162,7 +162,9 @@ export function IndependentAudioTrack(props: Props) {
   return (
     <section className="timeline-track" aria-label="AUDIO 1">
       <h3 id="independent-audio-header" tabIndex={-1}>
-        Original/Replacement Audio
+        Original/
+        <wbr />
+        Replacement Audio
       </h3>
       <TimelineDropZone
         laneRef={lane}
