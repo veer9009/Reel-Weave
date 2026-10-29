@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { installPreviewSeekDiagnostics } from './previewSeekDiagnostics';
 import {
   generateAdvancedMedia,
+  generateMusicAudio,
   generateContinuityVideo,
 } from './mediaFixtures';
 
@@ -1615,237 +1616,337 @@ for (const cancel of [false, true])
     }
   });
 
-for (const speed of ['1', '0.75', '0.5'])
-  test(`native sound buses produce distinct tones and stay aligned at speed ${speed}`, async ({
-    page,
-  }, info) => {
-    await page.addInitScript(() => {
-      const evidence = {
-        contexts: [] as AudioContext[],
-        events: [] as unknown[],
-        buses: [] as { gain: GainNode; analyser: AnalyserNode; rate: number }[],
-        voices: [] as HTMLMediaElement[],
-        samples: [] as {
-          frame: number;
-          contexts: unknown[];
-          time: number;
-          picture: number;
-          original: number;
-          nativePicture: number;
-          nativeOriginal: number;
-          frequency: number;
-          renderAhead: number;
-          error: number;
-          energy: number[];
-        }[],
-      };
-      (window as unknown as { audioEvidence: typeof evidence }).audioEvidence =
-        evidence;
-      const Native = window.AudioContext;
-      class MeasuredContext extends Native {
-        constructor() {
-          super();
-          evidence.contexts.push(this);
-        }
-        createGain() {
-          const gain = super.createGain(),
-            analyser = super.createAnalyser(),
-            connect = gain.connect.bind(gain);
-          analyser.fftSize = 2048;
-          gain.connect = ((destination: AudioNode) => {
-            if (destination === this.destination) {
-              connect(analyser);
-              analyser.connect(destination);
-              return destination;
-            }
-            return connect(destination);
-          }) as typeof gain.connect;
-          evidence.buses.push({ gain, analyser, rate: this.sampleRate });
-          return gain;
-        }
-        createMediaElementSource(element: HTMLMediaElement) {
-          evidence.voices.push(element);
-          for (const type of [
-            'play',
-            'playing',
-            'pause',
-            'waiting',
-            'seeking',
-            'seeked',
-            'ended',
-            'error',
-          ])
-            element.addEventListener(type, () =>
-              evidence.events.push({
-                type,
-                time: performance.now(),
-                source: element.src,
-                mediaTime: element.currentTime,
-              }),
-            );
-          return super.createMediaElementSource(element);
-        }
-      }
-      window.AudioContext = MeasuredContext;
-      const presented = new WeakMap<
-          HTMLVideoElement,
-          { mediaTime: number; displayTime: number }
-        >(),
-        watching = new WeakSet<HTMLVideoElement>();
-      const watch = (video: HTMLVideoElement) => {
-        if (watching.has(video)) return;
-        watching.add(video);
-        const callback = (_time: number, frame: VideoFrameCallbackMetadata) => {
-          presented.set(video, {
-            mediaTime: frame.mediaTime,
-            displayTime: frame.expectedDisplayTime,
-          });
-          video.requestVideoFrameCallback(callback);
+test.describe('native sound synchronization', () => {
+  let music: string;
+  let base60: string;
+  test.beforeAll(async ({ browserName }, info) => {
+    void browserName;
+    music = generateMusicAudio(info.outputPath('media'));
+    base60 = generateContinuityVideo(info.outputPath('continuity'), true);
+  });
+  for (const speed of ['1', '0.75', '0.5'])
+    test(`native sound buses produce distinct tones and stay aligned at speed ${speed}`, async ({
+      page,
+    }, info) => {
+      await page.addInitScript(() => {
+        const evidence = {
+          contexts: [] as AudioContext[],
+          errors: [] as string[],
+          events: [] as unknown[],
+          buses: [] as {
+            gain: GainNode;
+            analyser: AnalyserNode;
+            rate: number;
+          }[],
+          voices: [] as HTMLMediaElement[],
+          samples: [] as {
+            frame: number;
+            contexts: unknown[];
+            time: number;
+            picture: number;
+            original: number;
+            nativePicture: number;
+            nativeOriginal: number;
+            frequency: number;
+            renderAhead: number;
+            error: number;
+            energy: number[];
+          }[],
         };
-        video.requestVideoFrameCallback(callback);
-      };
-      const measure = ({
-        analyser,
-        rate,
-      }: {
-        analyser: AnalyserNode;
-        rate: number;
-      }) => {
-        const data = new Float32Array(analyser.fftSize);
-        analyser.getFloatTimeDomainData(data);
-        let power = 0;
-        const crossings: number[] = [];
-        for (let n = 0; n < data.length; n++) {
-          power += data[n] * data[n];
-          if (n && data[n - 1] <= 0 && data[n] > 0)
-            crossings.push(n - 1 - data[n - 1] / (data[n] - data[n - 1]));
-        }
-        return {
-          energy: power / data.length,
-          frequency:
-            crossings.length >= 8
-              ? ((crossings.length - 1) * rate) /
-                (crossings.at(-1)! - crossings[0])
-              : null,
-          window: data.length / rate,
-        };
-      };
-      const tick = () => {
-        const picture = document.querySelector<HTMLVideoElement>(
-            '[aria-label="Uploaded clip preview"]',
-          ),
-          original = evidence.voices.find(
-            (v) => v.src === picture?.src && !v.paused && !v.seeking,
-          );
-        if (picture) watch(picture);
-        const frame = picture ? presented.get(picture) : undefined,
-          preparing = [...document.querySelectorAll('[role="status"]')].some(
-            (node) => node.textContent?.trim() === 'Preparing Preview',
-          );
-        if (
-          picture &&
-          !picture.paused &&
-          !picture.seeking &&
-          frame &&
-          frame.mediaTime > 0.3 &&
-          original &&
-          !preparing
+        (
+          window as unknown as { audioEvidence: typeof evidence }
+        ).audioEvidence = evidence;
+        addEventListener('error', (event) =>
+          evidence.errors.push(String(event.error?.stack ?? event.message)),
+        );
+        addEventListener('unhandledrejection', (event) =>
+          evidence.errors.push(String(event.reason?.stack ?? event.reason)),
+        );
+        const edges = new WeakMap<AudioNode, AudioNode[]>();
+        const sourceNodes = new Map<HTMLMediaElement, AudioNode>();
+        const nativeConnect = AudioNode.prototype.connect;
+        AudioNode.prototype.connect = function (
+          this: AudioNode,
+          ...args: unknown[]
         ) {
-          const output = evidence.buses.map(measure),
-            sound = output[0];
-          if (sound?.frequency && sound.energy > 0.000001) {
-            // The analyser reads render-ahead PCM. Convert its window centre
-            // to audible device time, just like the edit-parity worklet probe.
-            const ctx = evidence.contexts[0];
-            const stamp = ctx.getOutputTimestamp();
-            const audibleContextTime =
-              stamp.contextTime +
-              (performance.now() - stamp.performanceTime) / 1000;
-            const renderAhead = Math.max(
-              0,
-              ctx.currentTime - audibleContextTime,
-            );
-            const source =
-              (sound.frequency - 440) / 400 +
-              (sound.window * original.playbackRate) / 2 -
-              renderAhead * original.playbackRate;
-            const pictureTime = picture.currentTime;
-            evidence.samples.push({
-              frame: Number(
-                document.querySelector<HTMLInputElement>(
-                  '[aria-label="Timeline position"]',
-                )?.value,
-              ),
-              contexts: evidence.contexts.map((c) => ({
-                state: c.state,
-                time: c.currentTime,
-                latency: c.baseLatency,
-              })),
-              time: performance.now(),
-              picture: pictureTime,
-              original: source,
-              nativePicture: picture.currentTime,
-              nativeOriginal: original.currentTime,
-              frequency: sound.frequency,
-              renderAhead,
-              error: Math.abs(pictureTime - source) / original.playbackRate,
-              energy: output.map((v) => v.energy),
-            });
+          if (args[0] instanceof AudioNode)
+            edges.set(this, [...(edges.get(this) ?? []), args[0]]);
+          return Reflect.apply(nativeConnect, this, args);
+        } as typeof nativeConnect;
+        const reaches = (
+          node: AudioNode,
+          bus: AudioNode | undefined,
+          seen = new Set<AudioNode>(),
+        ): boolean => {
+          if (node === bus) return true;
+          if (seen.has(node)) return false;
+          seen.add(node);
+          return (edges.get(node) ?? []).some((next) =>
+            reaches(next, bus, seen),
+          );
+        };
+        const Native = window.AudioContext;
+        class MeasuredContext extends Native {
+          constructor() {
+            super();
+            evidence.contexts.push(this);
+          }
+          createGain() {
+            const gain = super.createGain(),
+              analyser = super.createAnalyser(),
+              connect = gain.connect.bind(gain);
+            analyser.fftSize = 2048;
+            gain.connect = ((destination: AudioNode) => {
+              if (destination === this.destination) {
+                connect(analyser);
+                analyser.connect(destination);
+                return destination;
+              }
+              return connect(destination);
+            }) as typeof gain.connect;
+            evidence.buses.push({ gain, analyser, rate: this.sampleRate });
+            return gain;
+          }
+          createMediaElementSource(element: HTMLMediaElement) {
+            evidence.voices.push(element);
+            for (const type of [
+              'play',
+              'playing',
+              'pause',
+              'waiting',
+              'seeking',
+              'seeked',
+              'ended',
+              'error',
+            ])
+              element.addEventListener(type, () =>
+                evidence.events.push({
+                  type,
+                  time: performance.now(),
+                  source: element.src,
+                  mediaTime: element.currentTime,
+                }),
+              );
+            const node = super.createMediaElementSource(element);
+            sourceNodes.set(element, node);
+            return node;
           }
         }
+        window.AudioContext = MeasuredContext;
+        const presented = new WeakMap<
+            HTMLVideoElement,
+            { mediaTime: number; displayTime: number }
+          >(),
+          watching = new WeakSet<HTMLVideoElement>();
+        const watch = (video: HTMLVideoElement) => {
+          if (watching.has(video)) return;
+          watching.add(video);
+          const callback = (
+            _time: number,
+            frame: VideoFrameCallbackMetadata,
+          ) => {
+            presented.set(video, {
+              mediaTime: frame.mediaTime,
+              displayTime: frame.expectedDisplayTime,
+            });
+            video.requestVideoFrameCallback(callback);
+          };
+          video.requestVideoFrameCallback(callback);
+        };
+        const measure = ({
+          analyser,
+          rate,
+        }: {
+          analyser: AnalyserNode;
+          rate: number;
+        }) => {
+          const data = new Float32Array(analyser.fftSize);
+          analyser.getFloatTimeDomainData(data);
+          let power = 0;
+          const crossings: number[] = [];
+          for (let n = 0; n < data.length; n++) {
+            power += data[n] * data[n];
+            if (n && data[n - 1] <= 0 && data[n] > 0)
+              crossings.push(n - 1 - data[n - 1] / (data[n] - data[n - 1]));
+          }
+          return {
+            energy: power / data.length,
+            frequency:
+              crossings.length >= 8
+                ? ((crossings.length - 1) * rate) /
+                  (crossings.at(-1)! - crossings[0])
+                : null,
+            window: data.length / rate,
+          };
+        };
+        const tick = () => {
+          const picture = document.querySelector<HTMLVideoElement>(
+              '[aria-label="Uploaded clip preview"]',
+            ),
+            original = [...sourceNodes].find(
+              ([voice, node]) =>
+                !voice.paused &&
+                !voice.seeking &&
+                reaches(node, evidence.buses[0]?.gain),
+            )?.[0];
+          if (picture) watch(picture);
+          const frame = picture ? presented.get(picture) : undefined,
+            preparing = [...document.querySelectorAll('[role="status"]')].some(
+              (node) => node.textContent?.trim() === 'Preparing Preview',
+            );
+          if (
+            picture &&
+            !picture.paused &&
+            !picture.seeking &&
+            frame &&
+            frame.mediaTime > 0.3 &&
+            original &&
+            !preparing
+          ) {
+            const output = evidence.buses.map(measure),
+              sound = output[0];
+            if (sound?.frequency && sound.energy > 0.000001) {
+              // The analyser reads render-ahead PCM. Convert its window centre
+              // to audible device time, just like the edit-parity worklet probe.
+              const ctx = evidence.contexts[0];
+              const stamp = ctx.getOutputTimestamp();
+              const audibleContextTime =
+                stamp.contextTime +
+                (performance.now() - stamp.performanceTime) / 1000;
+              const renderAhead = Math.max(
+                0,
+                ctx.currentTime - audibleContextTime,
+              );
+              const source =
+                (sound.frequency - 440) / 400 +
+                (sound.window * picture.playbackRate) / 2 -
+                renderAhead * picture.playbackRate;
+              const pictureTime = picture.currentTime;
+              evidence.samples.push({
+                frame: Number(
+                  document.querySelector<HTMLInputElement>(
+                    '[aria-label="Timeline position"]',
+                  )?.value,
+                ),
+                contexts: evidence.contexts.map((c) => ({
+                  state: c.state,
+                  time: c.currentTime,
+                  latency: c.baseLatency,
+                })),
+                time: performance.now(),
+                picture: pictureTime,
+                original: source,
+                nativePicture: picture.currentTime,
+                nativeOriginal:
+                  (original.currentTime * picture.playbackRate) /
+                  original.playbackRate,
+                frequency: sound.frequency,
+                renderAhead,
+                error: Math.abs(pictureTime - source) / picture.playbackRate,
+                energy: output.map((v) => v.energy),
+              });
+            }
+          }
+          requestAnimationFrame(tick);
+        };
         requestAnimationFrame(tick);
-      };
-      requestAnimationFrame(tick);
-    });
-    const media = generateAdvancedMedia(info.outputPath('media')),
-      base60 = generateContinuityVideo(info.outputPath('continuity'), true);
-    await page.goto('/');
-    await expect(
-      page.getByText('Backend ready', { exact: true }),
-    ).toBeVisible();
-    await page
-      .getByLabel('Choose video clips', { exact: true })
-      .setInputFiles(base60);
-    await expect(
-      page.getByRole('button', { name: 'Render MP4', exact: true }),
-    ).toBeEnabled();
-    await page.getByLabel('Timeline FPS', { exact: true }).selectOption('25');
-    await page
-      .getByLabel('Speed for base60.mp4', { exact: true })
-      .selectOption(speed);
-    await page
-      .getByLabel('Choose background audio', { exact: true })
-      .setInputFiles(media.music);
-    await page
-      .locator('.inspector details[data-section="audio"] > summary')
-      .click();
-    await expect(
-      page.getByRole('button', { name: 'Remove song.wav', exact: true }),
-    ).toBeVisible();
-    await page
-      .getByRole('button', { name: 'Preview clip 1: base60.mp4', exact: true })
-      .click();
-    await page
-      .getByRole('button', { name: 'Play preview', exact: true })
-      .click();
-    try {
-      await expect
-        .poll(() =>
-          page.evaluate(
-            () =>
-              (window as unknown as { audioEvidence: { samples: unknown[] } })
-                .audioEvidence.samples.length,
-          ),
-        )
-        .toBeGreaterThan(20);
-    } finally {
-      const diagnostic = await page.evaluate(() => {
+      });
+      await page.goto('/');
+      await expect(
+        page.getByText('Backend ready', { exact: true }),
+      ).toBeVisible();
+      await page
+        .getByLabel('Choose video clips', { exact: true })
+        .setInputFiles(base60);
+      await expect(
+        page.getByRole('button', { name: 'Render MP4', exact: true }),
+      ).toBeEnabled();
+      await page.getByLabel('Timeline FPS', { exact: true }).selectOption('25');
+      await page
+        .getByLabel('Speed for base60.mp4', { exact: true })
+        .selectOption(speed);
+      await page
+        .getByLabel('Choose background audio', { exact: true })
+        .setInputFiles(music);
+      await page
+        .locator('.inspector details[data-section="audio"] > summary')
+        .click();
+      await expect(
+        page.getByRole('button', { name: 'Remove song.wav', exact: true }),
+      ).toBeVisible();
+      await page
+        .getByRole('button', {
+          name: 'Preview clip 1: base60.mp4',
+          exact: true,
+        })
+        .click();
+      await page
+        .getByRole('button', { name: 'Play preview', exact: true })
+        .click();
+      try {
+        await expect
+          .poll(() =>
+            page.evaluate(
+              () =>
+                (window as unknown as { audioEvidence: { samples: unknown[] } })
+                  .audioEvidence.samples.length,
+            ),
+          )
+          .toBeGreaterThan(20);
+      } finally {
+        const diagnostic = await page.evaluate(() => {
+          const e = (
+            window as unknown as {
+              audioEvidence: {
+                events: unknown[];
+                samples: unknown[];
+                contexts: AudioContext[];
+                voices: HTMLMediaElement[];
+              };
+            }
+          ).audioEvidence;
+          return {
+            events: e.events,
+            errors: (e as unknown as { errors: string[] }).errors,
+            body: document.body.innerText.slice(0, 1500),
+            samples: e.samples,
+            contexts: e.contexts.map((c) => ({
+              state: c.state,
+              time: c.currentTime,
+            })),
+            voices: e.voices.map((v) => ({
+              src: v.src,
+              time: v.currentTime,
+              ready: v.readyState,
+              seeking: v.seeking,
+              paused: v.paused,
+            })),
+            picture: [
+              ...document.querySelectorAll<HTMLVideoElement>(
+                '.program-canvas > video:not(.program-overlay)',
+              ),
+            ].map((v) => ({
+              src: v.src,
+              time: v.currentTime,
+              ready: v.readyState,
+              seeking: v.seeking,
+              paused: v.paused,
+              hidden: v.hidden,
+            })),
+          };
+        });
+        writeFileSync(
+          info.outputPath('audio-readiness-diagnostic.json'),
+          JSON.stringify(diagnostic, null, 2),
+        );
+      }
+      const data = await page.evaluate(() => {
         const e = (
           window as unknown as {
             audioEvidence: {
               events: unknown[];
-              samples: unknown[];
-              contexts: AudioContext[];
+              samples: { error: number; energy: number[] }[];
+              buses: { gain: GainNode }[];
               voices: HTMLMediaElement[];
             };
           }
@@ -1853,79 +1954,36 @@ for (const speed of ['1', '0.75', '0.5'])
         return {
           events: e.events,
           samples: e.samples,
-          contexts: e.contexts.map((c) => ({
-            state: c.state,
-            time: c.currentTime,
-          })),
+          buses: e.buses.map((v) => v.gain.gain.value),
           voices: e.voices.map((v) => ({
             src: v.src,
-            time: v.currentTime,
-            ready: v.readyState,
-            seeking: v.seeking,
-            paused: v.paused,
-          })),
-          picture: [
-            ...document.querySelectorAll<HTMLVideoElement>(
-              '.program-canvas > video:not(.program-overlay)',
-            ),
-          ].map((v) => ({
-            src: v.src,
-            time: v.currentTime,
-            ready: v.readyState,
-            seeking: v.seeking,
-            paused: v.paused,
-            hidden: v.hidden,
+            rate: v.playbackRate,
+            preservesPitch: v.preservesPitch,
+            muted: v.muted,
+            volume: v.volume,
           })),
         };
       });
       writeFileSync(
-        info.outputPath('audio-readiness-diagnostic.json'),
-        JSON.stringify(diagnostic, null, 2),
+        info.outputPath('actual-audio-output.json'),
+        JSON.stringify(data, null, 2),
       );
-    }
-    const data = await page.evaluate(() => {
-      const e = (
-        window as unknown as {
-          audioEvidence: {
-            events: unknown[];
-            samples: { error: number; energy: number[] }[];
-            buses: { gain: GainNode }[];
-            voices: HTMLMediaElement[];
-          };
-        }
-      ).audioEvidence;
-      return {
-        events: e.events,
-        samples: e.samples,
-        buses: e.buses.map((v) => v.gain.gain.value),
-        voices: e.voices.map((v) => ({
-          src: v.src,
-          rate: v.playbackRate,
-          preservesPitch: v.preservesPitch,
-          muted: v.muted,
-          volume: v.volume,
-        })),
-      };
+      expect(data.buses).toHaveLength(2);
+      expect(data.buses[0]).toBeCloseTo(1, 6);
+      expect(data.buses[1]).toBeCloseTo(0.3, 6);
+      expect(data.voices.length).toBeLessThanOrEqual(4);
+      expect(Math.max(...data.samples.map((v) => v.energy[0]))).toBeGreaterThan(
+        0.00001,
+      );
+      expect(Math.max(...data.samples.map((v) => v.energy[1]))).toBeGreaterThan(
+        0.000003,
+      );
+      expect(Math.max(...data.samples.map((v) => v.error))).toBeLessThanOrEqual(
+        0.05,
+      );
+      expect(data.voices.every((v) => v.preservesPitch)).toBe(true);
+      await expect(
+        page.getByRole('button', { name: 'Pause preview', exact: true }),
+      ).toBeVisible();
     });
-    writeFileSync(
-      info.outputPath('actual-audio-output.json'),
-      JSON.stringify(data, null, 2),
-    );
-    expect(data.buses).toHaveLength(2);
-    expect(data.buses[0]).toBeCloseTo(1, 6);
-    expect(data.buses[1]).toBeCloseTo(0.3, 6);
-    expect(data.voices.length).toBeLessThanOrEqual(4);
-    expect(Math.max(...data.samples.map((v) => v.energy[0]))).toBeGreaterThan(
-      0.00001,
-    );
-    expect(Math.max(...data.samples.map((v) => v.energy[1]))).toBeGreaterThan(
-      0.000003,
-    );
-    expect(Math.max(...data.samples.map((v) => v.error))).toBeLessThanOrEqual(
-      0.05,
-    );
-    expect(data.voices.every((v) => v.preservesPitch)).toBe(true);
-    await expect(
-      page.getByRole('button', { name: 'Pause preview', exact: true }),
-    ).toBeVisible();
-  });
+});

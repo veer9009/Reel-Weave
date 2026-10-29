@@ -1,6 +1,6 @@
 # AVStudio audio/export parity — 2026-10-28
 
-**Status: preview parity remains failing. No new production fix was retained in the latest resume.** The accepted UI and all existing work remain preserved. No timing or signal thresholds were relaxed.
+**Current status: focused synchronization fixes are retained; final preview parity is not fully verified. See the current follow-up section below.** Historical status before this follow-up: no new production fix was retained. The accepted UI and all existing work remain preserved. No timing or signal thresholds were relaxed.
 
 ## Workspace and scope
 
@@ -102,3 +102,93 @@ Those earlier dirty audio-related files remain in the working tree:
 Other pre-existing UI/source/test/report changes and untracked files remain preserved. Latest-resume retained changed-file list: **`frontend/e2e/audio-edit-parity.spec.ts` and `docs/avstudio-audio-parity-verification-2026-10-28.md`**. Ignored diagnostic scripts, raw PCM, picture-clock history, traces, screenshots and output media remain under `var/avstudio-audio-parity-2026-10-28/`.
 
 The full audio/export regression is **not passing**. The 40 ms positioning bound, 50 ms sync/coverage limit, 0.7–1.3 power ratio, channel/correlation checks and silence thresholds remain unchanged.
+
+
+## Current follow-up: preview synchronization fixes
+
+This follow-up started at HEAD `1e57802` (`WIP: preserve workspace redesign and audio investigation`). The earlier work above was already committed by the user. Initial status contained only the two untracked pnpm files; both were preserved. The historical results above describe earlier implementations, not the final code from this follow-up.
+
+### Reproduction and diagnosis before fixes
+
+The first four-case browser run reproduced independent split plus native 1x/0.75x/0.5x failures (`var/avstudio-preview-sync-baseline.log`, artifacts `var/avstudio-preview-sync-fix/baseline/`). Native audible error maxima were approximately 91.15/138.99/162.09 ms against the existing 50 ms limit. The native cursor led picture by approximately 87-91 ms; slow native pitch preservation added content displacement beyond cursor displacement. Exports reached by the independent split case passed in all four formats.
+
+A stale device timestamp could also open readiness before confirmed output progress. Repeatedly changing audio delay caused pitch distortion in a rejected diagnostic implementation; that implementation was removed. Continuous decoder seeking was not reintroduced.
+
+A later browser diagnostic exposed a separate integration fault: a 60 FPS source was imported as 30 FPS when video-frame callbacks skipped frames under load. That caused the canonical slow recipe to fail validation with "Normalized source window is unavailable. Re-trim the clip." The final frame-rate fix accounts for frame-counter deltas when computing source FPS. A direct actual-function regression failed before the fix and passed after it (`var/avstudio-preview-sync-fps-red.log`, `var/avstudio-preview-sync-fps-green.log`). The browser's total-video-frame counter includes displayed and dropped frames; see [Media Playback Quality](https://w3c.github.io/media-playback-quality/).
+
+### Retained changes
+
+- Preview voices measure startup lead against picture and device render-ahead once the clock has advanced through a frame/device pipeline interval, then hold a constant DelayNode compensation. No fixed assumed offset or repeated continuous seek is used. Paused/released voices disconnect their delayed output so buffered tails cannot enter a later owner.
+- Readiness waits for confirmed device progress. Preparation failure pauses only an active playback intent, preventing a repeated React pause/update loop.
+- Slow video-edit audio recipes use the existing canonical export audio graph and play the prepared WAV at native rate 1. Prepared recipes are cached, leased, aborted/revoked on removal or stop, and reused across contained split windows. Late asynchronous replies are guarded against a newer session.
+- The minimal backend integration is `POST /api/preview-audio`: it reuses existing upload/manifest validation and `render_audio_master`, returns only WAV, bounds concurrent preparation, and cleans temporary files after streaming. The regular merge route delegates to the same upload handler. Export/render math, source schema, editing/history operations, and UI styling are unchanged.
+- Frame-rate estimation now divides sampled media-time deltas by frame-counter deltas, avoiding display-cadence estimates when callbacks skip frames.
+- Browser diagnostics follow the actual mixer graph rather than assuming a direct source-to-bus connection. Native-sync fixture generation was moved to a shared beforeAll hook after a trace showed about 90 seconds spent generating fixtures inside a 120-second test. Test timeouts and all signal/timing bounds are unchanged.
+
+### Verification from this follow-up
+
+| Check | Result and limits |
+| --- | --- |
+| Real canonical preview WAVs, 0.75x and 0.5x | PASS: exact length and independent canonical stereo PCM within one sample value; temporary uploads cleaned |
+| Slow split exports, 0.75x and 0.5x | PASS: eight actual MP4/MOV/WAV/MP3 outputs, existing PCM/power/correlation/picture checks |
+| Combined direct integration process | PASS: 4 passed / 108 deselected, return code 0 / Windows status 0x0; `var/avstudio-preview-sync-final-exports.log`, `var/avstudio-preview-sync-final-exports-process.json` |
+| Focused audio hook tests | PASS: separate final run 36 passed, exit 0; `var/avstudio-preview-sync-final-audio-unit.log`. Earlier combined run had 36 passes plus a worker-start error in the next file |
+| Recipe request/cancellation/error tests, separate run | PASS: 3 passed, exit 0; `var/avstudio-preview-sync-final-recipe-unit.log` |
+| Clip/frame-rate tests | PASS: retry 16 passed, exit 0; `var/avstudio-preview-sync-final-clips-retry.log`. Direct production-function red/green also passed. Initial Vitest attempt had a worker startup timeout |
+| Backend endpoint unit tests | Three passing assertions were reported; that command did not yield a confirmed clean completion. The later real integration process above did exit cleanly |
+| Latest seven-case browser matrix before final FPS correction | 1 passed / 6 failed; details below; `var/avstudio-preview-sync-final-browser.log` |
+| Isolated 0.5x after FPS correction | Unavailable: timed out before Backend ready/import, no acoustic samples; `var/avstudio-preview-sync-fps-corrected-slow.log` |
+
+The seven-case matrix passed running independent-audio split continuity. Detached continuity missed its eligible live window and reached natural project end; music continuity failed in page setup. Independent split PCM capture timed out before exports. Native 1x and 0.5x timed out waiting for backend readiness before import. Native 0.75x reached preparation but hit the source-FPS validation failure diagnosed above. These failures are retained, not counted as passes or dismissed as proven environmental faults.
+
+An earlier candidate passed independent split preview plus its four exports and measured native 1x max error 10.09 ms (`var/avstudio-preview-sync-fix/aligned/`). This predates the final audio-only route, tail handling, and FPS correction and is not a final-code parity claim.
+
+Final shared-setup browser retry: **1 failed / 2 did not run**. FFmpeg fixture generation failed in beforeAll with empty stderr before playback or acoustic capture. No three-speed synchronization result was obtained. Evidence: `var/avstudio-preview-sync-final-shared-setup.log`, artifacts `var/avstudio-preview-sync-fix/final-shared-setup/`.
+
+Final lint: **PASS, exit 0**, `var/avstudio-preview-sync-final-lint-fixed.log`. The first lint run caught an empty fixture-parameter pattern introduced in the shared setup; it was fixed and both focused and full lint reran successfully.
+
+Final production build: **PASS, exit 0**, TypeScript plus Vite, 1,796 modules; `var/avstudio-preview-sync-final-build.log`. Whitespace check also passed. Both pnpm hashes were rechecked and match the historical values above.
+
+Full preview parity at all three speeds is **not established**. No complete broad audio/export regression was run in this follow-up. No export format was unavailable in the completed direct integration checks. The 40 ms positioning bound, 50 ms sync/coverage limit, power/correlation and silence thresholds are unchanged.
+
+### Files changed in this follow-up
+
+- `backend/app/main.py`
+- `frontend/src/hooks/useProjectAudio.ts`
+- `frontend/src/hooks/useProjectAudio.test.tsx`
+- `frontend/src/lib/previewAudioRecipe.ts` (new)
+- `frontend/src/lib/previewAudioRecipe.test.ts` (new)
+- `frontend/src/lib/clips.ts`
+- `frontend/src/lib/clips.test.ts`
+- `frontend/e2e/playback-continuity.spec.ts`
+- `tests/backend/test_preview_audio.py` (new)
+- `tests/integration/test_preview_audio_endpoint.py` (new)
+- This verification report
+
+The accepted UI, logo, reserved preview-status space and existing work are preserved. No packages, configuration files, commits, pushes or deployments were made. Some commands encountered automatic approval-review timeouts (no safety finding); permitted retries were used. Test-worker and page-startup failures are reported above. Diagnostic logs, PCM, traces and screenshots remain under `var/avstudio-preview-sync-fix/`.
+
+## Browser verification resumption: fixture diagnosis
+
+Preserved the complete dirty tree from the previous follow-up. This resumption changes only the test fixture helper, native-sync test setup, and this report; no application or accepted UI changes were made.
+
+The earlier shared-setup trace locates its failure at the unused PNG command in `generateAdvancedMedia`, before browser playback. The old error handler discarded the process error, status and signal and displayed only empty stderr, so its exact exit cause cannot be recovered from that log alone.
+
+An instrumented standalone run of the original complete fixture generator succeeded: all seven FFmpeg commands exited 0, including the PNG and 60 FPS chirp video (`var/avstudio-preview-sync-fixture-diagnosis.log`). The unchanged three-speed browser retry then passed fixture preparation but its 1x case timed out in `page.goto('/')`, before media import. That run was interrupted during the next case to investigate setup; it is not a completed three-speed result (`var/avstudio-preview-sync-resume-three-speed.log`).
+
+Direct frontend HTML/module and backend-health preflight requests returned HTTP 200 in approximately 16-125 ms (`var/avstudio-preview-sync-server-preflight.log`). A minimal Edge navigation without the test's playback diagnostics eventually reached Backend ready, but took approximately 143 seconds including launch and page creation (`var/avstudio-preview-sync-navigation-control.log`, exit 0). Its browser was closed. Process inspection found no accumulated orphan test browsers; the observed Edge process belonged to that control. These observations establish variable browser/startup delays, not a measured synchronization failure.
+
+The fixture helper now reports command arguments, process status, signal, spawn error and stderr. A subsequent actual chirp generation reproduced **`spawnSync ffmpeg ETIMEDOUT`, status null, signal SIGTERM**, with empty stderr (`var/avstudio-preview-sync-required-fixtures.log`, exit 1). Thus an empty-stderr fixture failure can be a real 60-second process timeout rather than an invalid-media error. It does not prove the unrecoverable original PNG exit cause, nor establish why process startup/execution is intermittently slow on this host.
+
+The native-sync setup now generates only the existing deterministic stereo WAV and the same 60 FPS chirp video, removing six unused FFmpeg encodes. The WAV generator was extracted without changing its samples; byte comparison against the earlier generated WAV passed before the subsequent chirp timeout. Other advanced-media tests retain their original fixtures. FFmpeg's 60-second timeout, Playwright's 120-second test timeout, 15-second expectation timeout, 40 ms positioning bound, 50 ms sync/coverage limit and all signal assertions remain unchanged.
+
+### Collected results (2026-10-29)
+
+- Focused lint of both changed test files: PASS, exit 0 (`var/avstudio-preview-sync-resume-lint.log`). Prettier reported both files unchanged; the completed whitespace check passed.
+- Reduced five-case Edge run: recorded a browser launch timeout of 180000 ms before the running independent-split test body. The run was interrupted afterward; there is no completed five-case summary. Log: `var/avstudio-preview-sync-resume-focused.log`; artifacts: `var/avstudio-preview-sync-fix/resume-focused/`.
+- Minimal installed-Chrome fallback control: also failed with a 180000 ms browser launch timeout before navigation (`var/avstudio-preview-sync-chrome-control.log`). No Chrome audio-parity matrix was started. This per-process browser selection did not edit repository or persistent configuration.
+- Preview 1x / 0.75x / 0.5x: UNAVAILABLE as final acoustic measurements in this resumption. The earlier 1x attempt timed out in navigation; subsequent setup/launch failures prevented accepted audio observations.
+- Independent split PCM parity and running split continuity: UNAVAILABLE in this resumption. The recorded running-split failure was in browser launch, not an audio assertion. Exports in the PCM journey were not reached.
+
+The setup change removes unnecessary encodes and exposes process failures; it does not establish reliable fixture or browser startup on this host. The underlying reason for intermittent process delays remains unverified. No timeouts or audio thresholds were raised. Full preview parity remains unverified; earlier export/build/frontend results above remain historical, not fresh passes from this resumption.
+
+Changed in this resumption: `frontend/e2e/mediaFixtures.ts`, `frontend/e2e/playback-continuity.spec.ts`, and this report. All prior application/UI changes and pnpm files are preserved. No packages, configuration files, commits, pushes or deployments were made. One automatic approval-review timeout was retried successfully; the actual fixture retry then exposed the FFmpeg timeout above. A later report-update tool call stalled without completing and was terminated; this result section was written separately.

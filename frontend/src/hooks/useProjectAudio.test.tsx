@@ -5,6 +5,12 @@ import { advancedFixture } from '../test/historyFixtures';
 import { buildAdvancedTimeline } from '../lib/advancedTimeline';
 import type { EditSnapshot } from '../lib/editHistory';
 import type { ProjectPlayback } from './useProjectPlayback';
+import { preparePreviewAudioRecipe } from '../lib/previewAudioRecipe';
+vi.mock('../lib/previewAudioRecipe', () => ({
+  preparePreviewAudioRecipe: vi.fn(
+    async () => new File(['wav'], 'prepared.wav'),
+  ),
+}));
 
 const elements: HTMLMediaElement[] = [],
   nodes: {
@@ -19,6 +25,11 @@ const elements: HTMLMediaElement[] = [],
 let rejectResume = false;
 let graphTime = 1;
 const contexts: Context[] = [];
+const delays: {
+  delayTime: { value: number; setTargetAtTime: ReturnType<typeof vi.fn> };
+  connect: ReturnType<typeof vi.fn>;
+  disconnect: ReturnType<typeof vi.fn>;
+}[] = [];
 class Context {
   state = 'suspended';
   destination = {};
@@ -48,6 +59,17 @@ class Context {
   createStereoPanner() {
     return { pan: { value: 0 }, connect: vi.fn(), disconnect: vi.fn() };
   }
+  createDelay() {
+    const delayTime = {
+      value: 0,
+      setTargetAtTime: vi.fn((value: number) => {
+        delayTime.value = value;
+      }),
+    };
+    const delay = { delayTime, connect: vi.fn(), disconnect: vi.fn() };
+    delays.push(delay);
+    return delay;
+  }
   getOutputTimestamp() {
     return {
       contextTime: this.currentTime,
@@ -58,6 +80,7 @@ class Context {
 beforeEach(() => {
   elements.length = 0;
   contexts.length = 0;
+  delays.length = 0;
   nodes.length = 0;
   gains.length = 0;
   rejectResume = false;
@@ -185,9 +208,11 @@ it('holds picture readiness until prepared sound reaches device output', async (
       await h.result.current.resumeAudio();
     });
     let output = 0.9;
+    let observedAt = 1000;
+    vi.spyOn(performance, 'now').mockReturnValue(observedAt);
     vi.spyOn(contexts[0], 'getOutputTimestamp').mockImplementation(() => ({
       contextTime: output,
-      performanceTime: performance.now(),
+      performanceTime: observedAt,
     }));
     await act(async () => {
       elements.forEach((element) => ready(element));
@@ -196,11 +221,13 @@ it('holds picture readiness until prepared sound reaches device output', async (
     expect(elements.every((element) => !element.paused)).toBe(true);
     expect(gains.map((gain) => gain.gain.value)).toEqual([0.5, 0.2]);
     contexts[0].currentTime = 1.2;
+    vi.mocked(performance.now).mockReturnValue(observedAt + 200);
     await act(async () => {
-      vi.advanceTimersByTime(20);
+      vi.advanceTimersByTime(200);
     });
     expect(h.props.transport.ready).not.toHaveBeenCalled();
     output = 1.1;
+    observedAt = performance.now();
     await act(async () => {
       vi.advanceTimersByTime(20);
     });
@@ -268,6 +295,14 @@ it('live clock observations do not reseek a continuous accepted native decoder',
       elements.forEach((element) => ready(element));
     });
     elements.forEach((element) => {
+      element.currentTime = 0.21;
+    });
+    seconds = 0.01;
+    await act(async () => {
+      vi.advanceTimersByTime(20);
+    });
+    for (const delay of delays) expect(delay.delayTime.value).toBe(0);
+    elements.forEach((element) => {
       element.currentTime = 0.7;
     });
     seconds = 0.5;
@@ -276,6 +311,19 @@ it('live clock observations do not reseek a continuous accepted native decoder',
     });
     for (const element of elements)
       expect(element.currentTime).toBeCloseTo(0.7, 6);
+    // The audible source cursor must follow picture without decoder seeks.
+    expect(delays).toHaveLength(2);
+    for (const delay of delays)
+      expect(delay.delayTime.value).toBeCloseTo(0.2, 6);
+    elements.forEach((element) => {
+      element.currentTime = 0.76;
+    });
+    seconds = 0.55;
+    await act(async () => {
+      vi.advanceTimersByTime(20);
+    });
+    for (const delay of delays)
+      expect(delay.delayTime.value).toBeCloseTo(0.2, 6);
   } finally {
     vi.useRealTimers();
   }
@@ -363,6 +411,9 @@ it('silences a native trial that finishes after its audio ownership window', asy
     finish();
   });
   expect(pause).toHaveBeenCalled();
+  // A paused input still has buffered sound in its delay line. Its output
+  // must be disconnected when the voice no longer owns an audible window.
+  expect(delays[0].disconnect).toHaveBeenCalled();
 });
 it('a native transport hold freezes and realigns sound before a React commit', async () => {
   vi.useFakeTimers();
@@ -1224,12 +1275,103 @@ it('frozen_video_recipe_uses_its_own_speed_sample_offset_and_source_after_owner_
     await h.result.current.resumeAudio();
   });
   const voice = elements.find(
-    (e) => e.getAttribute('src') === 'blob:take.mp4',
+    (e) => e.getAttribute('src') === 'blob:prepared.wav',
   )!;
-  act(() => ready(voice, 2.4));
-  expect(voice.currentTime).toBeCloseTo(0.7, 5);
-  expect(voice.playbackRate).toBe(0.5);
+  expect(voice).toBeDefined();
+  act(() => ready(voice, 4.8));
+  expect(voice.currentTime).toBeCloseTo(1.4, 5);
+  expect(voice.playbackRate).toBe(1);
+  expect(preparePreviewAudioRecipe).toHaveBeenCalledWith(
+    expect.objectContaining({ file: expect.any(File) }),
+    expect.objectContaining({ speed: 0.5, sourceEndFrame: 59 }),
+    expect.any(AbortSignal),
+  );
   expect(voice.preservesPitch).toBe(true);
+  await act(async () => {
+    const first = snapshot.independentAudio[0];
+    const edited = {
+      ...snapshot,
+      independentAudio: [
+        {
+          ...first,
+          source: {
+            ...first.source,
+            sourceEndFrame: 29,
+          } as typeof first.source,
+        },
+      ],
+    };
+    h.rerender({
+      ...h.props,
+      transport,
+      snapshot: edited,
+      projection: buildAdvancedTimeline(edited, h.sources, {
+        image: null,
+        video: null,
+      }),
+    });
+  });
+  expect(preparePreviewAudioRecipe).toHaveBeenCalledTimes(1);
+});
+it('a failed normalized recipe pauses once and remains readable on later commits', async () => {
+  const h = setup();
+  vi.mocked(preparePreviewAudioRecipe).mockRejectedValueOnce(
+    new Error('recipe failed'),
+  );
+  let intent = true;
+  const pause = vi.fn(() => {
+    intent = false;
+  });
+  const transport = {
+    ...h.props.transport,
+    pause,
+    getSnapshot: () => ({
+      timeline: h.props.projection.base,
+      projection: h.props.projection,
+      revision: 0,
+      position: 0,
+      started: 0,
+      pending: null,
+      generation: 1,
+      positionRevision: 0,
+      intent,
+      status: intent ? 'playing' : 'paused',
+    }),
+  } as ProjectPlayback;
+  const snapshot = {
+    ...h.props.snapshot,
+    independentAudio: [
+      {
+        ...h.props.snapshot.independentAudio[0],
+        source: {
+          kind: 'video-edit' as const,
+          sourceId: h.base.sourceId,
+          sourceStartFrame: 0,
+          sourceEndFrame: 59,
+          speed: 0.5 as const,
+          normalizationFps: 25 as const,
+        },
+      },
+    ],
+  };
+  const props = {
+    ...h.props,
+    transport,
+    snapshot,
+    projection: buildAdvancedTimeline(snapshot, h.sources, {
+      image: null,
+      video: null,
+    }),
+  };
+  h.rerender(props);
+  await act(async () => {
+    await h.result.current.resumeAudio();
+  });
+  h.rerender({ ...props });
+  h.rerender({ ...props });
+  expect(h.result.current.status).toBe('failed');
+  expect(h.result.current.message).toContain('recipe failed');
+  expect(pause).toHaveBeenCalledTimes(1);
 });
 it('autoplay_rejection_is_visible_and_pause_wins_over_late_play_completion', async () => {
   const h = setup();

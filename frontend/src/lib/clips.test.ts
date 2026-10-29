@@ -194,3 +194,13 @@ describe('clip edits', () => {
     });
   });
 });
+
+it('counts dropped or skipped display frames when estimating source FPS', () => {
+  expect(
+    estimateFrameRate([0, 1 / 30, 2 / 30, 3 / 30], [10, 12, 14, 16]),
+  ).toBeCloseTo(60);
+  expect(
+    estimateFrameRate([0, 2002 / 30000, 4004 / 30000], [1, 3, 5]),
+  ).toBeCloseTo(30000 / 1001);
+  expect(estimateFrameRate([0, 1 / 30, 2 / 30], [3, 2, 1])).toBeCloseTo(30);
+});

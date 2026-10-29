@@ -8,9 +8,40 @@ function run(program: string, args: string[], binary = false) {
     timeout: 60_000,
     maxBuffer: 32 * 1024 * 1024,
   });
-  if (result.status !== 0)
-    throw new Error(`${program}: ${result.stderr.toString()}`);
+  if (result.error || result.status !== 0)
+    throw new Error(
+      `${program}: ${JSON.stringify({ args, status: result.status, signal: result.signal, error: result.error?.message })}\n${result.stderr?.toString() ?? ''}`,
+    );
   return binary ? result.stdout : result.stdout.toString();
+}
+
+export function generateMusicAudio(folder: string) {
+  mkdirSync(folder, { recursive: true });
+  const music = join(folder, 'song.wav');
+  const count = 8 * 48000;
+  const wav = Buffer.alloc(44 + count * 4);
+  wav.write('RIFF');
+  wav.writeUInt32LE(wav.length - 8, 4);
+  wav.write('WAVEfmt ', 8);
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(2, 22);
+  wav.writeUInt32LE(48000, 24);
+  wav.writeUInt32LE(192000, 28);
+  wav.writeUInt16LE(4, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write('data', 36);
+  wav.writeUInt32LE(count * 4, 40);
+  for (let n = 0; n < count; n++) {
+    const tone = n < 96000 ? 330 : n < 144000 ? 660 : 990;
+    const sample = Math.round(
+      0.08 * 32767 * Math.sin((2 * Math.PI * tone * n) / 48000),
+    );
+    wav.writeInt16LE(sample, 44 + n * 4);
+    wav.writeInt16LE(sample, 46 + n * 4);
+  }
+  writeFileSync(music, wav);
+  return music;
 }
 
 export function generateAdvancedMedia(folder: string) {
@@ -50,30 +81,7 @@ export function generateAdvancedMedia(folder: string) {
     ]);
     return path;
   };
-  const music = join(folder, 'song.wav');
-  const count = 8 * 48000;
-  const wav = Buffer.alloc(44 + count * 4);
-  wav.write('RIFF');
-  wav.writeUInt32LE(wav.length - 8, 4);
-  wav.write('WAVEfmt ', 8);
-  wav.writeUInt32LE(16, 16);
-  wav.writeUInt16LE(1, 20);
-  wav.writeUInt16LE(2, 22);
-  wav.writeUInt32LE(48000, 24);
-  wav.writeUInt32LE(192000, 28);
-  wav.writeUInt16LE(4, 32);
-  wav.writeUInt16LE(16, 34);
-  wav.write('data', 36);
-  wav.writeUInt32LE(count * 4, 40);
-  for (let n = 0; n < count; n++) {
-    const tone = n < 96000 ? 330 : n < 144000 ? 660 : 990;
-    const sample = Math.round(
-      0.08 * 32767 * Math.sin((2 * Math.PI * tone * n) / 48000),
-    );
-    wav.writeInt16LE(sample, 44 + n * 4);
-    wav.writeInt16LE(sample, 46 + n * 4);
-  }
-  writeFileSync(music, wav);
+  const music = generateMusicAudio(folder);
   const image = join(folder, 'logo.png');
   run('ffmpeg', [
     '-v',

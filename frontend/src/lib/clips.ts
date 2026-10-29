@@ -150,10 +150,21 @@ export function frameToSeconds(frame: number, fps: number): number {
   return Number.isFinite(fps) && fps > 0 ? frame / fps : 0;
 }
 
-export function estimateFrameRate(mediaTimes: number[]): number | null {
+export function estimateFrameRate(
+  mediaTimes: number[],
+  frameCounts?: number[],
+): number | null {
   const deltas = mediaTimes
     .slice(1)
-    .map((time, index) => time - mediaTimes[index])
+    .map((time, index) => {
+      const frames = frameCounts
+        ? frameCounts[index + 1] - frameCounts[index]
+        : 1;
+      return (
+        (time - mediaTimes[index]) /
+        (Number.isFinite(frames) && frames > 0 ? frames : 1)
+      );
+    })
     .filter((delta) => Number.isFinite(delta) && delta > 0)
     .sort((left, right) => left - right);
   if (!deltas.length) return null;
@@ -261,6 +272,7 @@ export function detectFrameRate(video: HTMLVideoElement): Promise<number> {
     return Promise.resolve(30);
   return new Promise((resolve) => {
     const mediaTimes: number[] = [];
+    const frameCounts: number[] = [];
     const originalRate = video.playbackRate;
     let callbackId = 0;
     let settled = false;
@@ -273,11 +285,18 @@ export function detectFrameRate(video: HTMLVideoElement): Promise<number> {
       video.pause();
       video.currentTime = 0;
       video.playbackRate = originalRate;
-      resolve(estimateFrameRate(mediaTimes) ?? 30);
+      resolve(estimateFrameRate(mediaTimes, frameCounts) ?? 30);
     };
     const capture: VideoFrameRequestCallback = (_now, metadata) => {
-      if (mediaTimes.at(-1) !== metadata.mediaTime)
+      if (mediaTimes.at(-1) !== metadata.mediaTime) {
         mediaTimes.push(metadata.mediaTime);
+        // Callback delivery can skip frames under load. Count all displayed
+        // and dropped frames rather than mistaking display cadence for FPS.
+        frameCounts.push(
+          video.getVideoPlaybackQuality?.().totalVideoFrames ??
+            metadata.presentedFrames,
+        );
+      }
       if (mediaTimes.length >= 6 || video.ended) finish();
       else callbackId = video.requestVideoFrameCallback(capture);
     };

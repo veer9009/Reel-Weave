@@ -14,6 +14,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
+from starlette.background import BackgroundTask
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -42,7 +43,7 @@ from .jobs import (
     V3MergePlan,
     V4MergePlan,
 )
-from .media import InvalidMediaError, MediaPipeline
+from .media import InvalidMediaError, MediaPipeline, ProcessingError
 from .storage import Storage, UnsafePathError
 
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv"}
@@ -332,8 +333,7 @@ def create_app(
         }
     }
 
-    @app.post("/api/merge", status_code=202, openapi_extra=merge_openapi)
-    async def create_merge(request: Request) -> dict:
+    async def prepare_upload(request: Request, *, preview_audio: bool = False) -> dict | FileResponse:
         form = None
         job_id: str | None = None
 
@@ -615,6 +615,21 @@ def create_app(
                     await asyncio.to_thread(pipeline.validate_job, job)
                 except InvalidMediaError as exc:
                     raise ApiError(422, "invalid_media", str(exc)) from exc
+            if preview_audio:
+                from .advanced_media import render_audio_master
+
+                if job.v3_plan is None or len(job.video_source_paths) != 1:
+                    raise ApiError(422, "invalid_preview_recipe", "A preview recipe requires one video source.")
+                # Reuse the exact export audio graph; do not queue or encode a
+                # throwaway video merely to audition a frozen sound recipe.
+                task = asyncio.create_task(asyncio.to_thread(render_audio_master, pipeline, job, job.resolved_plan))
+                try:
+                    audio = await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    with contextlib.suppress(Exception):
+                        await asyncio.shield(task)
+                    raise
+                return FileResponse(audio, media_type="audio/wav", filename="preview.wav", background=BackgroundTask(cleanup_partial_job))
             manager.submit(job)
             return job.response()
         except QueueIsFullError as exc:
@@ -623,6 +638,11 @@ def create_app(
         except ApiError:
             cleanup_partial_job()
             raise
+        except ProcessingError as exc:
+            cleanup_partial_job()
+            if not preview_audio:
+                raise
+            raise ApiError(422, "preview_audio_failed", str(exc)) from exc
         except OSError as exc:
             cleanup_partial_job()
             raise ApiError(500, "upload_failed", "The clips could not be stored.") from exc
@@ -633,6 +653,21 @@ def create_app(
             if form is not None:
                 with contextlib.suppress(OSError):
                     await form.close()
+
+    @app.post("/api/merge", status_code=202, openapi_extra=merge_openapi)
+    async def create_merge(request: Request) -> dict:
+        result = await prepare_upload(request)
+        assert isinstance(result, dict)
+        return result
+
+    preview_slots = asyncio.Semaphore(1)
+
+    @app.post("/api/preview-audio")
+    async def preview_audio(request: Request) -> FileResponse:
+        async with preview_slots:
+            result = await prepare_upload(request, preview_audio=True)
+            assert isinstance(result, FileResponse)
+            return result
 
     @app.get("/api/jobs/{job_id}")
     async def get_job(job_id: str) -> dict:

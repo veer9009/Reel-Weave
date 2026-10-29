@@ -5,6 +5,8 @@ import type { AdvancedTimelineProjection } from '../lib/advancedTimeline';
 import { resolveAudioOwnership } from '../lib/audioTimeline';
 import type { AudioRecipe } from '../lib/audioTimeline';
 import type { ProjectPlayback } from './useProjectPlayback';
+import { preparePreviewAudioRecipe } from '../lib/previewAudioRecipe';
+import { projectFrameCount } from '../lib/overlays';
 type Status =
   'ready' | 'preparing' | 'resume-required' | 'unsupported' | 'failed';
 type Options = {
@@ -19,12 +21,18 @@ type Target = {
   speed: number;
   end: number;
   origin: number;
+  url?: string;
 };
 type Voice = {
   element: HTMLAudioElement;
   node: MediaElementAudioSourceNode;
   normalizer: StereoPannerNode;
+  delay: DelayNode | null;
+  delayAligned: boolean;
+  delayConnected: boolean;
+  delayAnchor: number;
   sourceId: string | null;
+  sourceKey: string | null;
   release: () => void;
   token: number;
   accepted: boolean;
@@ -33,6 +41,14 @@ type Voice = {
   positionRevision: number | undefined;
   mapping?: { origin: number; speed: number; generation: number };
   warming?: Target;
+};
+type FrozenRecipe = Extract<AudioRecipe, { kind: 'video-edit' }>;
+type PreparedRecipe = {
+  recipe: FrozenRecipe;
+  controller: AbortController;
+  url?: string;
+  error?: string;
+  release: () => void;
 };
 export function useProjectAudio(options: Options) {
   const [, render] = useState(0);
@@ -58,7 +74,25 @@ export function useProjectAudio(options: Options) {
     let heldAtCommit: number | null = null;
     let stagingOutput = false;
     let outputStart: number | null = null;
-    const outputTime = () => {
+    const recipes = new Map<string, PreparedRecipe>();
+    let preparingRecipe = false;
+    let recipeFailure: string | null = null;
+    const recipeKey = (recipe: Extract<AudioRecipe, { kind: 'video-edit' }>) =>
+      JSON.stringify([
+        recipe.sourceId,
+        recipe.sourceStartFrame,
+        recipe.sourceEndFrame,
+        recipe.speed,
+        recipe.normalizationFps,
+      ]);
+    const targetKey = (target: Target) => target.url ?? target.sourceId;
+    const covers = (prepared: FrozenRecipe, requested: FrozenRecipe) =>
+      prepared.sourceId === requested.sourceId &&
+      prepared.speed === requested.speed &&
+      prepared.normalizationFps === requested.normalizationFps &&
+      prepared.sourceStartFrame <= requested.sourceStartFrame &&
+      prepared.sourceEndFrame >= requested.sourceEndFrame;
+    const outputTime = (confirmed = false) => {
       const timestamp = context?.getOutputTimestamp?.();
       if (
         typeof timestamp?.contextTime !== 'number' ||
@@ -68,10 +102,10 @@ export function useProjectAudio(options: Options) {
         timestamp.performanceTime <= 0
       )
         return null;
-      return (
-        timestamp.contextTime +
-        (performance.now() - timestamp.performanceTime) / 1000
-      );
+      return confirmed
+        ? timestamp.contextTime
+        : timestamp.contextTime +
+            (performance.now() - timestamp.performanceTime) / 1000;
     };
     const isPlaying = () => {
       const live = latest.transport.getSnapshot?.();
@@ -101,6 +135,8 @@ export function useProjectAudio(options: Options) {
     const currentTargets = (
       heldSeconds?: number,
     ): [Target | null, Target | null] => {
+      preparingRecipe = false;
+      recipeFailure = null;
       const o = latest,
         s = o.snapshot,
         p = o.projection,
@@ -128,6 +164,81 @@ export function useProjectAudio(options: Options) {
             origin: offset - seconds,
           };
         if (!source.metadata) return null;
+        if (recipe.speed !== 1) {
+          const key = recipeKey(recipe);
+          let prepared =
+            recipes.get(key) ??
+            [...recipes.values()].find(
+              (entry) => !entry.error && covers(entry.recipe, recipe),
+            );
+          if (!prepared && o.transport.playingIntent) {
+            const entry: PreparedRecipe = {
+              recipe,
+              controller: new AbortController(),
+              release: o.sources!.acquireLease(
+                `preview-recipe-${key}`,
+                new Set([recipe.sourceId]),
+              ),
+            } satisfies PreparedRecipe;
+            recipes.set(key, entry);
+            prepared = entry;
+            const epoch = session;
+            void preparePreviewAudioRecipe(
+              source,
+              recipe,
+              entry.controller.signal,
+            )
+              .then((blob) => {
+                if (
+                  disposed ||
+                  session !== epoch ||
+                  entry.controller.signal.aborted ||
+                  recipes.get(key) !== entry
+                )
+                  return;
+                entry.url = URL.createObjectURL(blob);
+                sync();
+              })
+              .catch((error: unknown) => {
+                if (
+                  disposed ||
+                  session !== epoch ||
+                  entry.controller.signal.aborted ||
+                  recipes.get(key) !== entry
+                )
+                  return;
+                entry.error =
+                  error instanceof Error
+                    ? error.message
+                    : 'Sound recipe preparation failed.';
+                sync();
+              })
+              .finally(entry.release);
+          }
+          if (!prepared?.url) {
+            if (prepared?.error) recipeFailure = prepared.error;
+            else preparingRecipe = true;
+            return null;
+          }
+          const frames = projectFrameCount(
+            recipe.sourceEndFrame - recipe.sourceStartFrame + 1,
+            source.metadata.fps,
+            recipe.speed,
+            recipe.normalizationFps,
+          );
+          const start =
+            (recipe.sourceStartFrame - prepared.recipe.sourceStartFrame) /
+            source.metadata.fps /
+            recipe.speed;
+          return {
+            sourceId: recipe.sourceId,
+            url: prepared.url,
+            time: start + offset,
+            end: start + frames / recipe.normalizationFps,
+            speed: 1,
+            origin: start + offset - seconds,
+          };
+        }
         return {
           sourceId: recipe.sourceId,
           time:
@@ -170,23 +281,37 @@ export function useProjectAudio(options: Options) {
       if (music && music.time >= music.end) music = null;
       return [original, music];
     };
+    const pauseVoice = (voice: Voice) => {
+      voice.element.pause();
+      if (voice.delay && voice.delayConnected) {
+        voice.delay.disconnect();
+        voice.delayConnected = false;
+      }
+    };
     const release = (voice: Voice) => {
       voice.token = ++serial;
-      voice.element.pause();
+      pauseVoice(voice);
       voice.element.removeAttribute('src');
       voice.element.load();
       voice.release();
       voice.release = () => {};
       voice.sourceId = null;
+      voice.sourceKey = null;
       voice.accepted = false;
       voice.pending = false;
       voice.ended = null;
       voice.mapping = undefined;
       voice.warming = undefined;
+      if (voice.delay) voice.delay.delayTime.value = 0;
+      voice.delayAligned = false;
     };
     const block = (next: Status, text: string) => {
       publish(next, text);
-      latest.transport.pause();
+      if (
+        latest.transport.getSnapshot?.().intent ??
+        latest.transport.playingIntent
+      )
+        latest.transport.pause();
     };
     const ensureGate = () => {
       stagingOutput = false;
@@ -207,6 +332,7 @@ export function useProjectAudio(options: Options) {
       )
         return;
       const targets = currentTargets();
+      if (preparingRecipe || recipeFailure) return;
       if (
         targets.some((target, bus) => {
           if (!target) return false;
@@ -214,6 +340,7 @@ export function useProjectAudio(options: Options) {
           return (
             !voice ||
             voice.sourceId !== target.sourceId ||
+            voice.sourceKey !== targetKey(target) ||
             !voice.accepted ||
             voice.pending ||
             voice.element.readyState < 2 ||
@@ -244,7 +371,7 @@ export function useProjectAudio(options: Options) {
             return;
           outputStart ??= context.currentTime;
           applyGains();
-          const audible = outputTime();
+          const audible = outputTime(true);
           if (audible === null || audible < outputStart) return;
         }
         const token = gate;
@@ -268,30 +395,38 @@ export function useProjectAudio(options: Options) {
         voice.element.seeking
       )
         return;
-      const target = currentTargets().find(
-        (v) => v?.sourceId === voice.sourceId,
-      );
+      const target =
+        currentTargets()[pools.findIndex((pool) => pool.includes(voice))];
       if (voice.ended !== null && target && target.time >= voice.ended - 0.001)
         return;
       if (voice.accepted && !voice.element.paused) return;
+      if (voice.delay && !voice.delayConnected) {
+        voice.delay.delayTime.value = 0;
+        voice.delay.connect(
+          buses[pools.findIndex((pool) => pool.includes(voice))],
+        );
+        voice.delayConnected = true;
+      }
       const token = voice.token,
         epoch = session,
         ownerGeneration = o.transport.generation;
       voice.pending = true;
+      voice.delayAligned = false;
+      voice.delayAnchor = target?.time ?? 0;
       void voice.element
         .play()
         .then(() => {
           if (disposed || epoch !== session || voice.token !== token) return;
           voice.pending = false;
           if (!latest.transport.playingIntent) {
-            voice.element.pause();
+            pauseVoice(voice);
             return;
           }
           if (latest.transport.generation !== ownerGeneration) {
             const bus = pools.findIndex((pool) => pool.includes(voice)),
               target = currentTargets()[bus];
             if (target?.sourceId !== voice.sourceId) {
-              voice.element.pause();
+              pauseVoice(voice);
               return;
             }
             if (
@@ -312,7 +447,7 @@ export function useProjectAudio(options: Options) {
             Math.abs(voice.element.currentTime - target.time) >
               0.04 * target.speed
           ) {
-            voice.element.pause();
+            pauseVoice(voice);
             syncVoice(voice, target, true);
           }
           // Release our readiness token before deciding whether to stop the
@@ -321,7 +456,7 @@ export function useProjectAudio(options: Options) {
           allReady();
           // A separate picture hold can still keep the shared clock frozen.
           if ((!isPlaying() || gate !== null) && graphReady && !stagingOutput) {
-            voice.element.pause();
+            pauseVoice(voice);
             const bus = pools.findIndex((pool) => pool.includes(voice)),
               target = currentTargets()[bus];
             if (target && target.sourceId === voice.sourceId)
@@ -366,12 +501,21 @@ export function useProjectAudio(options: Options) {
       const normalizer = context!.createStereoPanner();
       normalizer.pan.value = 0;
       node.connect(normalizer);
-      normalizer.connect(buses[bus]);
+      const delay = context!.createDelay?.(10) ?? null;
+      if (delay) {
+        normalizer.connect(delay);
+        delay.connect(buses[bus]);
+      } else normalizer.connect(buses[bus]);
       const voice: Voice = {
         element,
         node,
         normalizer,
+        delay,
+        delayAligned: false,
+        delayConnected: true,
+        delayAnchor: 0,
         sourceId: null,
+        sourceKey: null,
         release: () => {},
         token: 0,
         accepted: false,
@@ -451,6 +595,36 @@ export function useProjectAudio(options: Options) {
         generation,
       };
       if (
+        voice.delay &&
+        !voice.delayAligned &&
+        voice.accepted &&
+        !e.paused &&
+        isPlaying() &&
+        target.time >
+          voice.delayAnchor +
+            target.speed *
+              Math.max(
+                1 / (latest.projection?.base.fps ?? 25),
+                (context?.baseLatency ?? 0) + (context?.outputLatency ?? 0),
+              )
+      ) {
+        const audible = outputTime();
+        if (audible !== null && context) {
+          const renderAhead = Math.max(0, context.currentTime - audible);
+          const lead = Math.max(
+            0,
+            Math.min(
+              10,
+              (e.currentTime - target.time) / target.speed - renderAhead,
+            ),
+          );
+          // Hold this measured startup compensation fixed. Modulating delay
+          // on every clock observation changes pitch and damages continuous PCM.
+          voice.delay.delayTime.value = lead;
+          voice.delayAligned = true;
+        }
+      }
+      if (
         voice.accepted &&
         !preparedTrial &&
         (isPlaying() || !e.paused) &&
@@ -468,8 +642,11 @@ export function useProjectAudio(options: Options) {
       if (voice.ended !== null && target.time >= voice.ended - 0.001) return;
       voice.ended = null;
       const threshold = 0.04 * target.speed;
-      if (Math.abs(e.currentTime - target.time) > threshold)
+      if (Math.abs(e.currentTime - target.time) > threshold) {
+        if (voice.delay) voice.delay.delayTime.value = 0;
+        voice.delayAligned = false;
         e.currentTime = Math.max(0, target.time);
+      }
     };
     const sync = () => {
       const o = latest,
@@ -496,6 +673,14 @@ export function useProjectAudio(options: Options) {
       }
       applyGains();
       const targets = currentTargets();
+      if (recipeFailure) {
+        block('failed', `Sound preview preparation failed: ${recipeFailure}`);
+        return;
+      }
+      if (preparingRecipe) {
+        ensureGate();
+        return;
+      }
       if (!o.transport.playingIntent) {
         for (const bus of [0, 1])
           for (const voice of pools[bus])
@@ -503,7 +688,7 @@ export function useProjectAudio(options: Options) {
               if (voice.sourceId && voice.sourceId !== targets[bus]?.sourceId)
                 release(voice);
               else {
-                voice.element.pause();
+                pauseVoice(voice);
                 voice.accepted = false;
               }
             }
@@ -523,31 +708,33 @@ export function useProjectAudio(options: Options) {
                 release(voice);
                 continue;
               }
-              voice.element.pause();
+              pauseVoice(voice);
               voice.accepted = false;
             }
           continue;
         }
         let voice = pools[bus][active[bus]];
-        if (voice?.sourceId !== target.sourceId) {
+        if (voice?.sourceKey !== targetKey(target)) {
           if (voice?.sourceId) {
-            voice.element.pause();
+            pauseVoice(voice);
             voice.token = ++serial;
             voice.pending = false;
             voice.accepted = false;
           }
           active[bus] = 1 - active[bus];
           voice = voiceFor(bus, active[bus]);
-          if (voice.sourceId !== target.sourceId) {
+          if (voice.sourceKey !== targetKey(target)) {
             if (voice.sourceId) release(voice);
             voice.sourceId = target.sourceId;
+            voice.sourceKey = targetKey(target);
             voice.token = ++serial;
             voice.accepted = false;
             voice.release = o.sources.acquireLease(
               `preview-sound-${bus}-${active[bus]}`,
               new Set([target.sourceId]),
             );
-            voice.element.src = o.sources.ensureUrl(target.sourceId);
+            voice.element.src =
+              target.url ?? o.sources.ensureUrl(target.sourceId);
           }
           voice.warming = undefined;
           if (voice.element.error) {
@@ -573,7 +760,7 @@ export function useProjectAudio(options: Options) {
         for (const pool of pools)
           for (const voice of pool)
             if (voice && !voice.pending && !voice.element.paused)
-              voice.element.pause();
+              pauseVoice(voice);
       // Load the upcoming source in the existing spare decoder. Do not play it
       // or acquire a readiness token until it actually owns the audible range.
       if (isPlaying()) {
@@ -595,18 +782,24 @@ export function useProjectAudio(options: Options) {
           const start = starts[bus];
           if (start === undefined || start / fps - seconds > 0.25) continue;
           const target = currentTargets(start / fps)[bus];
-          if (!target || target.sourceId === targets[bus]?.sourceId) continue;
+          if (
+            !target ||
+            (targets[bus] && targetKey(target) === targetKey(targets[bus]!))
+          )
+            continue;
           const index = 1 - active[bus];
           const voice = voiceFor(bus, index);
-          if (voice.sourceId !== target.sourceId) {
+          if (voice.sourceKey !== targetKey(target)) {
             if (voice.sourceId) release(voice);
             voice.sourceId = target.sourceId;
+            voice.sourceKey = targetKey(target);
             voice.token = ++serial;
             voice.release = o.sources.acquireLease(
               `preview-sound-${bus}-${index}`,
               new Set([target.sourceId]),
             );
-            voice.element.src = o.sources.ensureUrl(target.sourceId);
+            voice.element.src =
+              target.url ?? o.sources.ensureUrl(target.sourceId);
           }
           voice.warming = target;
           syncVoice(voice, target);
@@ -618,6 +811,23 @@ export function useProjectAudio(options: Options) {
         const changed = committedOptions === 0 || latest !== next;
         latest = next;
         committedOptions++;
+        if (next.snapshot && next.projection) {
+          const retained = resolveAudioOwnership(
+            next.snapshot,
+            next.projection,
+          ).flatMap((range) =>
+            range.source?.kind === 'video-edit' && range.source.speed !== 1
+              ? [range.source]
+              : [],
+          );
+          for (const [key, entry] of recipes)
+            if (!retained.some((recipe) => covers(entry.recipe, recipe))) {
+              entry.controller.abort();
+              entry.release();
+              if (entry.url) URL.revokeObjectURL(entry.url);
+              recipes.delete(key);
+            }
+        }
         // A held decoder resumes in the same UI commit as the picture, even
         // when a hold/ready pair was batched and the playing flag stayed true.
         if (
@@ -639,7 +849,7 @@ export function useProjectAudio(options: Options) {
         for (const pool of pools)
           for (const voice of pool)
             if (voice?.accepted && !voice.pending && !voice.element.paused)
-              voice.element.pause();
+              pauseVoice(voice);
         const live = latest.transport.getSnapshot?.();
         // A newer edit must publish its matching source model before seeking.
         if (live && live.generation !== latest.transport.generation) return;
@@ -674,6 +884,8 @@ export function useProjectAudio(options: Options) {
       async resumeAudio() {
         if (!latest.snapshot || !latest.sources) return false;
         disposed = false;
+        for (const [key, entry] of recipes)
+          if (entry.error) recipes.delete(key);
         const epoch = session;
         let resumedContext: AudioContext | null = null;
         try {
@@ -733,6 +945,12 @@ export function useProjectAudio(options: Options) {
       },
       stop() {
         session++;
+        for (const entry of recipes.values()) {
+          entry.controller.abort();
+          entry.release();
+          if (entry.url) URL.revokeObjectURL(entry.url);
+        }
+        recipes.clear();
         gate = null;
         stagingOutput = false;
         outputStart = null;
@@ -746,6 +964,7 @@ export function useProjectAudio(options: Options) {
               release(voice);
               voice.node.disconnect();
               voice.normalizer.disconnect();
+              voice.delay?.disconnect();
             }
         pools[0] = [null, null];
         pools[1] = [null, null];
