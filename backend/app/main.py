@@ -662,6 +662,60 @@ def create_app(
 
     preview_slots = asyncio.Semaphore(1)
 
+    @app.post("/api/video-metadata")
+    async def video_metadata(request: Request) -> dict:
+        # Use the same decoded video metadata as render validation. Container
+        # duration may include an audio tail and cannot define video frame bounds.
+        async with preview_slots:
+            form = None
+            job_id = None
+            try:
+                if not _tool_available(config.ffprobe_path):
+                    raise ApiError(503, "media_tools_unavailable", "FFprobe is unavailable.")
+                form = await request.form(max_files=1, max_fields=0, max_part_size=64 * 1024)
+                files = form.getlist("files")
+                if len(files) != 1 or not isinstance(files[0], UploadFile):
+                    raise ApiError(422, "invalid_file_count", "Choose one video source.")
+                upload = files[0]
+                extension = Path(upload.filename or "").suffix.lower()
+                if extension not in ALLOWED_EXTENSIONS:
+                    raise ApiError(415, "unsupported_media_type", "Choose a supported video source.")
+                job_id = str(uuid.uuid4())
+                job = Job.create(storage, job_id)
+                path = job.upload_dir / f"source{extension}"
+                size = 0
+                with path.open("xb") as target:
+                    while chunk := await upload.read(1024 * 1024):
+                        size += len(chunk)
+                        if size > config.max_file_size_bytes:
+                            raise ApiError(413, "file_too_large", "The video exceeds the file size limit.")
+                        target.write(chunk)
+                if not size:
+                    raise ApiError(422, "empty_file", "The video is empty.")
+                task = asyncio.create_task(asyncio.to_thread(pipeline._probe, path))
+                try:
+                    metadata = await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    with contextlib.suppress(Exception):
+                        await asyncio.shield(task)
+                    raise
+                fps = pipeline._video_fps(metadata)
+                frames = pipeline._total_frames(metadata, fps)
+                stream = pipeline._validate_overlay_dimensions(metadata, "video source")
+                if not fps or not frames:
+                    raise InvalidMediaError("Video frame metadata is unavailable.")
+                return {"duration": frames / fps, "fps": fps, "totalFrames": frames,
+                        "width": stream["width"], "height": stream["height"], "source": "backend"}
+            except (InvalidMediaError, ProcessingError) as exc:
+                raise ApiError(422, "invalid_media", "Video metadata is unreadable.") from exc
+            finally:
+                if form is not None:
+                    with contextlib.suppress(OSError):
+                        await form.close()
+                if job_id is not None:
+                    with contextlib.suppress(OSError, UnsafePathError):
+                        storage.remove_job(job_id)
+
     @app.post("/api/preview-audio")
     async def preview_audio(request: Request) -> FileResponse:
         async with preview_slots:

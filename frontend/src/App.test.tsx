@@ -81,6 +81,8 @@ function serve(
       const url = String(input);
       if (url.endsWith('/api/health'))
         return new Response(JSON.stringify(health));
+      if (url.endsWith('/api/video-metadata'))
+        return new Response('', { status: 404 });
       if (url.endsWith('/api/merge')) {
         if (mode === 'network') throw new TypeError('Failed to fetch');
         if (mode === 'error')
@@ -144,6 +146,9 @@ async function selectTwo(
     });
     fireEvent.loadedMetadata(video);
   }
+  await waitFor(() =>
+    expect(screen.queryByText('Reading metadata…')).toBeNull(),
+  );
   return user;
 }
 describe('AVStudio', { timeout: 15000 }, () => {
@@ -177,6 +182,9 @@ describe('AVStudio', { timeout: 15000 }, () => {
       });
       fireEvent.loadedMetadata(video);
     }
+    await waitFor(() =>
+      expect(screen.queryByText('Reading metadata…')).toBeNull(),
+    );
     const ids = Array.from(
       document.querySelectorAll<HTMLElement>('.clip-item'),
       (item) => item.dataset.clipId,
@@ -357,7 +365,11 @@ describe('AVStudio', { timeout: 15000 }, () => {
     };
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => new Response(JSON.stringify(limitedHealth))),
+      vi.fn(async (input) =>
+        String(input).endsWith('/api/video-metadata')
+          ? new Response('', { status: 404 })
+          : new Response(JSON.stringify(limitedHealth)),
+      ),
     );
     render(<App />);
     const user = await selectTwo();
@@ -1434,14 +1446,15 @@ describe('AVStudio', { timeout: 15000 }, () => {
     let checks = 0;
     vi.stubGlobal(
       'fetch',
-      vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({
-              ...health,
-              ffmpeg_available: checks++ > 0,
-            }),
-          ),
+      vi.fn(async (input) =>
+        String(input).endsWith('/api/video-metadata')
+          ? new Response('', { status: 404 })
+          : new Response(
+              JSON.stringify({
+                ...health,
+                ffmpeg_available: checks++ > 0,
+              }),
+            ),
       ),
     );
     render(<App />);
@@ -1486,11 +1499,13 @@ describe('AVStudio', { timeout: 15000 }, () => {
       value: 1080,
     });
     fireEvent.loadedMetadata(video);
-    expect(screen.getByRole('button', { name: /render mp4/i })).toBeEnabled();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /render mp4/i })).toBeEnabled(),
+    );
     fireEvent.error(video);
     expect(screen.getByRole('button', { name: /render mp4/i })).toBeDisabled();
   });
-  it('renders, reorders and removes clips without uploading', async () => {
+  it('reorders and removes clips without starting a render job', async () => {
     render(<App />);
     const user = await selectTwo();
     expect(screen.getByRole('button', { name: /render mp4/i })).toBeEnabled();
@@ -1504,7 +1519,11 @@ describe('AVStudio', { timeout: 15000 }, () => {
     expect(
       vi
         .mocked(fetch)
-        .mock.calls.every((c) => String(c[0]).endsWith('/api/health')),
+        .mock.calls.every((c) =>
+          ['/api/health', '/api/video-metadata'].some((path) =>
+            String(c[0]).endsWith(path),
+          ),
+        ),
     ).toBe(true);
     await user.click(screen.getByRole('button', { name: 'Remove first.mp4' }));
     await user.click(screen.getByRole('button', { name: 'Remove second.mov' }));

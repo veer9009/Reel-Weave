@@ -22,6 +22,8 @@ beforeEach(() => {
             limits: { max_clips: maxClips, max_file_size_mb: 200 },
           }),
         );
+      if (String(input).endsWith('/api/video-metadata'))
+        return new Response('', { status: 404 });
       submitted = init!.body as FormData;
       return new Response(
         JSON.stringify({ error: { code: 'busy', message: 'Delivery failed' } }),
@@ -48,6 +50,9 @@ async function ready(names = ['a.mp4', 'b.mp4']) {
     });
     fireEvent.loadedMetadata(v);
   });
+  await waitFor(() =>
+    expect(screen.queryByText('Reading metadata…')).toBeNull(),
+  );
   return files;
 }
 const undo = () =>
@@ -660,6 +665,9 @@ describe('App edit history', { timeout: 30000 }, () => {
       });
       fireEvent.loadedMetadata(v);
     });
+    await waitFor(() =>
+      expect(screen.queryByText('Reading metadata…')).toBeNull(),
+    );
     fireEvent.click(
       screen.getByRole('button', { name: 'Preview clip 2: same.mp4' }),
     );

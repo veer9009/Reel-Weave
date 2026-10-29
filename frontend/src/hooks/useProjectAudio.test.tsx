@@ -166,6 +166,103 @@ const ready = (element: HTMLMediaElement, duration = 6) => {
   element.dispatchEvent(new Event('loadedmetadata'));
   element.dispatchEvent(new Event('canplay'));
 };
+it('keeps an exhausted decoder at its end until an explicit reposition', async () => {
+  const h = setup();
+  const snapshot = { ...h.props.snapshot, music: [] };
+  let seconds = 5.9;
+  const props = {
+    ...h.props,
+    snapshot,
+    projection: buildAdvancedTimeline(snapshot, h.sources, {
+      image: null,
+      video: null,
+    }),
+    transport: {
+      ...h.props.transport,
+      captureAnchor: () => ({
+        ...h.props.transport.captureAnchor(),
+        projectSeconds: seconds,
+      }),
+    },
+  };
+  vi.mocked(HTMLMediaElement.prototype.play).mockImplementation(function (
+    this: HTMLMediaElement,
+  ) {
+    // Native play at EOF restarts from zero; it must not be used to fill the
+    // small gap between decoder completion and picture completion.
+    if (this.currentTime === 6) this.currentTime = 0;
+    Object.defineProperty(this, 'paused', { configurable: true, value: false });
+    return Promise.resolve();
+  });
+  h.rerender(props);
+  await act(async () => {
+    await h.result.current.resumeAudio();
+  });
+  const voice = elements[0];
+  await act(async () => ready(voice));
+  await act(async () => {
+    voice.currentTime = 6;
+    Object.defineProperty(voice, 'paused', { configurable: true, value: true });
+    Object.defineProperty(voice, 'ended', {
+      configurable: true,
+      get: () => voice.currentTime === 6,
+    });
+    // Native EOF is visible before the queued ended event is delivered.
+    h.rerender({ ...props });
+  });
+  expect(voice.currentTime).toBe(6);
+  await act(async () => {
+    voice.dispatchEvent(new Event('ended'));
+    h.rerender({ ...props });
+  });
+  expect(voice.currentTime).toBe(6);
+  await act(async () =>
+    h.rerender({
+      ...props,
+      transport: {
+        ...props.transport,
+        playing: false,
+        playingIntent: false,
+        generation: 2,
+      },
+    }),
+  );
+  await act(async () =>
+    h.rerender({
+      ...props,
+      transport: {
+        ...props.transport,
+        generation: 3,
+      },
+    }),
+  );
+  expect(voice.currentTime).toBe(6);
+  expect(h.result.current.status).toBe('ready');
+  seconds = 5.98;
+  await act(async () =>
+    h.rerender({
+      ...props,
+      transport: {
+        ...props.transport,
+        generation: 4,
+        positionRevision: 1,
+      },
+    }),
+  );
+  expect(voice.currentTime).toBe(5.98);
+  seconds = 1;
+  await act(async () =>
+    h.rerender({
+      ...props,
+      transport: {
+        ...props.transport,
+        generation: 5,
+        positionRevision: 2,
+      },
+    }),
+  );
+  expect(voice.currentTime).toBe(1);
+});
 it('releases the final sound gate without restarting a successfully playing decoder', async () => {
   const h = setup();
   h.rerender({ ...h.props, snapshot: { ...h.props.snapshot, music: [] } });

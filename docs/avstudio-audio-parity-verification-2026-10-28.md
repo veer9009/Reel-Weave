@@ -192,3 +192,97 @@ The native-sync setup now generates only the existing deterministic stereo WAV a
 The setup change removes unnecessary encodes and exposes process failures; it does not establish reliable fixture or browser startup on this host. The underlying reason for intermittent process delays remains unverified. No timeouts or audio thresholds were raised. Full preview parity remains unverified; earlier export/build/frontend results above remain historical, not fresh passes from this resumption.
 
 Changed in this resumption: `frontend/e2e/mediaFixtures.ts`, `frontend/e2e/playback-continuity.spec.ts`, and this report. All prior application/UI changes and pnpm files are preserved. No packages, configuration files, commits, pushes or deployments were made. One automatic approval-review timeout was retried successfully; the actual fixture retry then exposed the FFmpeg timeout above. A later report-update tool call stalled without completing and was terminated; this result section was written separately.
+
+## Resource-gated verification resumption (2026-10-29, approximately 20:15 IST)
+
+Inspected checkpoint HEAD `89ce9e9` and the latest report before any browser or FFmpeg test. Initial working-tree status contained only the two untracked pnpm files. Their SHA-256 hashes match the values recorded above. All existing changes and artifacts were preserved.
+
+The initial read-only CIM queries returned `Access denied` (`0x80041003`), so their empty/zero fields are not resource measurements. A successful read-only Windows API query through the existing Python environment measured:
+
+| Resource | Measurement |
+| --- | --- |
+| Logical CPUs | 4 |
+| CPU busy, one-second sample | 87.7% |
+| Physical memory occupied | 96% |
+| Available / total physical memory | 0.31 / 7.87 GiB |
+| Available system commit | 7.10 GiB |
+| Free workspace disk space | 87.57 GiB |
+
+`Get-Process` listed 11 Chrome and 12 Edge WebView2 processes. No Node, Python, FFmpeg or FFprobe process was listed in that snapshot (before the short resource-query Python invocation). CIM access restrictions prevented command-line/parent inspection, so browser ownership was not established. No process was stopped.
+
+**Resource blocker:** only 0.31 GiB physical RAM available at 96% memory occupancy, with CPU already 87.7% busy. Given the reported laptop slowdown and earlier launch/fixture timeouts, no browser or FFmpeg test was started. This is a preflight stop, not a test failure or a new acoustic result. No test was retried.
+
+| Requested check | Fresh result |
+| --- | --- |
+| Normal-speed (1x) preview audible synchronization | NOT RUN: resource preflight blocked launch |
+| 0.75x preview audible synchronization | NOT RUN: normal-speed prerequisite not established |
+| 0.5x preview audible synchronization | NOT RUN: normal-speed prerequisite not established |
+| Independent-audio split parity | NOT RUN: normal-speed prerequisite not established |
+| Playback continuity | NOT RUN: normal-speed prerequisite not established |
+
+Only this report was edited in this resumption. No application/UI, fixture, threshold or configuration changes were made. No packages were installed and no commit, push or deployment was performed. Historical passes above remain historical; full preview parity is still unverified. The next verification remains one normal-speed preview test with one worker, followed by separate checks only if that test passes and resources permit.
+
+## Sequential verification continuation (2026-10-29, completed approximately 20:31 IST)
+
+Continued at `89ce9e9`, preserving the existing report edits and both untracked pnpm files. Before tests, a one-second CPU sample measured 73.7% busy; physical RAM was 93% occupied with 0.49 GiB available out of 7.87 GiB, and disk space was 88.14 GiB free. Process inspection listed Chrome but no Node, Python, FFmpeg, FFprobe or Edge test process. Read-only commands completed promptly. After the 1x test, available RAM improved to 0.88 GiB (88% occupied), and no test processes remained in the checked process names.
+
+Each selected test ran in a separate Playwright command with `--workers=1 --retries=0 --max-failures=1`. Commands completed before the next started; no parallel browser or FFmpeg jobs were launched. Existing fixture generation, test timeouts and assertions were unchanged. No selected test timed out or was retried.
+
+| Check | Fresh result | Evidence / command completion |
+| --- | --- | --- |
+| 1x preview synchronization | PASS: 54 samples, maximum error 34.9865 ms against 50 ms | Test 25.5 s; Playwright summary 1 passed in 56.0 s; Playwright exit 0, enclosing PowerShell process abnormal status `0xC0000005` |
+| 0.75x preview synchronization | PASS: 75 samples, maximum error 5.4781 ms against 50 ms | Test 24.7 s; 1 passed in 45.5 s; command exit 0 |
+| 0.5x preview synchronization | PASS: 67 samples, maximum error 7.2526 ms against 50 ms | Test 27.9 s; 1 passed in 46.8 s; command exit 0 |
+| Independent-audio split | PASS: preview plus MP4, MOV, WAV and MP3 | Test 47.4 s; 1 passed in approximately 1.1 minutes; command exit 0; all five entries in `parity-results.json` are `passed` |
+
+The initial sandboxed 1x command failed before the test body because Vite/esbuild could not read an ancestor directory or resolve `vite.config.ts` (`Access is denied`). The same single-test command was then allowed outside the sandbox and produced the 1x results above. The initial independent-split command selected no tests because of an incorrectly anchored title selector; correcting that selector selected exactly one test. Neither setup command produced an acoustic result. These setup attempts are not counted as test passes.
+
+The 1x wrapper printed `PLAYWRIGHT_EXIT_CODE=0` after the passing summary, but the execution tool returned signed process status `-1073741819` (`0xC0000005`). Its cause remains unverified; the 1x assertion pass is supported by saved samples, but this is not a clean end-to-end command completion. Subsequent tests used direct Playwright invocation and exited 0. No timeout retry, package installation or configuration change was used.
+
+Artifacts are under `var/avstudio-audio-sequential-2026-10-29/`: `normal-speed-elevated/`, `slow-075/`, `slow-05/` and `independent-split-selected/`. Each speed saves `actual-audio-output.json`; the independent split saves `parity-results.json` and real exports. The 1x startup logs are `var/avstudio-audio-sequential-2026-10-29-normal-speed.log` and `var/avstudio-audio-sequential-2026-10-29-normal-speed-elevated.log`.
+
+This continuation verifies only these four selected cases. Running split decoder continuity, other lanes/edit journeys and the broad regression were not run. The accepted UI, source, configuration, fixtures, timeouts and signal/timing thresholds remain unchanged. Only this report was edited; both pnpm file hashes still match the earlier recorded values. No manual process termination, installs, commits, pushes or deployment occurred.
+
+## Manual playback regression investigation and repair (2026-10-29)
+
+Started from `89ce9e9` with the preceding report edits and two untracked pnpm files already present; preserved them. Before browser work, measured CPU busy 59.0%, physical RAM occupied 92% with 0.62 GiB available, and free disk space 87.84 GiB. Inspected existing processes and ports: Vite on 5173 and Uvicorn on 8000 were already running; reused them without stopping them. No parallel browser or FFmpeg jobs were launched. All Playwright and Vitest commands used one worker; Playwright retries remained zero. The full unit suite was slow (523.10 seconds); a later resource snapshot showed 94% RAM occupied and 0.40 GiB available. Browser work waited until that suite finished.
+
+### Reproduction before application changes
+
+Added `frontend/e2e/manual-playback.spec.ts` to exercise the actual editor through import, speed selection, Play, Pause, resume, natural completion and Play again. It retains the ordinary imported clip's default 60 FPS project, adds no background music, and does not invoke the separate clip-preview selection action. Diagnostics instrument test-served responses only and save transport intent/status/position, readiness tokens, media cursors/events and actual audio analyser energy. No production diagnostic API or UI was added.
+
+Baseline: **0 passed / 3 failed**. Initial playback and pause/resume advanced picture and non-silent sound at **1x, 0.75x and 0.5x**. Thus a clean first slow-speed start did not reproduce the reported failure. Replay failed at every speed. At 1x the project reset to zero, then the first readiness hold restored the mounted picture's old end position (359/360 frames); playback stopped again. Both slow cases also stopped just before the project end with "Sound preview cannot play base60.mp4" and audio reset to zero, so another Play could not recover. Evidence: `var/avstudio-manual-playback/baseline/`.
+
+### Confirmed causes and retained fixes
+
+- **Stale native clock at replay:** `toggle()` advances the explicit position revision when restarting, but the immediate user-action readiness hold runs before the new position reaches mounted media. Reading the old decoder clock restored the previous session position. `useProjectPlayback` now excludes that clock until the position revision reaches the layout commit, then resumes native-clock use. The focused regression failed first with 1.96 seconds received instead of zero, then passed.
+- **Native audio EOF restarted before picture completion:** sound can finish before picture. Calling native `play()` at EOF restarts it at zero. The native `ended` flag is visible before its queued event; guarding only the event left a race. The intermediate browser run exposed `sound-ended` at time zero, followed by `waiting` and `AbortError: The play() request was interrupted by a call to pause()`. `useProjectAudio` now recognizes both native EOF and its event, retains the exhausted range as ready silence through pause/resume, and reopens it only for a reposition or changed mapping. An explicit near-end seek forces the native cursor away from EOF even inside the unchanged normal positioning tolerance. Focused regressions failed before correction for premature restart (zero instead of six seconds) and a 5.98-second seek remaining at six seconds, then passed.
+
+The first event-only EOF correction was insufficient: an intermediate three-case run finished **1 passed / 2 failed**, with both slow cases stopping before the final project frame. Those results are not final passes. The subsequent native-flag correction and review boundary fixes are retained. A read-only code review identified the exhausted pause/resume and near-end seek boundaries; both are covered. No fixed offset, extra delay, continuous seek loop, timeout increase or threshold relaxation was added.
+
+### Fresh final verification
+
+| Speed | Ordinary playback | Pause/resume | Completion and replay | Existing acoustic sync |
+| --- | --- | --- | --- | --- |
+| 1x | PASS: picture/audio advance, nonzero sound energy | PASS: both pause within 40 ms and advance on resume | PASS: final project frame reached, replay advances picture/audio | PASS: 76 samples, max 10.1439 ms <= 50 ms |
+| 0.75x | PASS | PASS | PASS | PASS: 38 samples, max 3.0431 ms <= 50 ms |
+| 0.5x | PASS | PASS | PASS | PASS: 38 samples, max 3.4626 ms <= 50 ms |
+
+Final manual editor run: **3 passed**, clean exit 0, approximately 2.1 minutes; individual test times 39.2/41.4/36.9 seconds. All three final traces contain no `sound-play-error`. Artifacts: `var/avstudio-manual-playback/final-eof-race-fix/`, with `manual-playback.json` per speed. Separate unchanged acoustic assertions: **3 passed**, clean exit 0, approximately 1.3 minutes; `var/avstudio-manual-playback/final-sync/`, with `actual-audio-output.json` per speed. No final selected browser test hit its test timeout. The baseline replay assertions exhausted the existing 15-second expectation timeout; they were investigated rather than repeatedly retried unchanged.
+
+| Additional check | Fresh result |
+| --- | --- |
+| Full frontend suite, `vitest run --maxWorkers=1` | PASS: **543 tests / 59 files**, exit 0, 523.10 seconds |
+| Focused audio/picture/transport hooks before final boundary extensions | PASS: **69 tests**, exit 0; the later full suite includes final boundary coverage |
+| Full lint | PASS, exit 0 |
+| Production build | PASS, exit 0: TypeScript and Vite, 1,796 modules |
+| Independent split preview parity | **FAIL**: power ratio 0.3630049896 < 0.7; no threshold change or blind retry |
+| Same independent split MP4 / MOV / WAV / MP3 | **PASS / PASS / PASS / PASS**, real output decoded and checked |
+
+The independent-split command exited 1 because its preview assertion failed; four passing exports do not turn that command into a pass. Artifacts: `var/avstudio-manual-playback/final-independent-split/`, including `parity-results.json`, PCM evidence, picture-clock history, trace and four rendered files. Inspection found mixed tone energy near project 1.9 seconds: expected 660 Hz amplitude 0.12, observed approximately 0.0723 with 990 Hz amplitude approximately 0.04578. This resembles the earlier report's premature-transition failure pattern; this run does not establish its cause or prove it unaffected by these changes. No further parity retry or unrelated edit/export change was attempted. Full audio/edit parity remains unverified.
+
+Retained application changes are limited to `frontend/src/hooks/useProjectPlayback.ts` and `frontend/src/hooks/useProjectAudio.ts`, with focused coverage in their existing unit files and the new manual-playback browser spec. This report retains all earlier results. Accepted UI/components/styles, audio editing/history operations, canonical render/export code, fixtures, configuration and timing/signal thresholds were not changed. Both untracked pnpm file hashes still match the recorded originals. No packages, commits, pushes, deployments or manual process termination occurred. One sandboxed unit command failed during esbuild config access; the permitted command outside the sandbox supplied the actual red/green evidence. No configuration workaround was made.
+
+## Later slow-preview source-metadata follow-up (2026-10-29)
+
+Reproduced a separate actual-clip failure: portrait video had 169 decoded frames while the longer AAC/container duration produced an estimated 172-frame import. Slow preview returned 422, “Frozen audio source trim is unavailable”; ordinary export already clamps untouched sources. Imports now inspect authoritative video bounds before initializing the default range. Actual-clip 1x/0.75x/0.5x preview and non-silent mixer advancement passed against an isolated updated backend; two real slow MP4 outputs passed. Final frontend suite: 550 passed; backend: 201 passed / 2 skipped; lint and build passed. After explicit user approval, only the backend on port 8000 was restarted; fresh health and OpenAPI checks confirmed the new endpoint is active. Already-imported estimates are not migrated automatically. Full evidence, harness failures, scope and remaining limitations are in [the slow-preview follow-up](avstudio-slow-preview-verification-2026-10-29.md). The independent-split preview failure above remains open.

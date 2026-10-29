@@ -44,6 +44,40 @@ export function generateMusicAudio(folder: string) {
   return music;
 }
 
+export function generateAudioTailVideo(folder: string) {
+  mkdirSync(folder, { recursive: true });
+  const path = join(folder, 'portrait-tail.mp4');
+  run('ffmpeg', [
+    '-v',
+    'error',
+    '-y',
+    '-f',
+    'lavfi',
+    '-i',
+    'testsrc2=size=478x850:rate=30:duration=5.633333333333',
+    '-f',
+    'lavfi',
+    '-i',
+    'sine=frequency=660:sample_rate=44100:duration=5.8',
+    '-c:v',
+    'libx264',
+    '-preset',
+    'ultrafast',
+    '-threads',
+    '1',
+    '-pix_fmt',
+    'yuv420p',
+    '-c:a',
+    'aac',
+    '-ac',
+    '2',
+    '-movflags',
+    '+faststart',
+    path,
+  ]);
+  return path;
+}
+
 export function generateAdvancedMedia(folder: string) {
   mkdirSync(folder, { recursive: true });
   const video = (

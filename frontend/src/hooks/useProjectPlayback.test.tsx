@@ -49,6 +49,21 @@ const ready: TimelineProjection = {
   durationSeconds: 2,
   items: [],
 };
+it('replay readiness cannot restore the previous session picture position before the new commit', () => {
+  vi.spyOn(performance, 'now').mockReturnValue(1000);
+  const { result } = renderHook(() => useProjectPlayback(ready, 0));
+  act(() => {
+    result.current.bindPictureClock(() => 1.96);
+    result.current.seek(49);
+  });
+  act(() => {
+    result.current.toggle();
+    expect(result.current.captureSoundSeconds()).toBe(0);
+    result.current.suspend(42);
+  });
+  expect(result.current.frame).toBe(0);
+  expect(result.current.status).toBe('preparing');
+});
 describe('shared project playback', () => {
   it('registering_an_already_pending_readiness_token_does_not_publish_another_render', () => {
     const renders = vi.fn();

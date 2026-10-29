@@ -8,6 +8,7 @@ import {
   outputDuration,
 } from '../lib/clips';
 import type { Clip, ClipMetadata, ClipSpeed } from '../lib/clips';
+import { inspectVideoMetadata } from '../lib/videoMetadata';
 type Props = {
   clips: Clip[];
   disabled: boolean;
@@ -30,6 +31,16 @@ export function ClipList({
   onSpeedChange,
 }: Props) {
   const section = useRef<HTMLElement>(null);
+  const metadataRequests = useRef(new Map<string, AbortController>());
+  // Undo retains deleted sources: completing metadata must still update the
+  // registered source even after its visible occurrence has been removed.
+  useEffect(() => {
+    const requests = metadataRequests.current;
+    return () => {
+      for (const controller of requests.values()) controller.abort();
+      requests.clear();
+    };
+  }, []);
   const focusAfterRemoval = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     const id = focusAfterRemoval.current;
@@ -88,23 +99,45 @@ export function ClipList({
                   onLoadedMetadata={(e) => {
                     if (clip.metadataStatus === 'ready' && clip.metadata)
                       return;
+                    if (metadataRequests.current.has(clip.id)) return;
                     const video = e.currentTarget;
                     const duration = video.duration;
                     if (!Number.isFinite(duration) || duration <= 0) {
                       onMetadataError(clip.id);
                       return;
                     }
-                    const commitMetadata = (fps: number) =>
-                      onMetadata(clip.id, {
-                        duration,
-                        fps,
-                        totalFrames: frameCountFromDuration(duration, fps),
-                        width: video.videoWidth,
-                        height: video.videoHeight,
-                        source: 'browser',
-                      });
+                    const controller = new AbortController();
+                    metadataRequests.current.set(clip.id, controller);
+                    const commitMetadata = async (fps: number) => {
+                      try {
+                        const decoded = await inspectVideoMetadata(
+                          clip.file,
+                          controller.signal,
+                        );
+                        if (controller.signal.aborted) return;
+                        onMetadata(
+                          clip.id,
+                          decoded ?? {
+                            duration,
+                            fps,
+                            totalFrames: frameCountFromDuration(duration, fps),
+                            width: video.videoWidth,
+                            height: video.videoHeight,
+                            source: 'browser',
+                          },
+                        );
+                      } catch {
+                        if (!controller.signal.aborted)
+                          onMetadataError(clip.id);
+                      } finally {
+                        if (
+                          metadataRequests.current.get(clip.id) === controller
+                        )
+                          metadataRequests.current.delete(clip.id);
+                      }
+                    };
                     if (typeof video.requestVideoFrameCallback !== 'function')
-                      commitMetadata(30);
+                      void commitMetadata(30);
                     else void detectFrameRate(video).then(commitMetadata);
                   }}
                   onError={() => onMetadataError(clip.id)}

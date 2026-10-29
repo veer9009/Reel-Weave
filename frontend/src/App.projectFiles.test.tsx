@@ -23,16 +23,17 @@ beforeEach(() => {
   });
   vi.stubGlobal(
     'fetch',
-    vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({
-            status: 'ok',
-            ffmpeg_available: true,
-            ffprobe_available: true,
-            limits: { max_clips: 20, max_file_size_mb: 200 },
-          }),
-        ),
+    vi.fn(async (input) =>
+      String(input).endsWith('/api/video-metadata')
+        ? new Response('', { status: 404 })
+        : new Response(
+            JSON.stringify({
+              status: 'ok',
+              ffmpeg_available: true,
+              ffprobe_available: true,
+              limits: { max_clips: 20, max_file_size_mb: 200 },
+            }),
+          ),
     ),
   );
 });

@@ -27,6 +27,11 @@ export function useProjectPlayback(
     const readiness = new Set<number>();
     const holds = new Set<(projectSeconds: number) => void>();
     let pictureClock: (() => number | null) | null = null;
+    let committedPositionRevision = runtime.positionRevision;
+    const readPictureClock = () =>
+      committedPositionRevision === runtime.positionRevision
+        ? pictureClock?.()
+        : null;
     const available = () => {
       const t = runtime.timeline;
       return t.status === 'ready' && t.totalFrames > 0 && t.fps !== null;
@@ -77,7 +82,7 @@ export function useProjectPlayback(
       captureSoundSeconds() {
         const seconds =
           runtime.intent && runtime.status === 'playing'
-            ? pictureClock?.()
+            ? readPictureClock()
             : null;
         return seconds !== null &&
           seconds !== undefined &&
@@ -170,6 +175,9 @@ export function useProjectPlayback(
         }
         r.timeline = next;
         r.projection = p;
+        // Child media layout effects have now received this position. Until
+        // this commit, the mounted decoder still belongs to the old seek/replay.
+        committedPositionRevision = r.positionRevision;
         if (changed) publish();
       },
       tick() {
@@ -250,7 +258,8 @@ export function useProjectPlayback(
         readiness.add(token);
         // A predicted display timestamp may run ahead of the decoded picture.
         // Holding that prediction would force a forward seek when we resume.
-        const pictureSeconds = r.status === 'playing' ? pictureClock?.() : null;
+        const pictureSeconds =
+          r.status === 'playing' ? readPictureClock() : null;
         if (
           pictureSeconds !== null &&
           pictureSeconds !== undefined &&
@@ -295,9 +304,10 @@ export function useProjectPlayback(
     };
     return controller;
   });
+  const positionRevision = api.getSnapshot().positionRevision;
   useLayoutEffect(
     () => api.update(timeline, structuralRevision, projection),
-    [api, timeline, structuralRevision, projection],
+    [api, timeline, structuralRevision, projection, positionRevision],
   );
   const r = api.getSnapshot(),
     playing = r.status === 'playing' && r.intent;

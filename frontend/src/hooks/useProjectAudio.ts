@@ -397,8 +397,14 @@ export function useProjectAudio(options: Options) {
         return;
       const target =
         currentTargets()[pools.findIndex((pool) => pool.includes(voice))];
-      if (voice.ended !== null && target && target.time >= voice.ended - 0.001)
-        return;
+      // The native flag changes before the queued ended event is dispatched.
+      if (voice.element.ended) {
+        voice.ended = voice.element.currentTime;
+        voice.accepted = true;
+      }
+      // syncVoice clears EOF only for a new position or source mapping. Native
+      // play() at EOF would otherwise restart sound from zero ahead of picture.
+      if (voice.ended !== null) return;
       if (voice.accepted && !voice.element.paused) return;
       if (voice.delay && !voice.delayConnected) {
         voice.delay.delayTime.value = 0;
@@ -595,6 +601,16 @@ export function useProjectAudio(options: Options) {
         generation,
       };
       if (
+        voice.ended !== null &&
+        voice.positionRevision === revision &&
+        continuous
+      ) {
+        // An exhausted range is ready silence, including after Pause clears
+        // decoder acceptance; it must not hold the remaining picture playback.
+        voice.accepted = true;
+        return;
+      }
+      if (
         voice.delay &&
         !voice.delayAligned &&
         voice.accepted &&
@@ -640,9 +656,10 @@ export function useProjectAudio(options: Options) {
         return;
       }
       if (voice.ended !== null && target.time >= voice.ended - 0.001) return;
+      const exhausted = voice.ended !== null || e.ended;
       voice.ended = null;
       const threshold = 0.04 * target.speed;
-      if (Math.abs(e.currentTime - target.time) > threshold) {
+      if (exhausted || Math.abs(e.currentTime - target.time) > threshold) {
         if (voice.delay) voice.delay.delayTime.value = 0;
         voice.delayAligned = false;
         e.currentTime = Math.max(0, target.time);
