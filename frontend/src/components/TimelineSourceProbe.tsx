@@ -1,4 +1,6 @@
+import { useEffect, useRef } from 'react';
 import { detectFrameRate } from '../lib/clips';
+import { inspectVideoMetadata } from '../lib/videoMetadata';
 import type { SourceToken, SourceMetadata } from '../lib/projectSources';
 import type { PositionedTrack } from '../lib/positionedEdits';
 export function TimelineSourceProbe({
@@ -16,6 +18,11 @@ export function TimelineSourceProbe({
   onReady: (token: SourceToken, metadata: SourceMetadata) => void;
   onError: (token: SourceToken) => void;
 }) {
+  const request = useRef<AbortController | null>(null);
+  useEffect(() => {
+    request.current = null;
+    return () => request.current?.abort();
+  }, [file, url, token.sourceId, token.session, token.requestId]);
   if (track === 'music' || track === 'bin-audio')
     return (
       <audio
@@ -67,18 +74,31 @@ export function TimelineSourceProbe({
           onError(token);
           return;
         }
-        void detectFrameRate(video).then((fps) =>
-          onReady(token, {
-            clipMetadata: {
-              duration,
-              fps,
-              totalFrames: Math.max(1, Math.floor(duration * fps + 0.5)),
-              width,
-              height,
-              source: 'browser',
-            },
-          }),
-        );
+        if (request.current) return;
+        const controller = new AbortController();
+        request.current = controller;
+        void (async () => {
+          try {
+            // Browser duration can include an audio tail; frozen recipes need
+            // the decoded video frame count used by export validation.
+            let metadata = await inspectVideoMetadata(file, controller.signal);
+            if (!metadata) {
+              const fps = await detectFrameRate(video);
+              metadata = {
+                duration,
+                fps,
+                totalFrames: Math.max(1, Math.floor(duration * fps + 0.5)),
+                width,
+                height,
+                source: 'browser',
+              };
+            }
+            if (!controller.signal.aborted)
+              onReady(token, { clipMetadata: metadata });
+          } catch {
+            if (!controller.signal.aborted) onError(token);
+          }
+        })();
       }}
       onError={() => onError(token)}
     />
